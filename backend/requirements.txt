@@ -1,0 +1,9 @@
+fastapi>=0.116.0
+uvicorn[standard]>=0.31.0
+celery>=5.4.0
+redis>=5.0.8
+pydantic>=2.8.2
+pydantic-settings>=2.4.0
+psycopg[binary]>=3.2.1
+weaviate-client>=4.7.1
+neo4j>=5.23.1
