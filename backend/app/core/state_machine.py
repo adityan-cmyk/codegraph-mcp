@@ -22,3 +22,12 @@ VALID_TRANSITIONS = {
     IncidentState.RESOLVED: set(),
     IncidentState.FAILED: set(),
 }
+
+
+def can_transition(current_state: IncidentState, next_state: IncidentState) -> bool:
+    return next_state in VALID_TRANSITIONS[current_state]
+
+
+def validate_transition(current_state: IncidentState, next_state: IncidentState) -> None:
+    if not can_transition(current_state, next_state):
+        raise ValueError(f"Invalid transition from {current_state.value} to {next_state.value}")

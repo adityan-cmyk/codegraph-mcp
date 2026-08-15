@@ -1,0 +1,6 @@
+.git
+.env
+docker-compose*.yml
+*.md
+frontend/node_modules
+frontend/.vite

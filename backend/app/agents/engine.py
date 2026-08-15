@@ -1,11 +1,8 @@
-def stream_resolution(context: dict[str, object]) -> dict[str, object]:
-    return {
-        "root_cause": "Stubbed root cause pending implementation.",
-        "patch": "// Rust patch placeholder",
-        "confidence": [
-            {"label": "Retrieval", "value": "0.91"},
-            {"label": "Graph", "value": "0.88"},
-            {"label": "Sandbox", "value": "Passed"},
-        ],
-        "context": context,
-    }
+from typing import Any
+
+from app.agents.client import hosted_model_client
+from app.schemas.incident import IncidentAnalysis
+
+
+async def generate_resolution(context: dict[str, Any]) -> IncidentAnalysis:
+    return await hosted_model_client.analyze(context)
