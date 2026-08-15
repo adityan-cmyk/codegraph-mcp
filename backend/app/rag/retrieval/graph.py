@@ -10,29 +10,32 @@ class InMemoryGraphIndex:
         self._downstream: dict[str, set[str]] = {}
         self._used_by: dict[str, set[str]] = {}
         self._uses: dict[str, set[str]] = {}
+        self._metadata: dict[str, dict] = {}
 
     def reset(self) -> None:
         self._upstream.clear()
         self._downstream.clear()
         self._used_by.clear()
         self._uses.clear()
+        self._metadata.clear()
 
     def reset_documents(self) -> None:
         self.reset()
 
-    def upsert_symbol(self, symbol_id: str, *, calls: list[str] | None = None, called_by: list[str] | None = None, uses: list[str] | None = None, used_by: list[str] | None = None) -> None:
+    def upsert_symbol(self, symbol_id: str, *, calls: list[str] | None = None, called_by: list[str] | None = None, uses: list[str] | None = None, used_by: list[str] | None = None, uses_with_modes: list[tuple[str, list[str]]] | None = None, metadata: dict | None = None) -> None:
         self._downstream.setdefault(symbol_id, set()).update(calls or [])
         self._upstream.setdefault(symbol_id, set()).update(called_by or [])
-        self._uses.setdefault(symbol_id, set()).update(uses or [])
+        if uses_with_modes:
+            for target, _modes in uses_with_modes:
+                self._uses.setdefault(symbol_id, set()).add(target)
+                self._used_by.setdefault(target, set()).add(symbol_id)
+        else:
+            self._uses.setdefault(symbol_id, set()).update(uses or [])
+            for target in uses or []:
+                self._used_by.setdefault(target, set()).add(symbol_id)
         self._used_by.setdefault(symbol_id, set()).update(used_by or [])
-        for target in calls or []:
-            self._upstream.setdefault(target, set()).add(symbol_id)
-        for source in called_by or []:
-            self._downstream.setdefault(source, set()).add(symbol_id)
-        for target in uses or []:
-            self._used_by.setdefault(target, set()).add(symbol_id)
-        for source in used_by or []:
-            self._uses.setdefault(source, set()).add(symbol_id)
+        if metadata:
+            self._metadata[symbol_id] = metadata
 
     def get_blast_radius(self, symbol_id: str) -> GraphNeighborhood:
         return GraphNeighborhood(
@@ -66,9 +69,15 @@ class InMemoryGraphIndex:
         results: list[dict[str, object]] = []
         for sid in node_ids:
             if query_lower in sid.lower():
+                meta = self._metadata.get(sid, {})
                 results.append({
                     "symbol_id": sid,
                     "short_name": sid.split("::")[-1],
+                    "kind": meta.get("kind"),
+                    "file_path": meta.get("file_path"),
+                    "start_line": meta.get("start_line"),
+                    "end_line": meta.get("end_line"),
+                    "module": meta.get("module"),
                     "has_calls": bool(self._downstream.get(sid)),
                     "has_uses": bool(self._uses.get(sid)),
                     "has_callers": bool(self._upstream.get(sid)),
