@@ -1,6 +1,7 @@
 *.DS_Store
 *.log
 *.pid
+FETCH_HEAD
 logs/
 .env
 .env.*
