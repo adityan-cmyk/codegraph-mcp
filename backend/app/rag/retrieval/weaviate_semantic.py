@@ -292,6 +292,11 @@ class WeaviateSemanticIndex:
         except Exception:
             pass
 
+    def reset(self) -> None:
+        """Reset all documents and resolved errors (test helper)."""
+        self.reset_documents()
+        self._resolved_errors: list[tuple[str, dict[str, object], list[float]]] = []
+
     def reset_documents(self) -> None:
         """Backward-compatible entry point — now uses shadow pattern."""
         self.begin_rebuild()
