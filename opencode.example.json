@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "oncall-graph": {
+      "type": "remote",
+      "url": "http://<host-ip>:8002/mcp",
+      "enabled": true,
+      "timeout": 10000
+    }
+  },
+  "tools": {
+    "oncall-graph*": true
+  },
+  "agent": {
+    "pr-reviewer": {
+      "tools": {
+        "oncall-graph*": true
+      }
+    }
+  }
+}
