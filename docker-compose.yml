@@ -70,6 +70,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: oncall-backend
+    restart: unless-stopped
     ports:
       - "8000:8000"
       - "8002:8002"

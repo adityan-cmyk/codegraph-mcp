@@ -10,6 +10,15 @@
 
 set -euo pipefail
 
+# Source .env if available (cron doesn't inherit shell env)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+    set -a
+    source "$PROJECT_ROOT/.env"
+    set +a
+fi
+
 REPO_PATH="${CODEBASE_REPO_PATH:?CODEBASE_REPO_PATH must be set}"
 GIT_BRANCH="${CODEBASE_GIT_BRANCH:-master}"
 API_URL="http://localhost:8000"
@@ -29,7 +38,7 @@ log "Git pull complete"
 
 # Step 2: Trigger incremental reindex via API (git diff based, not full rebuild)
 log "Triggering incremental reindex..."
-RESPONSE=$(curl -s -X POST "$API_URL/api/index/ingest" 2>&1)
+RESPONSE=$(curl -s --max-time 3600 -X POST "$API_URL/api/index/ingest" 2>&1) || true
 log "Reindex response: $RESPONSE"
 
 log "Nightly sync complete"
