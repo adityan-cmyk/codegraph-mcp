@@ -38,7 +38,7 @@ log "Git pull complete"
 
 # Step 2: Trigger incremental reindex via API (git diff based, not full rebuild)
 log "Triggering incremental reindex..."
-RESPONSE=$(curl -s --max-time 3600 -X POST "$API_URL/api/index/ingest" 2>&1) || true
+RESPONSE=$(curl -s --max-time 14400 -X POST "$API_URL/api/index/ingest" 2>&1) || true
 log "Reindex response: $RESPONSE"
 
 log "Nightly sync complete"

@@ -106,8 +106,23 @@ def _expand_with_dependents(changed_files: list[str]) -> list[str]:
 def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
     last_commit = get_last_indexed_commit()
     if not last_commit:
-        logger.info("No previous indexed commit — full reindex required")
-        return {"status": "full_reindex_needed", "last_commit": "", "head_commit": ""}
+        logger.info("No previous indexed commit — running full reindex")
+        try:
+            from app.rag.indexing_service import index_rust_repository
+            repo_path = resolve_repository_path(repository_path)
+            result = index_rust_repository(str(repo_path))
+            head = get_current_head(repository_path)
+            return {
+                "status": "full_reindex_complete",
+                "symbols_indexed": result.symbols_indexed,
+                "files_indexed": result.files_indexed,
+                "graph_nodes": result.graph_nodes,
+                "graph_edges": result.graph_edges,
+                "head_commit": head,
+            }
+        except Exception as exc:
+            logger.error("Full reindex failed: %s", exc)
+            return {"status": "error", "error": str(exc)}
 
     try:
         head_commit = get_current_head(repository_path)
