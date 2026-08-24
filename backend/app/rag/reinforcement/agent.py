@@ -83,11 +83,6 @@ def _agent_tick():
                         reason=f"AI feedback signal (weight={weight:.3f})",
                     )
                 logger.info("Reinforcement: applied %d symbol signals from AI feedback", len(signals))
-                feedback_ids = [f["feedback_id"] for f in accepted]
-                active = build_registry.get_active_build()
-                if active:
-                    ai_feedback_store.mark_feedback_consumed(feedback_ids, active["build_id"])
-                    logger.info("Marked %d AI feedback entries as consumed (signals applied)", len(feedback_ids))
     except Exception:
         logger.debug("Signal extraction failed", exc_info=True)
 
