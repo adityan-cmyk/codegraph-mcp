@@ -7,6 +7,7 @@
 # Required env vars (set in .env or shell):
 #   CODEBASE_REPO_PATH — path to the codebase repo on the host
 #   CODEBASE_GIT_BRANCH — branch to pull (default: master)
+#   CODEBASE_GIT_REMOTE — git remote host for DNS check (optional, for network resilience)
 
 set -euo pipefail
 
@@ -27,12 +28,35 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 log "Starting nightly sync"
 
+# Wait for DNS to be ready (cron may run before network is fully up)
+if [[ -n "${CODEBASE_GIT_REMOTE:-}" ]]; then
+    for i in $(seq 1 10); do
+        if getent hosts "$CODEBASE_GIT_REMOTE" >/dev/null 2>&1; then
+            break
+        fi
+        log "DNS not ready, retrying ($i/10)..."
+        sleep 30
+    done
+fi
+
 # Step 1: Git pull ONLY — verify we're only running 'git pull', nothing else
 log "Pulling latest from origin/${GIT_BRANCH}..."
 cd "$REPO_PATH"
 
 # Explicitly only run git pull. No checkout, reset, merge, push, rebase, etc.
-git pull --ff-only origin "$GIT_BRANCH" 2>&1
+# Retry up to 3 times in case of transient network issues
+for attempt in 1 2 3; do
+    if git pull --ff-only origin "$GIT_BRANCH" 2>&1; then
+        break
+    fi
+    if [[ $attempt -lt 3 ]]; then
+        log "Git pull failed (attempt $attempt/3), retrying in 60s..."
+        sleep 60
+    else
+        log "Git pull failed after 3 attempts, skipping reindex"
+        exit 1
+    fi
+done
 
 log "Git pull complete"
 
