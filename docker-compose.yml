@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:16
     container_name: oncall-postgres
+    restart: unless-stopped
     ports:
       - "5433:5432"
     environment:
@@ -24,6 +25,7 @@ services:
   redis:
     image: redis:7
     container_name: oncall-redis
+    restart: unless-stopped
     ports:
       - "6380:6379"
     volumes:
@@ -39,10 +41,41 @@ services:
       timeout: 5s
       retries: 5
 
+  neo4j:
+    image: neo4j:5
+    container_name: oncall-neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/password
+    volumes:
+      - neo4j_data:/data
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  t2v-transformers:
+    image: semitechnologies/transformers-inference:sentence-transformers-all-MiniLM-L6-v2
+    container_name: oncall-t2v-transformers
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
   weaviate:
     image: semitechnologies/weaviate:latest
     container_name: oncall-weaviate
     restart: unless-stopped
+    depends_on:
+      - t2v-transformers
     ports:
       - "8080:8080"
     environment:
@@ -79,6 +112,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      weaviate:
         condition: service_healthy
     env_file:
       - .env
@@ -125,6 +160,7 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     container_name: oncall-celery-worker
+    restart: unless-stopped
     depends_on:
       redis:
         condition: service_healthy
