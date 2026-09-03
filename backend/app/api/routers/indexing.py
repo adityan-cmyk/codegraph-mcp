@@ -1,5 +1,6 @@
 import asyncio
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel
 from app.rag.indexing_service import IndexingSecurityError, index_rust_repository, replay_indexes_from_storage, semantic_rebuild_is_in_progress, reindex_semantic_only
 from app.rag.ingestion.git_ingestor import ingest_incremental, get_last_indexed_commit, get_current_head
 from app.rag.retrieval.graph import graph_index
@@ -8,6 +9,19 @@ from app.schemas.codebase import GraphQueryResponse, IndexRepositoryRequest, Ind
 
 
 router = APIRouter(prefix="/api/index", tags=["indexing"])
+
+
+class NightlySyncFailure(BaseModel):
+    stage: str
+    error: str
+    detail: str = ""
+
+
+@router.post("/notify/nightly-sync-failed")
+def notify_nightly_sync_failed(payload: NightlySyncFailure) -> dict:
+    from app.core.notifications import notify_nightly_sync_failed
+    notify_nightly_sync_failed(payload.stage, payload.error, payload.detail)
+    return {"notified": True}
 
 
 @router.post("/repository", response_model=IndexingResult)

@@ -71,6 +71,16 @@ class Settings(BaseSettings):
 
     # Auth
     api_auth_token: str | None = None
+    mcp_auth_token: str | None = None
+
+    # SMTP notifications
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_to: list[str] = Field(default_factory=list)
+    smtp_use_tls: bool = True
 
     # Outbound integration timeouts
     model_connect_timeout: int = 10

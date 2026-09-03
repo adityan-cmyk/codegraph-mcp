@@ -45,15 +45,20 @@ cd "$REPO_PATH"
 
 # Explicitly only run git pull. No checkout, reset, merge, push, rebase, etc.
 # Retry up to 3 times in case of transient network issues
+GIT_PULL_ERROR=""
 for attempt in 1 2 3; do
-    if git pull --ff-only origin "$GIT_BRANCH" 2>&1; then
+    if GIT_PULL_ERROR=$(git pull --ff-only origin "$GIT_BRANCH" 2>&1); then
+        echo "$GIT_PULL_ERROR"
         break
     fi
     if [[ $attempt -lt 3 ]]; then
         log "Git pull failed (attempt $attempt/3), retrying in 60s..."
         sleep 60
     else
-        log "Git pull failed after 3 attempts, skipping reindex"
+        log "Git pull failed after 3 attempts: $GIT_PULL_ERROR"
+        curl -s -X POST "$API_URL/api/index/notify/nightly-sync-failed" \
+            -H "Content-Type: application/json" \
+            -d "{\"stage\": \"git_pull\", \"error\": \"$(echo "$GIT_PULL_ERROR" | head -c 500 | sed 's/"/\\"/g' | tr '\n' ' ')\"}" || true
         exit 1
     fi
 done
