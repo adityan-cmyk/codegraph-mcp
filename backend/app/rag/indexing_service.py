@@ -346,6 +346,12 @@ def _extract_type_references_with_modes(chunk: CodeChunk, name_index: dict[str, 
 
 
 def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool = False) -> dict[str, int]:
+    import time as _time
+    _build_start = _time.time()
+
+    from app.core.notifications import notify_build_started
+    notify_build_started("graph+semantic", total_symbols=len(snapshot.chunks))
+
     _start_semantic_rebuild_background(snapshot, force=force)
 
     from app.rag.retrieval.graph import _build_graph_index, _get_current_gen, graph_index
@@ -435,6 +441,15 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
             )
         except Exception:
             logger.warning("Failed to register build completion", exc_info=True)
+
+    from app.core.notifications import notify_build_completed
+    notify_build_completed(
+        "graph+semantic",
+        graph_nodes=new_stats["graph_nodes"],
+        graph_edges=new_stats["graph_edges"],
+        semantic_documents=len(snapshot.chunks),
+        duration_sec=_time.time() - _build_start,
+    )
 
     return new_stats
 

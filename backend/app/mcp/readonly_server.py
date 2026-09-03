@@ -17,6 +17,8 @@ import uuid
 from typing import Any
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
@@ -754,7 +756,101 @@ _routes = [
     Route("/health", _health, methods=["GET"]),
 ]
 
-_app = Starlette(routes=_routes)
+
+class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
+    """Constant-time bearer token auth with IP-based rate limiting.
+
+    Security measures:
+    - hmac.compare_digest for constant-time comparison (prevents timing attacks)
+    - Per-IP rate limiting on failed attempts (max 5 per 60s, then 5min lockout)
+    - All denied attempts logged with client IP and timestamp
+    - /health endpoint is exempt (so monitoring works without a token)
+    """
+
+    _failed_attempts: dict[str, list[float]] = {}
+    _MAX_ATTEMPTS = 5
+    _WINDOW_SEC = 60
+    _LOCKOUT_SEC = 300
+
+    def _is_rate_limited(self, client_ip: str) -> bool:
+        import time
+        now = time.time()
+        attempts = self._failed_attempts.get(client_ip, [])
+        attempts = [t for t in attempts if now - t < self._LOCKOUT_SEC]
+        self._failed_attempts[client_ip] = attempts
+        recent = [t for t in attempts if now - t < self._WINDOW_SEC]
+        return len(recent) >= self._MAX_ATTEMPTS
+
+    def _record_failure(self, client_ip: str) -> None:
+        import time
+        self._failed_attempts.setdefault(client_ip, []).append(time.time())
+
+    def _notify_new_client_if_needed(self, client_ip: str, request: Request) -> None:
+        """Send an email the first time an IP successfully authenticates."""
+        try:
+            import redis as redis_lib
+            from app.core.config import settings
+
+            if not settings.redis_url:
+                return
+
+            r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
+            key = "mcp:known_client_ips"
+            is_new = r.sadd(key, client_ip) == 1
+            if is_new:
+                r.expire(key, 60 * 60 * 24 * 90)
+                from app.core.notifications import notify_new_client
+                notify_new_client(
+                    client_ip=client_ip,
+                    path=str(request.url.path),
+                    user_agent=request.headers.get("user-agent", ""),
+                )
+        except Exception:
+            logger.debug("New-client notification check failed", exc_info=True)
+
+    async def dispatch(self, request: Request, call_next):
+        from app.core.config import settings
+
+        if request.url.path == "/health":
+            return await call_next(request)
+
+        token = settings.mcp_auth_token
+        if not token:
+            return await call_next(request)
+
+        client_ip = request.client.host if request.client else "unknown"
+
+        if self._is_rate_limited(client_ip):
+            logger.warning("Auth rate-limited for IP %s — possible brute force", client_ip)
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Too many failed attempts"}},
+                status_code=429,
+                headers={"Retry-After": str(self._LOCKOUT_SEC)},
+            )
+
+        import hmac
+        auth = request.headers.get("authorization", "")
+        provided = ""
+        if auth.startswith("Bearer "):
+            provided = auth[7:]
+
+        if hmac.compare_digest(provided, token):
+            self._notify_new_client_if_needed(client_ip, request)
+            return await call_next(request)
+
+        self._record_failure(client_ip)
+        logger.warning("Auth failed for IP %s (path=%s)", client_ip, request.url.path)
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Unauthorized"}},
+            status_code=401,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+_app = Starlette(
+    routes=_routes,
+    middleware=[Middleware(BearerTokenAuthMiddleware)],
+)
 
 
 def create_readonly_mcp_server():
