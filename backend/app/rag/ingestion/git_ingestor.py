@@ -146,12 +146,39 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
         len(directly_changed), len(changed), len(deleted), last_commit[:8], head_commit[:8],
     )
 
-    if changed:
-        result = incremental_update_symbols(changed, repository_path)
-        logger.info(
-            "Incremental reindex complete: %d symbols, %d edges",
-            result.symbols_indexed, result.graph_edges,
-        )
+    from app.core.notifications import notify_build_started, notify_build_completed, notify_build_failed
+    import time as _time
+    _start = _time.time()
+
+    notify_build_started(
+        "incremental",
+        total_symbols=len(changed) * 15,  # rough estimate: ~15 symbols per file
+        from_commit=last_commit,
+        to_commit=head_commit,
+        files_changed=len(directly_changed),
+        trigger="nightly_sync",
+    )
+
+    try:
+        if changed:
+            result = incremental_update_symbols(changed, repository_path)
+            logger.info(
+                "Incremental reindex complete: %d symbols, %d edges",
+                result.symbols_indexed, result.graph_edges,
+            )
+            notify_build_completed(
+                "incremental",
+                graph_nodes=result.graph_nodes,
+                graph_edges=result.graph_edges,
+                semantic_documents=result.symbols_indexed,
+                duration_sec=_time.time() - _start,
+                from_commit=last_commit,
+                to_commit=head_commit,
+                trigger="nightly_sync",
+            )
+    except Exception as exc:
+        notify_build_failed("incremental", str(exc), trigger="nightly_sync")
+        raise
 
     for deleted_file in deleted:
         _remove_file_chunks(deleted_file)
