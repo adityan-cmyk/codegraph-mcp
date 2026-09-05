@@ -17,12 +17,6 @@ _STYLE = """
   .card { background: #ffffff; border-radius: 8px; padding: 24px; max-width: 680px; margin: 0 auto;
           box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
   h2 { margin: 0 0 20px 0; font-size: 18px; color: #16213e; border-bottom: 2px solid #0f3460; padding-bottom: 8px; }
-  .stats { display: table; width: 100%; border-spacing: 8px 0; margin: 0 -8px 20px -8px; }
-  .stat { display: table-cell; width: 25%; background: #f8f9fb; border-radius: 8px; padding: 14px 10px;
-          text-align: center; border-top: 3px solid #0f3460; }
-  .stat .num { font-size: 22px; font-weight: 700; color: #0f3460; line-height: 1.2; }
-  .stat .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: #8b8fa3; margin-top: 4px; }
-  .stat .trend { font-size: 11px; margin-top: 4px; }
   .trend-up { color: #059669; } .trend-down { color: #dc2626; } .trend-flat { color: #8b8fa3; }
   table { border-collapse: collapse; width: 100%; margin: 12px 0 20px 0; }
   th { text-align: left; background: #0f3460; color: #ffffff; padding: 8px 12px; font-size: 13px; }
@@ -65,25 +59,38 @@ def _badge(trigger: str) -> str:
 
 
 def _trend(current: float, previous: float | None, higher_is_good: bool = True) -> str:
-    """Small trend indicator comparing to previous value."""
-    if previous is None or previous == 0:
+    """Small trend indicator comparing to previous value.
+
+    Guards against nonsense percentages: skips when either value is too
+    small to be a real build (test runs, fresh installs). Changes under
+    100% show as a percentage; larger ones show as a multiplier (2.1x).
+    """
+    if previous is None or previous < 50 or current < 50:
         return ""
     pct = (current - previous) / previous * 100
     if abs(pct) < 1:
-        return f"<div class='trend trend-flat'>&#8212; flat</div>"
+        return "<div class='trend trend-flat'>&#8212; flat</div>"
     arrow = "&#9650;" if pct > 0 else "&#9660;"
     cls = "trend-up" if (pct > 0) == higher_is_good else "trend-down"
+    if abs(pct) >= 100:
+        mult = current / previous if pct > 0 else previous / current
+        return f"<div class='trend {cls}'>{arrow} {mult:.1f}x</div>"
     return f"<div class='trend {cls}'>{arrow} {abs(pct):.0f}%</div>"
 
 
 def _stat_cards(cards: list[dict]) -> str:
-    """Row of stat cards: [{'num': '9,009', 'label': 'nodes', 'trend_html': '...'}, ...]"""
+    """Row of stat cards using a real HTML table — the only layout Gmail
+    renders reliably. All cards get equal height via a fixed-height trend cell."""
     cells = "".join(
-        f"<div class='stat'><div class='num'>{c['num']}</div>"
-        f"<div class='label'>{c['label']}</div>{c.get('trend_html', '')}</div>"
+        f"<td width='25%' style='background:#f8f9fb;border-radius:8px;padding:14px 10px;"
+        f"text-align:center;border-top:3px solid #0f3460;vertical-align:top;'>"
+        f"<div style='font-size:22px;font-weight:700;color:#0f3460;line-height:1.2;'>{c['num']}</div>"
+        f"<div style='font-size:10px;text-transform:uppercase;letter-spacing:0.8px;color:#8b8fa3;margin-top:4px;'>{c['label']}</div>"
+        f"<div style='font-size:11px;margin-top:4px;height:16px;line-height:16px;'>{c.get('trend_html', '')}</div>"
+        f"</td>"
         for c in cards
     )
-    return f"<div class='stats'>{cells}</div>"
+    return f"<table role='presentation' width='100%' cellpadding='0' cellspacing='8' style='border-spacing:8px 0;margin-bottom:20px;'><tr>{cells}</tr></table>"
 
 
 def _html(subject: str, body_html: str) -> str:
@@ -102,8 +109,17 @@ def _kv_table(rows: list[tuple[str, str]]) -> str:
     return f"<table><tr><th style='width:35%'>Field</th><th>Value</th></tr>{cells}</table>"
 
 
+def _in_tests() -> bool:
+    """True when running under pytest — never send emails or pollute stats from tests."""
+    import os
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
 def send_email(subject: str, body_html: str, retries: int = 3, retry_delay: float = 30.0) -> bool:
     """Send an HTML email with retries for transient DNS/network failures."""
+    if _in_tests():
+        logger.debug("Skipping notification during tests: %s", subject)
+        return False
     if not _smtp_configured():
         logger.debug("SMTP not configured, skipping notification: %s", subject)
         return False
@@ -181,6 +197,8 @@ def _estimate_completion(total_symbols: int) -> str:
 
 
 def _record_build_duration(total_symbols: int, duration_sec: float) -> None:
+    if _in_tests():
+        return
     try:
         import json
         import time
@@ -238,6 +256,8 @@ def _get_previous_build_stats() -> dict:
 
 
 def _save_build_stats(stats: dict) -> None:
+    if _in_tests():
+        return
     try:
         import json
         import redis as redis_lib
@@ -338,8 +358,9 @@ def notify_build_completed(
         "duration": duration_sec,
     })
 
+    files_part = f", {len(changed_files)} files" if changed_files else ""
     send_email(
-        subject=f"[codegraph] {build_type} build done — {graph_nodes:,} nodes, {len(changed_files or [])} files"
+        subject=f"[codegraph] {build_type} build done — {graph_nodes:,} nodes{files_part}"
                 + (f" ({_fmt_duration(duration_sec)})" if duration_sec else ""),
         body_html="".join(html_parts),
     )
