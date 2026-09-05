@@ -147,8 +147,39 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
     )
 
     from app.core.notifications import notify_build_started, notify_build_completed, notify_build_failed
+    import subprocess as _sp
     import time as _time
     _start = _time.time()
+
+    def _git_log_messages() -> list[str]:
+        try:
+            repo_path = resolve_repository_path(repository_path)
+            out = _sp.run(
+                ["git", "log", "--oneline", f"{last_commit}..{head_commit}"],
+                cwd=repo_path, capture_output=True, text=True, timeout=30, check=False,
+            )
+            return [l.strip() for l in out.stdout.splitlines() if l.strip()][:30]
+        except Exception:
+            return []
+
+    def _high_impact_symbols() -> list[dict]:
+        """Find changed symbols with the most callers — these matter most for PR review."""
+        try:
+            from app.rag.retrieval.graph import graph_index
+            snapshot = index_metadata_store.load_snapshot()
+            if snapshot is None:
+                return []
+            changed_set = set(directly_changed)
+            impacted = []
+            for chunk in snapshot.chunks:
+                if chunk.file_path in changed_set:
+                    nb = graph_index.get_blast_radius(chunk.symbol_id)
+                    callers = len(nb.upstream) + len(nb.used_by)
+                    if callers >= 5:
+                        impacted.append({"symbol_id": chunk.symbol_id, "callers": callers})
+            return sorted(impacted, key=lambda s: -s["callers"])
+        except Exception:
+            return []
 
     notify_build_started(
         "incremental",
@@ -175,6 +206,9 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
                 from_commit=last_commit,
                 to_commit=head_commit,
                 trigger="nightly_sync",
+                commit_messages=_git_log_messages(),
+                changed_files=directly_changed,
+                high_impact_symbols=_high_impact_symbols(),
             )
     except Exception as exc:
         notify_build_failed("incremental", str(exc), trigger="nightly_sync")
