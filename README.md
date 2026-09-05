@@ -1,6 +1,8 @@
-# On-Call Assistant
+# codegraph-mcp
 
-AI-powered incident triage system with semantic code search, graph-based dependency analysis, root cause detection, and a reinforcement loop that improves search quality from AI agent feedback — for Rust codebases.
+A stateless, read-only **MCP server** for code dependency graph analysis of Rust codebases — blast radius, semantic search, PR diff analysis, and a reinforcement loop that improves search quality from AI agent feedback.
+
+> **Note:** the full on-call assistant (incident lifecycle, LLM agent, chat, eval suites) lives on the [`oncall-assistant`](../../tree/oncall-assistant) branch. This branch is the MCP server only.
 
 ---
 
@@ -28,9 +30,9 @@ AI-powered incident triage system with semantic code search, graph-based depende
 
 | Service | Purpose | Port |
 |---|---|---|
-| `backend` | FastAPI + Starlette MCP server + static frontend | 8000, 8002 |
-| `postgres` | Snapshots, AI feedback, build registry, event sourcing | 5433 |
-| `redis` | Celery broker | 6380 |
+| `backend` | FastAPI API + stateless MCP server | 8000, 8002 |
+| `postgres` | Snapshots, AI feedback, build registry | 5433 |
+| `redis` | Rate limiting, build stats, known-client tracking | 6380 |
 | `neo4j` | Code dependency graph (generation-tagged, zero-downtime rebuild) | 7474/7687 |
 | `weaviate` | Vector search (shadow collections, zero-downtime rebuild) | 8080 |
 | `t2v-transformers` | sentence-transformers BAAI/bge-base-en-v1.5 | 8081 |
@@ -42,9 +44,8 @@ AI-powered incident triage system with semantic code search, graph-based depende
 ### 1. Configure `.env`
 
 ```bash
-LITELLM_BASE_URL=https://your-litellm-endpoint/v1
-LITELLM_API_KEY=sk-your-key
-LITELLM_MODEL=glm-latest
+CODEBASE_REPO_PATH=/path/to/your/rust/codebase
+CODEBASE_GIT_BRANCH=master
 CODEBASE_ROOT_PATH=/repos/codebase
 INDEX_REPLAY_ON_STARTUP=true
 SEMANTIC_INDEX_BACKEND=weaviate
@@ -53,31 +54,24 @@ INDEX_METADATA_BACKEND=postgres
 POSTGRES_DSN=postgresql://oncall:oncall@localhost:5433/oncall
 WEAVIATE_URL=http://localhost:8080
 NEO4J_URI=bolt://localhost:7687
+MCP_AUTH_TOKEN=your-secret-token
+SMTP_HOST=smtp.gmail.com
+SMTP_USER=you@gmail.com
+SMTP_PASSWORD=your-app-password
+SMTP_TO=["you@gmail.com"]
 ```
 
-### 2. Start DB services
+### 2. Start everything
 
 ```bash
-docker compose -f docker-compose.db.yml up -d
+docker compose up -d
 ```
 
-### 3. Start backend
+### 3. Access
 
-```bash
-docker compose up -d backend
-```
-
-### 4. Access
-
-- UI: `http://localhost:8000`
+- API health: `http://localhost:8000/health`
 - MCP endpoint: `http://<host-ip>:8002/mcp`
 - MCP tool directory: `http://<host-ip>:8002/` (GET)
-
-SSH port forward:
-
-```bash
-ssh -L 8000:localhost:8000 -L 8002:localhost:8002 your-server
-```
 
 ---
 
@@ -550,25 +544,15 @@ curl -X POST http://localhost:8000/api/index/semantic/rebuild
 - `GET /api/graph/has/{symbol_id}` — Check if symbol exists
 
 ### Feedback & Reinforcement
-- `POST /api/feedback/ai` — Submit AI agent feedback
-- `POST /api/feedback/simple` — Submit simple per-symbol feedback
-- `POST /api/feedback/evaluate` — Run quality gating
-- `GET /api/feedback/ai/stats` — Feedback statistics
-- `GET /api/feedback/reinforcement/stats` — Reinforcement learning stats
-- `GET /api/feedback/build/stats` — Build registry stats
-- `GET /api/feedback/build/history` — Build history
-- `POST /api/feedback/build/rollback` — Rollback to previous build
-
-### Chat
-- `POST /api/model/chat` — RAG-enabled chat with codebase context
-
-### Incidents
-- `POST /api/incidents/` — Create incident session
-- `GET /api/incidents/` — List all incidents
-- `GET /api/incidents/{session_id}` — Get incident details
-- `POST /api/incidents/{session_id}/state` — Transition state
-- `POST /api/incidents/{session_id}/analyze` — Run analysis
-- `WS /ws/incident/{session_id}` — WebSocket incident room
+ - `POST /api/feedback/ai` — Submit AI agent feedback
+ - `POST /api/feedback/simple` — Submit simple per-symbol feedback
+ - `POST /api/feedback/evaluate` — Run quality gating
+ - `GET /api/feedback/ai/stats` — Feedback statistics
+ - `GET /api/feedback/reinforcement/stats` — Reinforcement learning stats
+ - `GET /api/feedback/build/stats` — Build registry stats
+ - `GET /api/feedback/build/history` — Build history
+ - `POST /api/feedback/build/rollback` — Rollback to previous build
+ - `POST /api/index/notify/nightly-sync-failed` — Send nightly-sync failure notification
 
 ### MCP (stateless, port 8002)
 - `POST /mcp` — MCP JSON-RPC (initialize, tools/list, tools/call, ping)
@@ -634,7 +618,7 @@ Rate limits are enforced by `RateLimitMiddleware` with sliding 60-second windows
 | Route class | Limit | Examples |
 |---|---|---|
 | Index/admin | 5 req/min | `/api/index/repository`, `/api/index/semantic/rebuild`, `/api/index/replay` |
-| Mutation | 20 req/min | `/api/incidents`, `/api/model/chat` |
+| Mutation | 20 req/min | `/api/feedback` |
 | Default | 100 req/min | All other routes |
 
 Responses include `X-RateLimit-Remaining` header. 429 responses include `Retry-After`.
@@ -651,17 +635,13 @@ All logs are emitted as JSON with trace IDs. The `TraceIdMiddleware` adds a `X-T
 {"timestamp": "2026-07-27T...", "level": "INFO", "trace_id": "abc-123", "message": "..."}
 ```
 
-### Model Provider Abstraction
-
-The `model_provider.py` module provides a unified interface for LLM calls (`ModelClient` protocol). The default implementation is `LiteLLMModelClient`, which wraps LiteLLM with configurable timeouts and retries. This allows swapping the model provider without touching business logic.
-
 ### Health & Readiness
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | Liveness probe — process is running |
-| `GET /ready` | Readiness probe — all backends reachable, model available |
-| `GET /api/health` | Detailed health: per-backend status (postgres, redis, weaviate, neo4j, model) |
+| `GET /ready` | Readiness probe — all backends reachable |
+| `GET /api/health` | Detailed health: per-backend status (postgres, redis, weaviate, neo4j) |
 
 ### Outbound Timeouts & Retries
 
@@ -681,7 +661,6 @@ ADRs are in `docs/adr/000-architecture-decisions.md`, covering:
 - Zero-downtime rebuilds (Weaviate shadow collections, Neo4j gen tagging)
 - Reranking refresh strategy (incremental at 5, full rebuild at 10)
 - Quality gating for AI feedback (score > 0.5 threshold)
-- Model provider abstraction
 - Hash-pinned dependencies
 
 ---
@@ -701,12 +680,11 @@ ADRs are in `docs/adr/000-architecture-decisions.md`, covering:
 | `NEO4J_URI` | `bolt://localhost:7687` | Neo4j bolt URI |
 | `READONLY_MCP_HOST` | `0.0.0.0` | MCP server bind host |
 | `READONLY_MCP_PORT` | `8002` | MCP server port |
-| `LITELLM_BASE_URL` | — | LiteLLM endpoint URL |
-| `LITELLM_API_KEY` | — | LiteLLM API key |
-| `LITELLM_MODEL` | `glm-latest` | Model name |
+| `MCP_AUTH_TOKEN` | — | Bearer token for MCP auth (empty = no auth) |
 | `API_AUTH_TOKEN` | — | Bearer token for API auth (empty = no auth) |
 | `TRUSTED_HOSTS` | `["localhost","127.0.0.1","testserver"]` | Allowed host headers |
 | `CORS_ALLOWED_ORIGINS` | `["http://localhost:8000"]` | CORS allowed origins |
+| `SMTP_HOST` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_TO` | — | Email notifications (empty = disabled) |
 | `OUTBOUND_TIMEOUT_SECONDS` | `30` | Timeout for outbound HTTP calls |
 | `OUTBOUND_RETRY_COUNT` | `3` | Retry attempts for transient failures |
 | `SEMANTIC_SEARCH_TIMEOUT_SECONDS` | `30` | Weaviate query timeout before fallback |
