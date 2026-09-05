@@ -41,15 +41,37 @@ def _trigger_rebuild(feedback_entries: list[dict]) -> None:
         feedback_ids = [f["feedback_id"] for f in feedback_entries]
         logger.info("Auto-triggering rebuild with %d feedback entries: %s", len(feedback_ids), feedback_ids)
 
+        from app.core.notifications import notify_build_started, notify_build_completed, notify_build_failed
+        notify_build_started(
+            "semantic-rebuild",
+            total_symbols=len(feedback_entries) * 100,  # rough proxy
+            trigger="reinforcement_autobuild",
+        )
+
+        import time as _time
+        _start = _time.time()
+
         from app.rag.indexing_service import reindex_semantic_only
-        reindex_semantic_only()
+        result = reindex_semantic_only()
+
+        if result is not None:
+            notify_build_completed(
+                "semantic-rebuild",
+                graph_nodes=result.graph_nodes,
+                graph_edges=result.graph_edges,
+                semantic_documents=result.symbols_indexed,
+                duration_sec=_time.time() - _start,
+                trigger="reinforcement_autobuild",
+            )
 
         from app.rag.reinforcement import build_registry
         active = build_registry.get_active_build()
         if active:
             ai_feedback_store.mark_feedback_consumed(feedback_ids, active["build_id"])
             logger.info("Marked %d feedback entries as consumed by build %s", len(feedback_ids), active["build_id"])
-    except Exception:
+    except Exception as exc:
+        from app.core.notifications import notify_build_failed
+        notify_build_failed("semantic-rebuild", str(exc), trigger="reinforcement_autobuild")
         logger.exception("Auto-triggered rebuild failed")
     finally:
         _REBUILD_LOCK.release()

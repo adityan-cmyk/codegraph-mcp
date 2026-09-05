@@ -140,6 +140,16 @@ def _short(commit: str | None) -> str:
     return f"<code>{commit[:12]}</code>" if commit else "unknown"
 
 
+def _commit_range(from_commit: str | None, to_commit: str | None) -> str:
+    """Single-line inline commit range: old → new (no wrapping/stacking)."""
+    old = from_commit[:12] if from_commit else "unknown"
+    new = to_commit[:12] if to_commit else "unknown"
+    return (
+        f"<span style='white-space:nowrap;font-family:Consolas,monospace;font-size:12px'>"
+        f"{old} <span style='color:#0f3460;font-weight:700'>&rarr;</span> {new}</span>"
+    )
+
+
 def _fmt_duration(sec: float) -> str:
     if sec > 3600:
         return f"{sec / 3600:.1f} hours"
@@ -206,7 +216,7 @@ def notify_build_started(
         ("Trigger", _badge(trigger)),
     ]
     if from_commit or to_commit:
-        rows.append(("Commit range", f"{_short(from_commit)} &rarr; {_short(to_commit)}"))
+        rows.append(("Commit range", _commit_range(from_commit, to_commit)))
     rows.append(("Estimated completion", _estimate_completion(total_symbols)))
 
     send_email(
@@ -272,7 +282,7 @@ def notify_build_completed(
         _kv_table([
             ("Build type", f"<b>{build_type}</b>"),
             ("Trigger", _badge(trigger)),
-        ] + ([("Commit range", f"{_short(from_commit)} &rarr; {_short(to_commit)}")] if from_commit or to_commit else [])),
+        ] + ([("Commit range", _commit_range(from_commit, to_commit))] if from_commit or to_commit else [])),
     ]
 
     # Commits merged

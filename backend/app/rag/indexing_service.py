@@ -471,6 +471,8 @@ def _wait_for_weaviate_ready() -> None:
 
 def _rebuild_semantic_index(snapshot: IndexSnapshot, *, force: bool = False) -> None:
     global _semantic_rebuild_in_progress
+    import time as _time
+    _start = _time.time()
     try:
         _wait_for_weaviate_ready()
         if not force:
@@ -491,7 +493,19 @@ def _rebuild_semantic_index(snapshot: IndexSnapshot, *, force: bool = False) -> 
             if force:
                 semantic_index.reset_documents()
             semantic_index.upsert_chunks(snapshot.chunks)
-    except Exception:
+
+        from app.core.notifications import notify_build_completed
+        notify_build_completed(
+            "semantic",
+            graph_nodes=graph_index.get_stats()["graph_nodes"],
+            graph_edges=graph_index.get_stats()["graph_edges"],
+            semantic_documents=len(snapshot.chunks),
+            duration_sec=_time.time() - _start,
+            trigger="semantic_rebuild",
+        )
+    except Exception as exc:
+        from app.core.notifications import notify_build_failed
+        notify_build_failed("semantic", str(exc), trigger="semantic_rebuild")
         logger.exception("Semantic index rebuild failed")
     finally:
         with _semantic_rebuild_lock:
