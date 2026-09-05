@@ -26,12 +26,9 @@ def _split_csv(value: str | list[str] | None) -> list[str]:
 
 
 class Settings(BaseSettings):
-    app_name: str = "On-call Assistant"
+    app_name: str = "Codegraph MCP"
     environment: str = "local"
-    incident_store_backend: str = "memory"
     index_metadata_backend: str = "memory"
-    resolved_error_backend: str = "memory"
-    eval_case_backend: str = "memory"
     semantic_index_backend: str = "memory"
     graph_index_backend: str = "memory"
     index_replay_on_startup: bool = True
@@ -39,16 +36,11 @@ class Settings(BaseSettings):
     codebase_root_path: str | None = None
     indexing_allowed_roots: list[str] = Field(default_factory=lambda: [str(ROOT_DIR)])
     redis_url: str = "redis://localhost:6379/0"
-    celery_task_always_eager: bool = False
     weaviate_url: str = "http://localhost:8080"
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_username: str = "neo4j"
     neo4j_password: str = "password"
     postgres_dsn: str = "postgresql://localhost/oncall"
-    litellm_api_key: str | None = None
-    litellm_base_url: str | None = None
-    litellm_model: str = "glm-latest"
-    litellm_embedding_model: str = "gemini-embedding-001"
     readonly_mcp_transport: Literal["stdio", "http", "streamable-http", "sse"] = "streamable-http"
     readonly_mcp_host: str = "0.0.0.0"
     readonly_mcp_port: int = 8002

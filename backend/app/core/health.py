@@ -13,7 +13,7 @@ class BackendHealthResult:
 
 
 def check_postgres() -> BackendHealthResult:
-    if settings.incident_store_backend != "postgres":
+    if settings.index_metadata_backend != "postgres":
         return BackendHealthResult(backend="postgres", status="disabled", detail="Not configured as active backend")
     try:
         import psycopg
@@ -113,30 +113,11 @@ def check_all_backends() -> dict[str, Any]:
     }
 
 
-def check_model() -> BackendHealthResult:
-    try:
-        import httpx
-        from app.core.config import settings
-        if not settings.litellm_base_url:
-            return BackendHealthResult(backend="model", status="disabled", detail="No LITELLM_BASE_URL configured")
-        with httpx.Client(timeout=5.0) as client:
-            resp = client.get(
-                f"{settings.litellm_base_url}/models",
-                headers={"Authorization": f"Bearer {settings.litellm_api_key}"} if settings.litellm_api_key else {},
-            )
-            if resp.status_code == 200:
-                return BackendHealthResult(backend="model", status="healthy")
-            return BackendHealthResult(backend="model", status="unhealthy", detail=f"Model API returned {resp.status_code}")
-    except Exception as exc:
-        return BackendHealthResult(backend="model", status="unhealthy", detail=str(exc))
-
-
 def check_readiness() -> dict[str, Any]:
     checks = [
         check_postgres(),
         check_weaviate(),
         check_neo4j(),
-        check_model(),
     ]
 
     results = []
