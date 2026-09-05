@@ -797,8 +797,10 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
             r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
             key = "mcp:known_client_ips"
             is_new = r.sadd(key, client_ip) == 1
+            # Refresh TTL on every authenticated request so the set stays
+            # alive while in use — prevents mass re-notifications after expiry.
+            r.expire(key, 60 * 60 * 24 * 90)
             if is_new:
-                r.expire(key, 60 * 60 * 24 * 90)
                 from app.core.notifications import notify_new_client
                 notify_new_client(
                     client_ip=client_ip,

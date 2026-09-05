@@ -182,6 +182,7 @@ def _record_build_duration(total_symbols: int, duration_sec: float) -> None:
             "timestamp": time.time(),
         }))
         r.ltrim("build:duration_history", 0, 19)
+        r.expire("build:duration_history", 90 * 86400)  # 90 days, refreshed each build
     except Exception:
         logger.debug("Failed to record build duration", exc_info=True)
 
@@ -231,7 +232,7 @@ def _save_build_stats(stats: dict) -> None:
         import json
         import redis as redis_lib
         r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
-        r.set("build:last_stats", json.dumps(stats))
+        r.set("build:last_stats", json.dumps(stats), ex=90 * 86400)  # 90 days
     except Exception:
         pass
 
