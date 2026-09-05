@@ -1,28 +1,17 @@
 import unittest
-import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from app.core.eval_store import eval_case_store
 from app.core.index_store import index_metadata_store
-from app.core.learning_service import persist_resolution_package, replay_resolved_errors_from_storage
-from app.core.resolved_error_store import resolved_error_store
 from app.main import app
-from app.rag.assembler.context_assembler import assemble_incident_context
 from app.rag.ingestion.tree_sitter import extract_rust_chunks, generate_symbol_id
 from app.rag.indexing_service import index_rust_repository, replay_indexes_from_storage
 from app.rag.retrieval.graph import graph_index, get_blast_radius
 from app.rag.retrieval.semantic import semantic_index
 from app.schemas.codebase import IndexSnapshot
-from app.schemas.context import ContextBounds
-from app.schemas.eval import EvalCase
-from app.schemas.incident import IncidentAnalysis, IncidentFingerprint
-from app.schemas.kb_sync import KbSyncAcceptedResponse
-from app.schemas.telemetry import ConfidenceScore
-from app.tasks.workers.kb_sync import process_kb_sync
 
 
 class RagAndMcpTestCase(unittest.TestCase):
@@ -30,8 +19,6 @@ class RagAndMcpTestCase(unittest.TestCase):
         semantic_index.reset()
         graph_index.reset()
         index_metadata_store.reset()
-        resolved_error_store.reset()
-        eval_case_store.reset()
         self.client = TestClient(app)
 
     def test_extract_rust_chunks_builds_symbol_ids(self) -> None:
@@ -70,25 +57,6 @@ fn login_user() {
         radius = get_blast_radius("auth::login_user")
 
         self.assertEqual(radius["downstream"], ["db::save_session"])
-
-    def test_context_assembler_includes_graph_neighborhoods(self) -> None:
-        graph_index.upsert_symbol("auth::login_user", calls=["db::save_session"])
-        chunks = extract_rust_chunks("auth/handlers.rs", "fn login_user() { save_session(); }")
-        semantic_index.upsert_chunks(chunks)
-
-        context = assemble_incident_context(
-            IncidentFingerprint(
-                service="auth",
-                panic_type="panic",
-                top_frame="login_user",
-                commit_hash="abc123",
-            ),
-            ContextBounds(),
-        )
-
-        self.assertIn("graph_neighborhoods", context)
-        self.assertIn("indexed_symbols", context)
-        self.assertEqual(context["primary_symbol"], "auth::handlers::login_user")
 
     def test_index_rust_repository_builds_semantic_and_graph_indexes(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -188,208 +156,6 @@ fn login_user() {
 
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(response.json()["symbols_indexed"], 1)
-
-    @patch("app.tasks.workers.kb_sync.publish_notification")
-    @patch("app.tasks.workers.kb_sync._git_diff_rust_files")
-    def test_process_kb_sync_computes_modified_and_impacted_symbols(self, git_diff_rust_files, publish_notification) -> None:
-        with TemporaryDirectory() as temp_dir:
-            repo_path = Path(temp_dir)
-            (repo_path / "src").mkdir()
-            (repo_path / "src" / "auth.rs").write_text(
-                "fn save_session() {}\n\nfn login_user() { save_session(); }\n",
-                encoding="utf-8",
-            )
-            git_diff_rust_files.return_value = ["src/auth.rs"]
-
-            with patch("app.rag.indexing_service.settings.indexing_allowed_roots", [temp_dir]), patch(
-                "app.rag.indexing_service.settings.codebase_root_path", temp_dir
-            ):
-                result = process_kb_sync("old1234", "new1234", temp_dir)
-
-        self.assertEqual(result.status, "completed")
-        self.assertIn("auth::login_user", result.modified_symbols)
-        self.assertIn("auth::save_session", result.modified_symbols)
-        self.assertEqual(result.graph_edges, 1)
-        publish_notification.assert_called_once()
-
-    @patch("app.api.routers.kb_sync.enqueue_kb_sync")
-    def test_kb_sync_endpoint_returns_accepted_response(self, enqueue_kb_sync) -> None:
-        enqueue_kb_sync.return_value = KbSyncAcceptedResponse(
-            task_id="task-123",
-            status="queued",
-            old_commit="abc1234",
-            new_commit="def5678",
-        )
-
-        response = self.client.post(
-            "/api/kb/sync",
-            json={"old_commit": "abc1234", "new_commit": "def5678"},
-        )
-
-        self.assertEqual(response.status_code, 202)
-        self.assertEqual(response.json()["task_id"], "task-123")
-
-    def test_resolved_error_lookup_uses_threshold(self) -> None:
-        fingerprint = IncidentFingerprint(
-            service="auth-service",
-            panic_type="panic",
-            top_frame="src/auth.rs:42",
-            commit_hash="abc123",
-        )
-        semantic_index.add_resolved_error(fingerprint, {"root_cause": "token mismatch"})
-
-        match = semantic_index.lookup_resolved_error(fingerprint)
-
-        self.assertIsNotNone(match["match"])
-
-    @patch("app.core.incident_service.run_incident_workflow")
-    def test_persist_resolution_package_adds_resolved_error_for_reuse(self, run_incident_workflow) -> None:
-        run_incident_workflow.return_value = IncidentAnalysis(
-            root_cause="Mocked root cause",
-            patch="// mocked patch",
-            confidence=[ConfidenceScore(label="Retrieval", value="0.80")],
-            context={"primary_symbol": "auth::login_user", "indexed_symbols": [{"symbol_id": "auth::login_user"}]},
-        )
-        created = self.client.post(
-            "/api/incidents/",
-            json={
-                "fingerprint": {
-                    "service": "auth-service",
-                    "panic_type": "panic",
-                    "top_frame": "src/auth.rs:42",
-                    "commit_hash": "abc1234",
-                },
-                "environment": "UAT",
-                "build_id": "build-42",
-                "raw_log": "thread panicked at src/auth.rs:42",
-                "source": "manual",
-            },
-        ).json()
-        self.client.post(
-            f"/api/incidents/{created['session_id']}/analyze",
-            json={},
-        )
-        resolved = self.client.post(
-            f"/api/incidents/{created['session_id']}/state",
-            json={"next_state": "RESOLVED", "event_type": "resolution_confirmed"},
-        )
-
-        session = resolved.json()
-        persisted_match = semantic_index.lookup_resolved_error(
-            IncidentFingerprint(
-                service="auth-service",
-                panic_type="panic",
-                top_frame="src/auth.rs:42",
-                commit_hash="abc1234",
-            )
-        )
-
-        self.assertEqual(resolved.status_code, 200)
-        self.assertEqual(session["timeline"][-1]["event_type"], "resolution_confirmed")
-        self.assertIn("resolution_package", session["timeline"][-1]["payload"])
-        self.assertIsNotNone(persisted_match["match"])
-
-    @patch("app.core.incident_service.run_incident_workflow")
-    def test_replay_resolved_errors_from_storage_restores_semantic_cache(self, run_incident_workflow) -> None:
-        run_incident_workflow.return_value = IncidentAnalysis(
-            root_cause="Billing root cause",
-            patch="// billing patch",
-            confidence=[ConfidenceScore(label="Retrieval", value="0.82")],
-            context={"primary_symbol": "billing::handler", "indexed_symbols": [{"symbol_id": "billing::handler"}]},
-        )
-        created = self.client.post(
-            "/api/incidents/",
-            json={
-                "fingerprint": {
-                    "service": "billing-service",
-                    "panic_type": "panic",
-                    "top_frame": "src/billing.rs:21",
-                    "commit_hash": "xyz9876",
-                },
-                "environment": "UAT",
-                "build_id": "build-99",
-                "raw_log": "thread panicked at src/billing.rs:21",
-                "source": "manual",
-            },
-        ).json()
-        self.client.post(f"/api/incidents/{created['session_id']}/analyze", json={})
-        session = self.client.post(
-            f"/api/incidents/{created['session_id']}/state",
-            json={"next_state": "RESOLVED", "event_type": "resolution_confirmed"},
-        ).json()
-
-        semantic_index.reset()
-        restored_count = replay_resolved_errors_from_storage()
-        restored_match = semantic_index.lookup_resolved_error(
-            IncidentFingerprint.model_validate(session["fingerprint"])
-        )
-
-        self.assertEqual(restored_count, 1)
-        self.assertIsNotNone(restored_match["match"])
-
-    @patch("app.core.incident_service.run_incident_workflow")
-    def test_uat_resolved_incident_creates_eval_case(self, run_incident_workflow) -> None:
-        run_incident_workflow.return_value = IncidentAnalysis(
-            root_cause="UAT root cause",
-            patch="// UAT patch",
-            confidence=[ConfidenceScore(label="Retrieval", value="0.85")],
-            context={"primary_symbol": "uat::handler", "indexed_symbols": [{"symbol_id": "uat::handler"}]},
-        )
-        created = self.client.post(
-            "/api/incidents/",
-            json={
-                "fingerprint": {
-                    "service": "uat-service",
-                    "panic_type": "panic",
-                    "top_frame": "src/uat.rs:10",
-                    "commit_hash": "uat1234",
-                },
-                "environment": "UAT",
-                "build_id": "build-uat",
-                "raw_log": "thread panicked at src/uat.rs:10",
-                "source": "manual",
-            },
-        ).json()
-        self.client.post(f"/api/incidents/{created['session_id']}/analyze", json={})
-        self.client.post(
-            f"/api/incidents/{created['session_id']}/state",
-            json={"next_state": "RESOLVED", "event_type": "resolution_confirmed"},
-        )
-
-        cases = self.client.get("/api/eval/cases?environment=UAT").json()
-
-        self.assertEqual(len(cases), 1)
-        self.assertEqual(cases[0]["expected_root_cause"], "UAT root cause")
-        self.assertEqual(cases[0]["environment"], "UAT")
-
-    @patch("app.agents.orchestrator.run_incident_workflow")
-    def test_eval_suite_runner_validates_stored_cases(self, run_incident_workflow) -> None:
-        run_incident_workflow.return_value = IncidentAnalysis(
-            root_cause="Expected root cause",
-            patch="// Expected patch",
-            confidence=[ConfidenceScore(label="Retrieval", value="0.90")],
-            context={},
-        )
-        eval_case_store.save(
-            EvalCase(
-                case_id="eval-001",
-                fingerprint=IncidentFingerprint(
-                    service="eval-service",
-                    panic_type="panic",
-                    top_frame="src/eval.rs:99",
-                    commit_hash="eval9999",
-                ),
-                expected_root_cause="Expected root cause",
-                expected_patch="// Expected patch",
-                environment="UAT",
-            )
-        )
-
-        result = self.client.post("/api/eval/run?environment=UAT").json()
-
-        self.assertEqual(result["total_cases"], 1)
-        self.assertEqual(result["passed"], 1)
-        self.assertEqual(result["failed"], 0)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,6 @@ from weaviate.classes.config import Configure, DataType, Property, Tokenization
 from weaviate.classes.query import MetadataQuery
 
 from app.schemas.codebase import CodeChunk, SemanticMatch
-from app.schemas.incident import ResolutionPackage
 
 logger = logging.getLogger(__name__)
 
@@ -122,20 +121,6 @@ class WeaviateSemanticIndex:
         if self._client is None:
             return
         self._create_code_chunk_collection(self._active_collection)
-
-        collections = self._client.collections.list_all()
-        if "ResolutionPackage" not in collections:
-            self._client.collections.create(
-                name="ResolutionPackage",
-                properties=[
-                    Property(name="fingerprint_key", data_type=DataType.TEXT),
-                    Property(name="root_cause", data_type=DataType.TEXT),
-                    Property(name="patch", data_type=DataType.TEXT),
-                    Property(name="service", data_type=DataType.TEXT),
-                    Property(name="panic_type", data_type=DataType.TEXT),
-                ],
-                vectorizer_config=Configure.Vectorizer.none(),
-            )
 
     # ---- zero-downtime rebuild ----
 
@@ -293,9 +278,8 @@ class WeaviateSemanticIndex:
             pass
 
     def reset(self) -> None:
-        """Reset all documents and resolved errors (test helper)."""
+        """Reset all documents (test helper)."""
         self.reset_documents()
-        self._resolved_errors: list[tuple[str, dict[str, object], list[float]]] = []
 
     def reset_documents(self) -> None:
         """Backward-compatible entry point — now uses shadow pattern."""
@@ -370,50 +354,13 @@ class WeaviateSemanticIndex:
             )
         return results
 
-    def add_resolution_package(self, package: ResolutionPackage) -> None:
-        collection = self._get_client().collections.get("ResolutionPackage")
-        collection.data.insert(
-            properties={
-                "fingerprint_key": package.fingerprint_key,
-                "root_cause": package.root_cause,
-                "patch": package.patch,
-                "service": package.fingerprint.service,
-                "panic_type": package.fingerprint.panic_type,
-            },
-            uuid=package.fingerprint_key.replace(":", "_"),
-        )
-
-    def query_resolutions(self, query: str, limit: int = 3) -> list[dict[str, str]]:
-        collection = self._get_client().collections.get("ResolutionPackage")
-        response = collection.query.near_vector(
-            near_vector=embed_text(query),
-            limit=limit,
-            return_metadata=MetadataQuery(distance=True),
-        )
-
-        results: list[dict[str, str]] = []
-        for obj in response.objects:
-            dist = obj.metadata.distance or 0.0
-            results.append(
-                {
-                    "fingerprint_key": obj.properties["fingerprint_key"],
-                    "root_cause": obj.properties["root_cause"],
-                    "patch": obj.properties["patch"],
-                    "match": f"{obj.properties['service']}::{obj.properties['panic_type']}",
-                    "score": str(max(0.0, 1.0 - dist)),
-                }
-            )
-        return results
-
     def get_stats(self) -> dict[str, int]:
         try:
             chunks = self._get_client().collections.get(self._active_collection)
-            resolutions = self._get_client().collections.get("ResolutionPackage")
             chunk_agg = chunks.aggregate.over_all()
-            resolution_agg = resolutions.aggregate.over_all()
             return {
                 "semantic_documents": chunk_agg.total_count if hasattr(chunk_agg, 'total_count') else 0,
-                "resolved_error_documents": resolution_agg.total_count if hasattr(resolution_agg, 'total_count') else 0,
+                "resolved_error_documents": 0,
             }
         except Exception:
             return {"semantic_documents": 0, "resolved_error_documents": 0}

@@ -1,5 +1,0 @@
-tools:
-  - name: run_cargo_test
-    when: validate_rust_patch
-  - name: get_git_blame
-    when: inspect_ownership
