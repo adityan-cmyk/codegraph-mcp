@@ -1,3 +1,33 @@
+# On-Call Assistant (Full Stack — Archive Branch)
+
+> **This is the `oncall-assistant` archive branch.** It preserves the complete product —
+> incident lifecycle, LLM patch-generation agent, chat, eval suites, Celery KB-sync,
+> websockets, and resolution memory — everything that was removed when `main` was
+> stripped down to an MCP-only server.
+>
+> **For the maintained codegraph MCP server, use the [`main`](../../tree/main) branch.**
+
+## What this branch has beyond `main`
+
+| Feature | Location |
+|---------|----------|
+| Incident lifecycle (NEW → ANALYZED → PATCHED → RESOLVED) | `backend/app/api/routers/incidents.py`, `core/incident_*` |
+| LLM agent (LiteLLM chat completions, patch generation) | `backend/app/agents/` |
+| Chat endpoint with citations | `backend/app/api/routers/chat.py` |
+| Context assembly for the model (RAG) | `backend/app/rag/assembler/` |
+| Resolution memory (semantic lookup of past fixes) | `backend/app/core/resolved_error_store.py`, `learning_service.py` |
+| Eval suite (UAT incidents become eval cases) | `backend/app/api/routers/eval.py`, `core/eval_*` |
+| Celery KB-sync worker (6GB container) | `backend/app/tasks/`, `docker-compose.yml` `celery-worker` service |
+| WebSocket manager (for the deleted frontend) | `backend/app/api/websockets/` |
+
+To revive a feature on `main`: copy the module, re-register its router in
+`backend/app/main.py`, restore its env vars and tests. The core RAG/indexing
+layer is identical on both branches.
+
+---
+
+## Original README
+
 # On-Call Assistant
 
 AI-powered incident triage system with semantic code search, graph-based dependency analysis, root cause detection, and a reinforcement loop that improves search quality from AI agent feedback — for Rust codebases.
