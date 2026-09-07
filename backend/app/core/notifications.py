@@ -395,8 +395,138 @@ def notify_nightly_sync_failed(stage: str, error: str, detail: str = "") -> None
     )
 
 
-def notify_sync_up_to_date(head_commit: str | None) -> None:
-    """Nightly sync ran, git pull found no new changes — index already current."""
+def _usage_section() -> str:
+    """MCP usage over the last 24h + unique clients + top queries."""
+    try:
+        from datetime import date, timedelta
+        import redis as redis_lib
+        r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
+
+        today = date.today().strftime("%Y%m%d")
+        yesterday = (date.today() - timedelta(days=1)).strftime("%Y%m%d")
+        total = int(r.get(f"mcp:queries:total:{today}") or 0) + int(r.get(f"mcp:queries:total:{yesterday}") or 0)
+        clients = int(r.scard("mcp:known_client_ips") or 0)
+
+        text_key = f"mcp:queries:text:{today}"
+        top = r.hgetall(text_key) or {}
+        top_queries = sorted(top.items(), key=lambda kv: -int(kv[1]))[:5]
+
+        cards = [
+            {"num": f"{total:,}", "label": "tool calls (24h)"},
+            {"num": str(clients), "label": "known clients"},
+        ]
+        html = f"<div class='section'>MCP usage</div>" + _stat_cards(cards)
+        if top_queries:
+            rows = "".join(
+                f"<tr><td style='text-align:right'><b>{count}</b></td><td><code>{q[:80]}</code></td></tr>"
+                for q, count in top_queries
+            )
+            html += f"<table><tr><th style='width:70px'>Calls</th><th>Top queries today</th></tr>{rows}</table>"
+        return html
+    except Exception:
+        return ""
+
+
+def _index_health_section() -> str:
+    """Index provenance: gen, model, collection, snapshot age, last build duration."""
+    try:
+        import json
+        import redis as redis_lib
+        from app.rag.retrieval.graph import graph_index
+        from app.rag.retrieval.semantic import semantic_index
+
+        stats = graph_index.get_stats()
+        nodes, edges = stats.get("graph_nodes", 0), stats.get("graph_edges", 0)
+
+        gen = model = collection = "?"
+        snapshot_age = "?"
+        try:
+            from app.core.index_store import index_metadata_store
+            snap = index_metadata_store.load_snapshot()
+            if snap:
+                if snap.created_at:
+                    import datetime as _dt
+                    snapshot_age = f"{(_dt.datetime.now(_dt.UTC) - snap.created_at).days}d old"
+                else:
+                    snapshot_age = "unknown"
+        except Exception:
+            pass
+        try:
+            if hasattr(semantic_index, "get_active_collection_name"):
+                collection = semantic_index.get_active_collection_name()
+        except Exception:
+            pass
+
+        r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
+        history = r.lrange("build:duration_history", 0, 0)
+        last_build = "unknown"
+        if history:
+            entry = json.loads(history[0])
+            if entry.get("duration_sec"):
+                last_build = _fmt_duration(entry["duration_sec"]) + " ago" if entry.get("timestamp") else "unknown"
+                import time as _t
+                age_s = _t.time() - entry.get("timestamp", 0)
+                last_build = f"{_fmt_duration(entry['duration_sec'])} build, {age_s / 3600:.0f}h ago"
+
+        return (
+            f"<div class='section'>Index health</div>"
+            + _kv_table([
+                ("Graph", f"{nodes:,} nodes, {edges:,} edges"),
+                ("Embedding model", "BAAI/bge-base-en-v1.5 (768-dim)"),
+                ("Weaviate collection", f"<code>{collection}</code>"),
+                ("Snapshot age", snapshot_age),
+                ("Last build", last_build),
+            ])
+        )
+    except Exception:
+        return ""
+
+
+def _reinforcement_section() -> str:
+    """Progress toward the next autobuild + feedback stats."""
+    try:
+        from app.rag.reinforcement import ai_feedback_store
+        stats = ai_feedback_store.get_feedback_stats()
+        unconsumed = stats.get("unconsumed_accepted", 0)
+        progress = min(int(unconsumed / 10 * 100), 100)
+        return (
+            f"<div class='section'>Reinforcement loop</div>"
+            + _kv_table([
+                ("Accepted feedback (unconsumed)", f"{unconsumed} / 10 toward autobuild"),
+                ("Autobuild progress", f"{progress}%"),
+                ("Total feedback", f"{stats.get('pending', 0) + stats.get('accepted', 0) + stats.get('rejected', 0) + stats.get('consumed', 0)}"),
+            ])
+        )
+    except Exception:
+        return ""
+
+
+def _recent_commits_section(n: int = 3) -> str:
+    """Last few commits at HEAD — what the index currently represents."""
+    try:
+        import subprocess
+        repo = settings.codebase_root_path
+        if not repo:
+            return ""
+        out = subprocess.run(
+            ["git", "log", "--oneline", f"-{n}"],
+            cwd=repo, capture_output=True, text=True, timeout=15, check=False,
+        )
+        commits = [l.strip() for l in out.stdout.splitlines() if l.strip()]
+        if not commits:
+            return ""
+        rows = "".join(f"<div class='commit'>{c}</div>" for c in commits)
+        return f"<div class='section'>At HEAD (indexed)</div>{rows}"
+    except Exception:
+        return ""
+
+
+def notify_daily_digest() -> None:
+    """Daily digest — usage, index health, reinforcement progress, HEAD state.
+
+    Sent by the 6pm cron via POST /api/index/digest. Independent of the
+    nightly sync (which only emails when a build actually runs or fails).
+    """
     try:
         from app.rag.retrieval.graph import graph_index
         stats = graph_index.get_stats()
@@ -409,21 +539,34 @@ def notify_sync_up_to_date(head_commit: str | None) -> None:
     except Exception:
         docs = 0
 
-    commit = head_commit[:12] if head_commit else "unknown"
+    up_to_date, head_commit = "?", "unknown"
+    try:
+        from app.rag.ingestion.git_ingestor import get_last_indexed_commit, get_current_head
+        last, head = get_last_indexed_commit(), get_current_head()
+        up_to_date = "<span class='ok'>Up to date</span>" if last == head else "<span class='fail'>Behind head</span>"
+        head_commit = head[:12]
+    except Exception:
+        pass
+
+    body = (
+        _stat_cards([
+            {"num": f"{nodes:,}", "label": "graph nodes"},
+            {"num": f"{edges:,}", "label": "graph edges"},
+            {"num": f"{docs:,}", "label": "semantic docs"},
+        ])
+        + _kv_table([
+            ("Index status", up_to_date),
+            ("Head commit", f"<code>{head_commit}</code>"),
+        ])
+        + _usage_section()
+        + _index_health_section()
+        + _reinforcement_section()
+        + _recent_commits_section()
+    )
+
     send_email(
-        subject=f"[codegraph] Nightly sync — up to date ({nodes:,} nodes)",
-        body_html=(
-            _stat_cards([
-                {"num": f"{nodes:,}", "label": "graph nodes"},
-                {"num": f"{edges:,}", "label": "graph edges"},
-                {"num": f"{docs:,}", "label": "semantic docs"},
-            ])
-            + _kv_table([
-                ("Status", "<span class='ok'>Up to date — no reindex needed</span>"),
-                ("Trigger", _badge("nightly_sync")),
-                ("Head commit", f"<code>{commit}</code>"),
-            ])
-        ),
+        subject=f"[codegraph] Daily digest — {nodes:,} nodes, index {'current' if 'ok' in up_to_date else 'behind'}",
+        body_html=body,
     )
 
 

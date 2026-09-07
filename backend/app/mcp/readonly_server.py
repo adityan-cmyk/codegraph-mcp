@@ -656,6 +656,30 @@ def _jsonrpc_response(req_id: Any, result: Any) -> Response:
     )
 
 
+def _track_tool_usage(tool_name: str, arguments: dict) -> None:
+    """Count MCP tool calls and query text in Redis for the daily digest email."""
+    try:
+        from datetime import date
+        import redis as redis_lib
+        from app.core.config import settings
+
+        if not settings.redis_url:
+            return
+        r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
+        today = date.today().strftime("%Y%m%d")
+        total_key = f"mcp:queries:total:{today}"
+        r.incr(total_key)
+        r.expire(total_key, 7 * 86400)
+
+        query = arguments.get("query") or arguments.get("symbol_id") or arguments.get("diff", "")[:100] or ""
+        if query:
+            text_key = f"mcp:queries:text:{today}"
+            r.hincrby(text_key, f"{tool_name}: {str(query)[:110]}", 1)
+            r.expire(text_key, 7 * 86400)
+    except Exception:
+        logger.debug("Tool usage tracking failed", exc_info=True)
+
+
 def _jsonrpc_error(req_id: Any, code: int, message: str) -> Response:
     payload = {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
     return Response(
@@ -725,6 +749,7 @@ async def _handle_mcp(request: Request) -> Response:
                 result = await handler(**arguments)
             else:
                 result = await asyncio.to_thread(handler, **arguments)
+            _track_tool_usage(tool_name, arguments)
             return _respond(req_id, {
                 "content": [{"type": "text", "text": json.dumps(result, default=str)}],
                 "isError": False,

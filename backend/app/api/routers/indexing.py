@@ -24,6 +24,13 @@ def notify_nightly_sync_failed(payload: NightlySyncFailure) -> dict:
     return {"notified": True}
 
 
+@router.post("/digest")
+def send_daily_digest() -> dict:
+    from app.core.notifications import notify_daily_digest
+    notify_daily_digest()
+    return {"digest_sent": True}
+
+
 @router.post("/repository", response_model=IndexingResult)
 async def index_repository(payload: IndexRepositoryRequest) -> IndexingResult:
     try:
