@@ -395,6 +395,38 @@ def notify_nightly_sync_failed(stage: str, error: str, detail: str = "") -> None
     )
 
 
+def notify_sync_up_to_date(head_commit: str | None) -> None:
+    """Nightly sync ran, git pull found no new changes — index already current."""
+    try:
+        from app.rag.retrieval.graph import graph_index
+        stats = graph_index.get_stats()
+        nodes, edges = stats.get("graph_nodes", 0), stats.get("graph_edges", 0)
+    except Exception:
+        nodes, edges = 0, 0
+    try:
+        from app.rag.retrieval.semantic import semantic_index
+        docs = semantic_index.get_stats().get("semantic_documents", 0)
+    except Exception:
+        docs = 0
+
+    commit = head_commit[:12] if head_commit else "unknown"
+    send_email(
+        subject=f"[codegraph] Nightly sync — up to date ({nodes:,} nodes)",
+        body_html=(
+            _stat_cards([
+                {"num": f"{nodes:,}", "label": "graph nodes"},
+                {"num": f"{edges:,}", "label": "graph edges"},
+                {"num": f"{docs:,}", "label": "semantic docs"},
+            ])
+            + _kv_table([
+                ("Status", "<span class='ok'>Up to date — no reindex needed</span>"),
+                ("Trigger", _badge("nightly_sync")),
+                ("Head commit", f"<code>{commit}</code>"),
+            ])
+        ),
+    )
+
+
 def notify_new_client(client_ip: str, path: str, user_agent: str = "") -> None:
     send_email(
         subject=f"[codegraph] New MCP client: {client_ip}",

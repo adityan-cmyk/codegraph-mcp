@@ -2,6 +2,7 @@
 *.log
 *.pid
 FETCH_HEAD
+handoff.md
 logs/
 .env
 .env.*
