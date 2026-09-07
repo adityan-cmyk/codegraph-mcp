@@ -521,6 +521,32 @@ def _recent_commits_section(n: int = 3) -> str:
         return ""
 
 
+def notify_sync_up_to_date(head_commit: str | None) -> None:
+    """Nightly sync ran, no new changes — brief confirmation email."""
+    try:
+        from app.rag.retrieval.graph import graph_index
+        stats = graph_index.get_stats()
+        nodes, edges = stats.get("graph_nodes", 0), stats.get("graph_edges", 0)
+    except Exception:
+        nodes, edges = 0, 0
+
+    commit = head_commit[:12] if head_commit else "unknown"
+    send_email(
+        subject=f"[codegraph] Nightly sync — up to date ({nodes:,} nodes)",
+        body_html=(
+            _stat_cards([
+                {"num": f"{nodes:,}", "label": "graph nodes"},
+                {"num": f"{edges:,}", "label": "graph edges"},
+            ])
+            + _kv_table([
+                ("Status", "<span class='ok'>Up to date — no reindex needed</span>"),
+                ("Trigger", _badge("nightly_sync")),
+                ("Head commit", f"<code>{commit}</code>"),
+            ])
+        ),
+    )
+
+
 def notify_daily_digest() -> None:
     """Daily digest — usage, index health, reinforcement progress, HEAD state.
 
