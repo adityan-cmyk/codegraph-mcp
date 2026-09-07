@@ -130,8 +130,6 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
         return {"status": "error", "error": str(exc)}
 
     if head_commit == last_commit:
-        from app.core.notifications import notify_sync_up_to_date
-        notify_sync_up_to_date(head_commit)
         return {"status": "up_to_date", "last_commit": last_commit, "head_commit": head_commit}
 
     directly_changed = get_changed_files(last_commit, repository_path)
@@ -139,8 +137,6 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
 
     if not directly_changed and not deleted:
         _update_last_commit(head_commit)
-        from app.core.notifications import notify_sync_up_to_date
-        notify_sync_up_to_date(head_commit)
         return {"status": "up_to_date", "last_commit": last_commit, "head_commit": head_commit}
 
     changed = _expand_with_dependents(directly_changed)
