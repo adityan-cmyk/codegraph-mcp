@@ -98,8 +98,52 @@ def search_symbols(query: str, limit: int = 20) -> dict[str, object]:
     }
 
 
-def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None) -> dict[str, object]:
-    """Get the immediate blast radius of a symbol — its direct callers, callees, type-users, and used types. Use this during PR review to understand the impact of changing a symbol. Provide the full symbol_id (e.g. 'crates::inventory::client::InventoryClient'). Optional: pass usage_modes_filter=['pattern_match', 'construction'] to return only callers that pattern-match or construct this type."""
+_FRESHNESS_CACHE: tuple[float, dict | None] = (0.0, None)
+_FRESHNESS_TTL = 300  # seconds
+
+
+def _stale_index_warning() -> dict | None:
+    """Warn when the index is behind repo HEAD — results may be partial.
+
+    Cached for 5 minutes so tool calls don't run git or load the snapshot
+    on every request.
+    """
+    global _FRESHNESS_CACHE
+    import time as _t
+
+    now = _t.time()
+    if now - _FRESHNESS_CACHE[0] > _FRESHNESS_TTL:
+        warning = None
+        try:
+            from app.rag.ingestion.git_ingestor import get_current_head, get_last_indexed_commit
+            head = get_current_head()
+            last = get_last_indexed_commit()
+            if head and last and head != last:
+                warning = {
+                    "index_stale": True,
+                    "last_indexed_commit": last[:12],
+                    "current_head": head[:12],
+                    "message": (
+                        f"Index is behind HEAD ({last[:8]} vs {head[:8]}) — results may miss "
+                        "recently changed or added symbols. Refresh with POST /api/index/ingest."
+                    ),
+                }
+        except Exception:
+            logger.debug("Freshness check failed", exc_info=True)
+        _FRESHNESS_CACHE = (now, warning)
+
+    return _FRESHNESS_CACHE[1]
+
+
+def _attach_stale_warning(result: dict) -> dict:
+    warning = _stale_index_warning()
+    if warning:
+        result["index_warning"] = warning
+    return result
+
+
+def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None, summary_only: bool = False) -> dict[str, object]:
+    """Get the immediate blast radius of a symbol — its direct callers, callees, type-users, and used types. Use this during PR review to understand the impact of changing a symbol. Provide the full symbol_id (e.g. 'crates::inventory::client::InventoryClient'). Optional: usage_modes_filter=['pattern_match', 'construction'] to return only callers that pattern-match or construct this type. Optional: summary_only=true to return counts grouped by module + risk score WITHOUT full symbol lists — use this for widely-used symbols where the full output would be huge."""
     if not graph_index.has_symbol(symbol_id):
         return {"error": f"Symbol '{symbol_id}' not found in the graph index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
 
@@ -130,6 +174,23 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
         result["start_line"] = meta["start_line"]
         result["end_line"] = meta["end_line"]
 
+    if summary_only:
+        def _by_module(ids: list[str]) -> dict[str, int]:
+            counts: dict[str, int] = {}
+            for sid in ids:
+                parts = sid.split("::")
+                mod = "::".join(parts[:3]) if len(parts) > 3 else ("::".join(parts[:-1]) or sid)
+                counts[mod] = counts.get(mod, 0) + 1
+            return dict(sorted(counts.items(), key=lambda kv: -kv[1])[:12])
+
+        result["upstream_by_module"] = _by_module(upstream)
+        result["downstream_by_module"] = _by_module(downstream)
+        result["used_by_by_module"] = _by_module(used_by)
+        result["uses_by_module"] = _by_module(uses)
+        for key in ("upstream", "downstream", "used_by", "uses", "used_by_modes", "uses_modes"):
+            result.pop(key, None)
+        return _attach_stale_warning(result)
+
     result["upstream"] = upstream[:_MAX_PER_DIRECTION]
     result["downstream"] = downstream[:_MAX_PER_DIRECTION]
     result["used_by"] = used_by[:_MAX_PER_DIRECTION]
@@ -150,7 +211,7 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
             usage_modes[mode] = usage_modes.get(mode, 0) + 1
     result["usage_mode_summary"] = usage_modes
 
-    return result
+    return _attach_stale_warning(result)
 
 
 def batch_blast_radius(symbol_ids: list[str]) -> dict[str, object]:
@@ -234,53 +295,6 @@ def get_symbol_content(symbol_id: str) -> dict[str, object]:
     return {"error": f"Symbol '{symbol_id}' found in metadata but content not available.", "symbol_id": symbol_id}
 
 
-def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
-    """Search the codebase by meaning, not just by name. Use this to find all code related to a concept (e.g. 'payment validation', 'wallet closure logic', 'authentication flow'). Returns matching symbols with relevance scores. After reviewing the results, call submit_search_feedback to indicate which results were helpful — the system learns from feedback and improves future searches. Provide a natural language query."""
-    limit = max(1, min(limit, 25))
-
-    try:
-        from app.rag.reinforcement import feedback_store
-        boost_weights = feedback_store.get_boost_weights()
-        expansions = feedback_store.get_query_expansions(query)
-    except Exception:
-        boost_weights = {}
-        expansions = []
-
-    if expansions:
-        expanded_query = query + " " + " ".join(term for term, _ in expansions)
-    else:
-        expanded_query = query
-
-    matches = semantic_index.query_chunks(expanded_query, limit=limit * 2)
-
-    reranked = []
-    for m in matches:
-        boost = boost_weights.get(m.symbol_id, 0.0)
-        adjusted = m.score + _BOOST_ALPHA * boost
-        reranked.append((m, adjusted, boost))
-
-    reranked.sort(key=lambda x: x[1], reverse=True)
-    reranked = reranked[:limit]
-
-    query_id = uuid.uuid4().hex[:12]
-
-    return {
-        "query": query,
-        "query_id": query_id,
-        "matches": len(reranked),
-        "expansion_applied": bool(expansions),
-        "results": [
-            {
-                "symbol_id": m.symbol_id,
-                "score": round(adj, 4),
-                "original_score": round(m.score, 4),
-                "boost": round(boost, 4),
-                "file_path": m.source,
-                "content_preview": m.content[:300],
-            }
-            for m, adj, boost in reranked
-        ],
-    }
 
 
 def submit_search_feedback(query_text: str, symbol_id: str = "", feedback: int = 0, original_score: float = 0.0, reason: str = "") -> dict[str, object]:
@@ -628,7 +642,7 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
 
     if timed_out or not matches:
         graph_results = graph_index.search_symbols(query, limit=limit)
-        return {
+        return _attach_stale_warning({
             "query": query,
             "query_id": uuid.uuid4().hex[:12],
             "matches": len(graph_results),
@@ -643,7 +657,7 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
                 }
                 for r in graph_results
             ],
-        }
+        })
 
     reranked = []
     for m in matches:
@@ -662,7 +676,7 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
     except Exception:
         pass
 
-    return {
+    return _attach_stale_warning({
         "query": query,
         "query_id": query_id,
         "matches": len(reranked),
@@ -679,7 +693,7 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
             }
             for m, adj, boost in reranked
         ],
-    }
+    })
 
 
 # ============================================================================
@@ -712,7 +726,7 @@ def analyze_pr_diff(diff_text: str, max_symbols: int = 10) -> dict[str, object]:
                 "file_path": br.get("file_path", ""),
             })
 
-    return {
+    return _attach_stale_warning({
         "changed_files": resolved["changed_files"],
         "resolved_symbols": blast_radius_results,
         "new_symbols_not_in_index": resolved["new_symbols"],
@@ -720,7 +734,7 @@ def analyze_pr_diff(diff_text: str, max_symbols: int = 10) -> dict[str, object]:
         "summary": resolved["summary"],
         "high_risk_symbols": [r for r in blast_radius_results if r.get("risk_score") in ("high", "critical")],
         "change_type_breakdown": resolved.get("summary", {}).get("change_type_breakdown", {}),
-    }
+    })
 
 
 # ============================================================================
