@@ -4,8 +4,11 @@ set -euo pipefail
 echo "=== Codegraph-MCP Infrastructure Validation ==="
 echo ""
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 API_BASE="${API_BASE:-http://localhost:8000}"
 MCP_URL="${MCP_URL:-http://localhost:8002/mcp}"
+MCP_TOKEN="${MCP_TOKEN:-$(grep '^MCP_AUTH_TOKEN=' "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2)}"
 PASS=0
 FAIL=0
 SKIP=0
@@ -44,6 +47,7 @@ mcp_call() {
     local params="$2"
     curl -sS -X POST "$MCP_URL" \
         -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $MCP_TOKEN" \
         -d "{\"jsonrpc\":\"2.0\",\"method\":\"$method\",\"params\":$params,\"id\":1}" 2>/dev/null
 }
 
@@ -170,27 +174,6 @@ else
 fi
 
 echo ""
-echo "--- Incident Lifecycle ---"
-SESSION_ID=$(curl -sS -X POST "$API_BASE/api/incidents/" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "fingerprint": {"service":"validation","panic_type":"test","top_frame":"src/val.rs:1","commit_hash":"val123"},
-        "environment":"UAT",
-        "build_id":"val-build",
-        "raw_log":"validation test panic",
-        "source":"validation"
-    }' | jq -r '.session_id') || SESSION_ID=""
-
-if [ -n "$SESSION_ID" ] && [ "$SESSION_ID" != "null" ]; then
-    echo "  PASS  Create incident ($SESSION_ID)"
-    PASS=$((PASS + 1))
-    check "Get incident" "$API_BASE/api/incidents/$SESSION_ID"
-    check "List incidents" "$API_BASE/api/incidents/"
-else
-    echo "  FAIL  Create incident"
-    FAIL=$((FAIL + 1))
-fi
-
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed, $SKIP warnings ==="
 

@@ -73,6 +73,11 @@ _TOOLS: dict[str, Any] = {
                     "description": "Filter used_by/uses edges to only those with matching usage modes. E.g. ['pattern_match', 'construction'] returns only callers that pattern-match or construct this type.",
                     "default": [],
                 },
+                "summary_only": {
+                    "type": "boolean",
+                    "description": "Return counts grouped by module + risk score WITHOUT full symbol lists. Use for widely-used symbols where the full output would be huge.",
+                    "default": False,
+                },
             },
             "required": ["symbol_id"],
         },
