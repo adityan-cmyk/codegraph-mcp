@@ -52,6 +52,12 @@ services:
       NEO4J_AUTH: neo4j/password
     volumes:
       - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
     deploy:
       resources:
         limits:
@@ -114,6 +120,8 @@ services:
       redis:
         condition: service_healthy
       weaviate:
+        condition: service_healthy
+      neo4j:
         condition: service_healthy
     env_file:
       - .env

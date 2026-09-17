@@ -199,25 +199,62 @@ def _build_graph_index(gen: int = 0):
 
 
 def _get_current_gen() -> int:
-    """Query Neo4j for the highest existing generation number."""
+    """Query Neo4j for the highest existing generation number.
+
+    Retries with backoff — if Neo4j isn't ready at startup and we silently
+    return 0, the proxy binds to an empty generation and every graph read
+    fails with 'symbol not found' until the process restarts.
+    """
     if settings.graph_index_backend != "neo4j":
         return 0
-    try:
-        from app.rag.retrieval.neo4j_graph import Neo4jGraphIndex
-        probe = Neo4jGraphIndex(
-            uri=settings.neo4j_uri,
-            username=settings.neo4j_username,
-            password=settings.neo4j_password,
-            gen=0,
-        )
-        driver = probe._get_driver()
-        with driver.session() as session:
-            result = session.run("MATCH (n:Symbol) RETURN max(n.gen) AS max_gen")
-            record = result.single()
-            max_gen = record["max_gen"] if record and record["max_gen"] is not None else 0
-        return max_gen
-    except Exception:
-        return 0
+
+    import logging
+    import time as _time
+
+    logger = logging.getLogger(__name__)
+    last_exc: Exception | None = None
+
+    for attempt in range(1, 31):
+        try:
+            from app.rag.retrieval.neo4j_graph import Neo4jGraphIndex
+            probe = Neo4jGraphIndex(
+                uri=settings.neo4j_uri,
+                username=settings.neo4j_username,
+                password=settings.neo4j_password,
+                gen=0,
+            )
+            driver = probe._get_driver()
+            with driver.session() as session:
+                result = session.run("MATCH (n:Symbol) RETURN max(n.gen) AS max_gen")
+                record = result.single()
+                max_gen = record["max_gen"] if record and record["max_gen"] is not None else 0
+            driver.close()
+            return max_gen
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 30:
+                logger.warning(
+                    "Neo4j gen probe failed (attempt %d/30): %s — retrying in 2s",
+                    attempt, exc,
+                )
+                _time.sleep(2)
+
+    logger.error(
+        "Neo4j unreachable after 30 attempts — binding graph proxy to gen 0. "
+        "Graph reads will fail until restart. Last error: %s", last_exc,
+    )
+    from app.core.notifications import send_email
+    send_email(
+        subject="[codegraph] WARNING — graph proxy bound to empty gen 0",
+        body_html=(
+            "<div class='warn'>Neo4j was unreachable at backend startup (30 retries failed). "
+            "The graph proxy is bound to gen 0 and all graph reads will return 'not found' "
+            "until the backend restarts. Last error:</div>"
+            f"<code>{last_exc}</code>"
+            "<div class='footer'>Fix: docker compose restart backend (once Neo4j is healthy)</div>"
+        ),
+    )
+    return 0
 
 
 graph_index = GraphIndexProxy(_build_graph_index(gen=_get_current_gen()))
