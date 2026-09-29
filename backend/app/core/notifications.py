@@ -115,6 +115,65 @@ def _in_tests() -> bool:
     return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
+_EMAIL_LOG_SCHEMA_READY = False
+
+
+def _ensure_email_log_schema() -> None:
+    global _EMAIL_LOG_SCHEMA_READY
+    if _EMAIL_LOG_SCHEMA_READY:
+        return
+    import psycopg
+    from psycopg.rows import dict_row
+
+    with psycopg.connect(settings.postgres_dsn, row_factory=dict_row) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS email_log (
+                    id         SERIAL PRIMARY KEY,
+                    sender     TEXT NOT NULL,
+                    recipient  TEXT NOT NULL,
+                    subject    TEXT NOT NULL,
+                    sent_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    metadata   JSONB NOT NULL DEFAULT '{}'
+                )
+                """
+            )
+            cur.execute("CREATE INDEX IF NOT EXISTS email_log_sent_at_idx ON email_log (sent_at)")
+        conn.commit()
+    _EMAIL_LOG_SCHEMA_READY = True
+
+
+def _log_email(sender: str, recipient: str, subject: str, metadata: dict) -> None:
+    """Best-effort audit trail of every sent (or failed) email.
+
+    Never raises — email delivery must not fail because logging failed.
+    metadata carries the full mail content as a JSON object plus delivery
+    status/attempts/error.
+    """
+    if _in_tests():
+        return
+    try:
+        import json
+
+        import psycopg
+        from psycopg.rows import dict_row
+
+        _ensure_email_log_schema()
+        with psycopg.connect(settings.postgres_dsn, row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO email_log (sender, recipient, subject, metadata)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (sender, recipient, subject, json.dumps(metadata)),
+                )
+            conn.commit()
+    except Exception:
+        logger.debug("Failed to log email to Postgres: %s", subject, exc_info=True)
+
+
 def send_email(subject: str, body_html: str, retries: int = 3, retry_delay: float = 30.0) -> bool:
     """Send an HTML email with retries for transient DNS/network failures."""
     if _in_tests():
@@ -124,12 +183,15 @@ def send_email(subject: str, body_html: str, retries: int = 3, retry_delay: floa
         logger.debug("SMTP not configured, skipping notification: %s", subject)
         return False
 
+    sender = settings.smtp_from or settings.smtp_user
+    recipient = ", ".join(settings.smtp_to)
+
     for attempt in range(1, retries + 1):
         try:
             msg = MIMEText(_html(subject, body_html), "html")
             msg["Subject"] = subject
-            msg["From"] = settings.smtp_from or settings.smtp_user
-            msg["To"] = ", ".join(settings.smtp_to)
+            msg["From"] = sender
+            msg["To"] = recipient
 
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as server:
                 if settings.smtp_use_tls:
@@ -138,6 +200,12 @@ def send_email(subject: str, body_html: str, retries: int = 3, retry_delay: floa
                 server.send_message(msg)
 
             logger.info("Notification sent: %s", subject)
+            _log_email(sender, recipient, subject, {
+                "status": "sent",
+                "attempts": attempt,
+                "smtp_host": settings.smtp_host,
+                "body_html": _html(subject, body_html),
+            })
             return True
         except Exception as exc:
             if attempt < retries:
@@ -149,6 +217,13 @@ def send_email(subject: str, body_html: str, retries: int = 3, retry_delay: floa
                 time.sleep(retry_delay)
             else:
                 logger.warning("Failed to send notification after %d attempts: %s", retries, subject, exc_info=True)
+                _log_email(sender, recipient, subject, {
+                    "status": "failed",
+                    "attempts": attempt,
+                    "smtp_host": settings.smtp_host,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "body_html": _html(subject, body_html),
+                })
     return False
 
 
