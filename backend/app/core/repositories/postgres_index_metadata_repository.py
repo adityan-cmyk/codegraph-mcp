@@ -68,6 +68,8 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
             connection.commit()
 
     def reset(self) -> None:
+        from app.core.test_guard import refuse_reset_under_pytest
+        refuse_reset_under_pytest("Postgres index metadata")
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute("DELETE FROM index_graph_edges")

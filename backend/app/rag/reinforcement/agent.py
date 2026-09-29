@@ -90,9 +90,10 @@ def _agent_tick():
     except Exception:
         logger.debug("Feedback evaluation failed", exc_info=True)
 
-    # 2. Sync accepted AI feedback into per-symbol boost weights
+    # 2. Sync accepted AI feedback into per-symbol boost weights (idempotent —
+    #    each entry is applied exactly once via boost_applied_at watermark)
     try:
-        accepted = ai_feedback_store.get_accepted_feedback(limit=50)
+        accepted = ai_feedback_store.get_unsynced_accepted_feedback(limit=50)
         if accepted:
             signals = ai_feedback_store.extract_symbol_signals_from_feedback(accepted)
             if signals:
@@ -103,8 +104,10 @@ def _agent_tick():
                         original_score=0.5,
                         feedback=1 if weight > 0 else -1,
                         reason=f"AI feedback signal (weight={weight:.3f})",
+                        update_expansion=False,
                     )
                 logger.info("Reinforcement: applied %d symbol signals from AI feedback", len(signals))
+            ai_feedback_store.mark_boost_applied([e["feedback_id"] for e in accepted])
     except Exception:
         logger.debug("Signal extraction failed", exc_info=True)
 
@@ -136,6 +139,7 @@ def _agent_tick():
                                 original_score=0.5,
                                 feedback=1 if weight > 0 else -1,
                                 reason=f"Reranking refresh signal (weight={weight:.3f})",
+                                update_expansion=False,
                             )
                     _last_rerank_count = unconsumed
                     logger.info("Reinforcement: reranking weights refreshed with %d signals", len(signals))

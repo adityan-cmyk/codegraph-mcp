@@ -31,6 +31,8 @@ class Neo4jGraphIndex:
             )
 
     def reset(self) -> None:
+        from app.core.test_guard import refuse_reset_under_pytest
+        refuse_reset_under_pytest("Neo4j graph")
         with self._get_driver().session() as session:
             session.run(
                 "MATCH (n:Symbol {gen: $gen}) DETACH DELETE n",

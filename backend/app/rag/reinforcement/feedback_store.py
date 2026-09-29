@@ -100,8 +100,13 @@ def record_feedback(
     original_score: float,
     feedback: int,
     reason: str | None = None,
+    update_expansion: bool = True,
 ) -> None:
-    """Store a single feedback signal (+1 positive, -1 negative)."""
+    """Store a single feedback signal (+1 positive, -1 negative).
+
+    update_expansion=False skips the query_expansion write — used for internal
+    sync paths (pseudo-queries like '_ai_feedback') so they don't pollute the
+    expansion table for real queries."""
     _ensure_schema()
     fb = 1 if feedback > 0 else -1
     with _connect() as conn:
@@ -125,11 +130,12 @@ def record_feedback(
                             WHEN (symbol_reinforcement.positive_count + EXCLUDED.positive_count
                                   + symbol_reinforcement.negative_count + EXCLUDED.negative_count) = 0
                             THEN 0.0
-                            ELSE (symbol_reinforcement.positive_count + EXCLUDED.positive_count)::FLOAT
+                            ELSE (symbol_reinforcement.positive_count + EXCLUDED.positive_count
+                                  - symbol_reinforcement.negative_count - EXCLUDED.negative_count)::FLOAT
                                  / (symbol_reinforcement.positive_count + EXCLUDED.positive_count
                                     + symbol_reinforcement.negative_count + EXCLUDED.negative_count + 5)
                         END
-                    ) * 2.0 - 1.0,
+                    ),
                     last_updated = %s
                 """,
                 (
@@ -142,7 +148,7 @@ def record_feedback(
                 ),
             )
 
-            if fb > 0:
+            if fb > 0 and update_expansion:
                 short_name = symbol_id.split("::")[-1]
                 cur.execute(
                     """
@@ -157,6 +163,41 @@ def record_feedback(
                 )
         conn.commit()
     logger.info("Feedback recorded: query=%r symbol=%s feedback=%+d", query_text[:60], symbol_id, fb)
+
+
+def compute_boost_weight(positive: int, negative: int) -> float:
+    """Laplace-smoothed signed vote score in [-1, 1].
+
+    (p - n) / (p + n + 5) — zero votes -> 0 (neutral), a single vote moves the
+    weight by only 1/6, and the weight converges toward ±1 as votes pile up.
+    Must stay in sync with the SQL in record_feedback().
+    """
+    total = positive + negative
+    if total <= 0:
+        return 0.0
+    return (positive - negative) / (total + 5)
+
+
+def recompute_all_boost_weights() -> int:
+    """One-shot backfill: recompute boost_weight from stored vote counts.
+
+    Used after formula changes to correct existing rows. Returns row count.
+    NOTE: keep the expression in sync with compute_boost_weight().
+    """
+    _ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE symbol_reinforcement
+                SET boost_weight = (positive_count - negative_count)::FLOAT
+                                   / (positive_count + negative_count + 5)
+                """
+            )
+            count = cur.rowcount
+        conn.commit()
+    logger.info("Recomputed boost weights for %d symbols", count)
+    return count
 
 
 def get_boost_weights() -> dict[str, float]:
