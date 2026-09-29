@@ -57,6 +57,14 @@ async def lifespan(app: FastAPI):
         settings.readonly_mcp_port,
     )
 
+    if not settings.api_auth_token:
+        logger.warning(
+            "=" * 70 + "\n"
+            "WARNING: API_AUTH_TOKEN is not set — the API server on port 8000\n"
+            "accepts unauthenticated requests (including reindex/ingest\n"
+            "endpoints). Set API_AUTH_TOKEN before exposing port 8000.\n" + "=" * 70
+        )
+
     try:
         from app.rag.reinforcement.agent import start_agent as start_reinforcement_agent
         start_reinforcement_agent()

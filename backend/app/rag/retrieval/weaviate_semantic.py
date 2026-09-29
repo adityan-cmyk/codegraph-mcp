@@ -279,6 +279,8 @@ class WeaviateSemanticIndex:
 
     def reset(self) -> None:
         """Reset all documents (test helper)."""
+        from app.core.test_guard import refuse_reset_under_pytest
+        refuse_reset_under_pytest("Weaviate semantic index")
         self.reset_documents()
 
     def reset_documents(self) -> None:

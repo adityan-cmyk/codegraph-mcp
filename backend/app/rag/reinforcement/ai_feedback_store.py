@@ -61,9 +61,13 @@ def _ensure_schema():
                         created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         evaluated_at          TIMESTAMPTZ,
                         consumed_at           TIMESTAMPTZ,
-                        consumed_by_build     TEXT
+                        consumed_by_build     TEXT,
+                        boost_applied_at      TIMESTAMPTZ
                     )
                     """
+                )
+                cur.execute(
+                    "ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS boost_applied_at TIMESTAMPTZ"
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS ai_fb_status_idx ON ai_feedback(status)"
@@ -261,6 +265,47 @@ def get_accepted_feedback(limit: int = 100) -> list[dict]:
                 (limit,),
             )
             return cur.fetchall()
+
+
+def get_unsynced_accepted_feedback(limit: int = 100) -> list[dict]:
+    """Get accepted feedback whose symbol signals haven't been applied to
+    boost weights yet. Each entry is returned at most once — the caller must
+    mark it applied via mark_boost_applied() after processing."""
+    _ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT feedback_id, client_id, pr_context, tools_called,
+                       results_used, results_expected, quality_rating,
+                       improvement_suggestions, quality_score, created_at
+                FROM ai_feedback
+                WHERE status = 'accepted' AND boost_applied_at IS NULL
+                ORDER BY quality_score DESC, created_at ASC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return cur.fetchall()
+
+
+def mark_boost_applied(feedback_ids: list[str]) -> None:
+    """Mark feedback entries as applied to boost weights (idempotency watermark)."""
+    _ensure_schema()
+    if not feedback_ids:
+        return
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE ai_feedback
+                SET boost_applied_at = %s
+                WHERE feedback_id = ANY(%s) AND boost_applied_at IS NULL
+                """,
+                (datetime.now(UTC), feedback_ids),
+            )
+        conn.commit()
+    logger.info("Marked %d feedback entries as boost-applied", len(feedback_ids))
 
 
 def mark_feedback_consumed(feedback_ids: list[str], build_id: str) -> None:

@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,6 +10,7 @@ from app.core.index_store import index_metadata_store
 from app.main import app
 from app.rag.ingestion.tree_sitter import extract_rust_chunks, generate_symbol_id
 from app.rag.indexing_service import index_rust_repository, replay_indexes_from_storage
+from app.rag.reinforcement.feedback_store import compute_boost_weight
 from app.rag.retrieval.graph import graph_index, get_blast_radius
 from app.rag.retrieval.semantic import semantic_index
 from app.schemas.codebase import IndexSnapshot
@@ -156,6 +158,88 @@ fn login_user() {
 
         self.assertEqual(response.status_code, 200)
         self.assertGreaterEqual(response.json()["symbols_indexed"], 1)
+
+
+class BoostWeightFormulaTestCase(unittest.TestCase):
+    """Regression tests for the boost formula edge cases.
+
+    The old formula (p / (p + n + 5)) * 2 - 1 penalized symbols with fewer
+    than 5 net-positive votes: a single helpful vote produced a -0.667 boost.
+    """
+
+    def test_single_positive_vote_is_positive(self) -> None:
+        self.assertAlmostEqual(compute_boost_weight(1, 0), 1 / 6)
+
+    def test_single_negative_vote_is_mild_not_maximal(self) -> None:
+        self.assertAlmostEqual(compute_boost_weight(0, 1), -1 / 6)
+
+    def test_no_votes_is_neutral(self) -> None:
+        self.assertEqual(compute_boost_weight(0, 0), 0.0)
+
+    def test_heavy_negative_stays_bounded(self) -> None:
+        self.assertAlmostEqual(compute_boost_weight(0, 31), -31 / 36)
+        self.assertGreaterEqual(compute_boost_weight(0, 31), -1.0)
+
+    def test_heavy_positive_stays_bounded(self) -> None:
+        self.assertAlmostEqual(compute_boost_weight(33, 0), 33 / 38)
+        self.assertLessEqual(compute_boost_weight(33, 0), 1.0)
+
+    def test_always_within_bounds(self) -> None:
+        for p in (0, 1, 2, 5, 10, 100, 1000):
+            for n in (0, 1, 2, 5, 10, 100, 1000):
+                w = compute_boost_weight(p, n)
+                self.assertLessEqual(abs(w), 1.0, f"out of bounds for p={p}, n={n}")
+
+    def test_symmetry(self) -> None:
+        self.assertAlmostEqual(compute_boost_weight(7, 3), -compute_boost_weight(3, 7))
+
+
+class ReinforcementSyncIdempotencyTestCase(unittest.TestCase):
+    """The 5-minute agent tick must apply each accepted feedback entry to
+    boost weights exactly once (boost_applied_at watermark), not on every
+    tick — the old behavior inflated vote counts by ~288/day."""
+
+    def test_tick_applies_unsynced_feedback_once(self) -> None:
+        from app.rag.reinforcement import agent as agent_module
+
+        entries = [
+            {"feedback_id": "fb1", "results_used": json.dumps([
+                {"symbol_id": "crate::a::foo", "helpful": True},
+            ]), "quality_rating": 4, "quality_score": 0.8},
+        ]
+        applied_calls: list[dict] = []
+        marked: list[list[str]] = []
+
+        class FakeAIStore:
+            @staticmethod
+            def get_unsynced_accepted_feedback(limit=50):
+                return entries if not marked else []
+
+            @staticmethod
+            def extract_symbol_signals_from_feedback(feedback):
+                return {"crate::a::foo": 0.6}
+
+            @staticmethod
+            def mark_boost_applied(feedback_ids):
+                marked.append(list(feedback_ids))
+
+        class FakeFeedbackStore:
+            @staticmethod
+            def record_feedback(**kwargs):
+                applied_calls.append(kwargs)
+
+        with patch.object(agent_module.ai_feedback_store, "get_unsynced_accepted_feedback", FakeAIStore.get_unsynced_accepted_feedback), \
+             patch.object(agent_module.ai_feedback_store, "extract_symbol_signals_from_feedback", FakeAIStore.extract_symbol_signals_from_feedback), \
+             patch.object(agent_module.ai_feedback_store, "mark_boost_applied", FakeAIStore.mark_boost_applied), \
+             patch.object(agent_module.feedback_store, "record_feedback", FakeFeedbackStore.record_feedback), \
+             patch.object(agent_module.ai_feedback_store, "evaluate_pending_feedback", lambda: {"evaluated": 0}), \
+             patch.object(agent_module.ai_feedback_store, "get_feedback_stats", lambda: {"unconsumed_accepted": 0}):
+            agent_module._agent_tick()
+            agent_module._agent_tick()
+
+        self.assertEqual(len(applied_calls), 1, "second tick must not re-apply the same feedback")
+        self.assertEqual(marked, [["fb1"]])
+        self.assertFalse(applied_calls[0]["update_expansion"], "pseudo-query must not write query expansions")
 
 
 if __name__ == "__main__":

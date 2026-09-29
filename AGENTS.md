@@ -2,6 +2,12 @@
 
 You have access to a read-only code dependency graph via the `oncall-graph` MCP server. Use these tools during PR review to understand blast radius, dependencies, and find relevant code.
 
+## CRITICAL: Running Tests Safely
+
+**NEVER run pytest with the docker compose environment attached** (no `docker compose run backend pytest`, no sourcing `.env` before pytest). Test setUp() calls reset() on index singletons — against real backends this WIPES the live Neo4j graph, Weaviate collection, and Postgres build registry (total index outage; happened 2026-09-29, recovery cost a full 2h re-index).
+
+Always use: `./scripts/run-tests.sh` — runs pytest in a `--network none` container (no network path to any backend). Protection layers: (1) `tests/unit/conftest.py` forces in-memory backends, (2) `app/core/test_guard.py` makes real-backend reset() raise under pytest, (3) the script cuts the network entirely.
+
 ## Available MCP Tools (16)
 
 | Tool | When to use |

@@ -879,9 +879,21 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
         )
 
 
+def _warn_if_auth_disabled():
+    from app.core.config import settings
+    if not settings.mcp_auth_token:
+        logger.warning(
+            "=" * 70 + "\n"
+            "WARNING: MCP_AUTH_TOKEN is not set — the MCP server accepts\n"
+            "unauthenticated requests, including feedback submissions that can\n"
+            "trigger rebuilds. Set MCP_AUTH_TOKEN before exposing port 8002.\n" + "=" * 70
+        )
+
+
 _app = Starlette(
     routes=_routes,
     middleware=[Middleware(BearerTokenAuthMiddleware)],
+    on_startup=[_warn_if_auth_disabled],
 )
 
 
