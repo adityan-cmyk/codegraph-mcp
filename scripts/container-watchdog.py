@@ -36,8 +36,12 @@ CONTAINERS = {
     "oncall-weaviate": "weaviate",
     "oncall-neo4j": "neo4j",
     "oncall-backend": "backend",
-    "oncall-celery-worker": "celery-worker",
 }
+
+# Watchdog scope: ONLY oncall-* containers from this compose project.
+# Never monitor or heal containers belonging to other stacks on this host
+# (walton, kafka, etc.) — restarting someone else's service is harmful.
+SCOPE_PREFIX = "oncall-"
 
 # Track repeated failures to detect restart loops
 STATE_FILE = PROJECT_ROOT / "logs" / "watchdog-state.json"
@@ -239,6 +243,9 @@ def main() -> None:
     all_ok = True
 
     for container, service in CONTAINERS.items():
+        if not container.startswith(SCOPE_PREFIX):
+            log(f"SKIP {container} — outside watchdog scope ({SCOPE_PREFIX}*)")
+            continue
         container_state = get_container_state(container)
         status = container_state.get("Status", "unknown")
         running = container_state.get("Running", False)
