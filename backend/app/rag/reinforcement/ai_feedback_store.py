@@ -123,7 +123,17 @@ def submit_feedback(
         "AI feedback submitted: id=%s client=%s rating=%s tools=%d",
         feedback_id, client_id, quality_rating, len(tools_called),
     )
-    return {"feedback_id": feedback_id, "status": "pending", "db_id": row["id"]}
+    return {
+        "feedback_id": feedback_id,
+        "status": "pending",
+        "db_id": row["id"],
+        "message": (
+            "Feedback recorded. It will be quality-gated in the background by a local "
+            "decision model (judges whether the feedback is specific and actionable, "
+            "~30s, no waiting required here) and, if accepted, applied to search ranking "
+            "within 5 minutes. Accepted feedback also counts toward index rebuild triggers."
+        ),
+    }
 
 
 def _evaluate_quality(feedback_row: dict) -> tuple[float, str | None]:

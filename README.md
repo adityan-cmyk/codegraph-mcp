@@ -339,13 +339,16 @@ The quality gate is judged by a **local decision model** — [Ollama](https://ol
 
 The adversarial row is the case a form-based gate cannot catch — it has every surface signal of quality but zero informational content. The acceptance rule is a hard gate on `actionable >= 0.5`; `specific` and `consistent` feed the stored quality score.
 
-**Speed** (measured on the reference host — i9-14900K, CPU-only, ~1000 input tokens per decision):
+**Speed** (measured on the reference host — i9-14900K, CPU-only, via the actual integration code path):
 
-| Model | Per decision | Notes |
+| Scenario | Latency | Notes |
 |---|---|---|
-| `nimble` 9B (default) | **20-35s** | memory-bandwidth-bound — does not improve with more CPU cores |
-| `tev1` 4B | 4-12s | ~3x faster but weak separation (scores vacuous feedback 0.56 actionable) |
-| Hosted Jev API | 70-500ms | reference; requires network + paid key |
+| Cold start (model load + decision) | **~32s** | first call after container start or keep-alive expiry |
+| Warm, compact prompt | **6-10s** | no competing load |
+| Warm, long prompt / under embedding load | **20-35s** | memory-bandwidth-bound — scales with prompt tokens, not CPU cores |
+| Service down (fallback to heuristic) | **<0.1s** | instant, per-request |
+| `tev1` 4B (alternative) | 4-12s | weak separation — scores vacuous feedback 0.56 actionable; rejected |
+| Hosted Jev API (reference) | 70-500ms | requires network + paid key |
 
 This latency is acceptable because gating is **async and rare**: it runs in the 5-minute reinforcement loop, only when pending feedback exists (~18 submissions in 3 months of use), capped at 5 entries per evaluation. A decision model must never sit on a hot request path.
 
