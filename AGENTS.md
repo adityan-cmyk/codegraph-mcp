@@ -8,7 +8,7 @@ You have access to a read-only code dependency graph via the `oncall-graph` MCP 
 
 Always use: `./scripts/run-tests.sh` — runs pytest in a `--network none` container (no network path to any backend). Protection layers: (1) `tests/unit/conftest.py` forces in-memory backends, (2) `app/core/test_guard.py` makes real-backend reset() raise under pytest, (3) the script cuts the network entirely.
 
-## Available MCP Tools (16)
+## Available MCP Tools (17)
 
 | Tool | When to use |
 |---|---|
@@ -28,6 +28,7 @@ Always use: `./scripts/run-tests.sh` — runs pytest in a `--network none` conta
 | `submit_search_feedback` | After using semantic_search — rate results +1 (helpful), -1 (not helpful), or query-level (no symbol) |
 | `submit_ai_feedback` | After completing PR review — submit full analysis summary (tools called, results used, expected, rating, suggestions) |
 | `get_reinforcement_stats` | See which symbols are boosted/penalized from past feedback |
+| `make_decision` | Typed judgments (noul yes/no, score, choice) from the local decision model. 10-35s per call — for decisions worth waiting on (PR risk, triage, gating), NOT per-message |
 
 All tools are read-only. They cannot modify the index, run code, or access files.
 
