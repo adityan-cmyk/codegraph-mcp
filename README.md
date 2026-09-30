@@ -1,6 +1,6 @@
 # codegraph-mcp
 
-A stateless **MCP server** for code dependency graph analysis of Rust codebases — blast radius, semantic search, PR diff analysis, and a reinforcement loop that improves search quality from AI agent feedback. 14 of the 16 tools are read-only analysis; the two feedback tools write only to feedback tables.
+A stateless **MCP server** for code dependency graph analysis of Rust codebases — blast radius, semantic search, PR diff analysis, and a reinforcement loop that improves search quality from AI agent feedback. 15 of the 17 tools are read-only analysis (including a local decision-model tool); the two feedback tools write only to feedback tables.
 
 > **Note:** the full on-call assistant (incident lifecycle, LLM agent, chat, eval suites) lives on the [`oncall-assistant`](../../tree/oncall-assistant) branch. This branch is the MCP server only.
 
@@ -12,7 +12,7 @@ A stateless **MCP server** for code dependency graph analysis of Rust codebases 
 ┌──────────────────┐     ┌──────────────────┐     ┌────────────────────┐
 │  opencode Agent  │────▶│  Stateless MCP   │────▶│  Neo4j             │  dependency graph (gen-tagged, usage-mode edges)
 │  (any machine)   │     │  Server :8002    │────▶│  Weaviate          │  semantic vector search (shadow collections)
-│                  │     │  (16 tools)      │────▶│  PostgreSQL        │  snapshots, feedback, build registry
+│                  │     │  (17 tools)      │────▶│  PostgreSQL        │  snapshots, feedback, build registry
 │                  │────▶│  Feedback API    │     │  t2v-transformers  │  embedding model (BAAI/bge-base-en-v1.5)
 └──────────────────┘     │  :8000           │     │  ollama            │  decision model (nimble 9B, feedback gate)
                          └──────────────────┘     └────────────────────┘
@@ -119,7 +119,7 @@ Add this to your `opencode.json`:
 }
 ```
 
-### Available Tools (16)
+### Available Tools (17)
 
 | Tool | Description |
 |---|---|
@@ -308,6 +308,25 @@ List all symbols defined in a file.
 ```
 - Returns: `file_path`, `symbols_found`, `symbols` (array of `{symbol_id, kind, start_line, end_line}`).
 - Use this to resolve a diff's file path to exact symbols — avoids guessing symbol names.
+
+#### `make_decision`
+Typed judgments from a local decision model (Jev-style System One, `nimble` 9B via Ollama). **Not chat** — send state text plus named questions, get back a `choice`, a `score`, or a calibrated yes/no probability (`noul`) per question.
+```json
+{
+  "state": "PR changes 446 files in the wallet closure batch, touching dormancy reactivation paths",
+  "questions": {
+    "risk": {"type": "score", "instructions": "How risky is this change?", "criteria": ["low", "medium", "high"]},
+    "needs_senior_review": {"type": "noul", "instructions": "Does this need senior review before merge?"},
+    "area": {"type": "choice", "instructions": "Which team owns this area?", "criteria": {"wallets": null, "dormancy": null, "payments": null}}
+  }
+}
+```
+- Returns: `answers` (per question: the value plus `probabilities` and `confidence`) and the model name.
+- **Takes 10-35 seconds per call** (local CPU model, memory-bandwidth-bound). Use it for decisions worth waiting on — PR risk assessment, triage routing, content gating — never per-message.
+- Single-flight: one decision at a time; concurrent callers get a retry hint.
+- Guards: max 8 questions, 8000-char state, question types `noul`/`score`/`choice` only.
+- Read-only: cannot mutate any index or data. Graceful error if the model service is down.
+- Latency and call counts appear in Grafana (`mcp_tool_latency_ms{tool="make_decision"}`).
 
 ### Usage from any client
 
@@ -688,7 +707,7 @@ The system separates **source of truth** (postgres) from **derived indexes** (we
 | CORS | Configurable allowed origins (default: localhost only) |
 | Startup warnings | Both servers log a loud warning if their auth token is unset |
 
-**Tool safety model**: 14 of the 16 MCP tools are strictly read-only (graph queries, semantic search, diff analysis — they cannot mutate any index or data). The remaining two — `submit_search_feedback` and `submit_ai_feedback` — are write tools: they record feedback in Postgres and can (indirectly, at accepted-feedback thresholds) trigger index rebuilds. They require the MCP bearer token like everything else, but do not treat them as side-effect-free.
+**Tool safety model**: 15 of the 17 MCP tools are strictly read-only (graph queries, semantic search, diff analysis, decision-model judgments — they cannot mutate any index or data). The remaining two — `submit_search_feedback` and `submit_ai_feedback` — are write tools: they record feedback in Postgres and can (indirectly, at accepted-feedback thresholds) trigger index rebuilds. They require the MCP bearer token like everything else, but do not treat them as side-effect-free.
 
 ### Rate Limiting
 
