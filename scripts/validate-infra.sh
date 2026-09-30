@@ -9,6 +9,9 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 API_BASE="${API_BASE:-http://localhost:8000}"
 MCP_URL="${MCP_URL:-http://localhost:8002/mcp}"
 MCP_TOKEN="${MCP_TOKEN:-$(grep '^MCP_AUTH_TOKEN=' "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2)}"
+API_TOKEN="${API_TOKEN:-$(grep '^API_AUTH_TOKEN=' "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2)}"
+API_AUTH=()
+[[ -n "$API_TOKEN" ]] && API_AUTH=(-H "Authorization: Bearer $API_TOKEN")
 PASS=0
 FAIL=0
 SKIP=0
@@ -17,7 +20,7 @@ check() {
     local label="$1"
     local url="$2"
     local expected_status="${3:-200}"
-    status_code=$(curl -sS -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || status_code="000"
+    status_code=$(curl -sS -o /dev/null -w "%{http_code}" "${API_AUTH[@]}" "$url" 2>/dev/null) || status_code="000"
     if [ "$status_code" = "$expected_status" ]; then
         echo "  PASS  $label ($status_code)"
         PASS=$((PASS + 1))
@@ -32,7 +35,7 @@ check_json() {
     local url="$2"
     local jq_expr="$3"
     local expected="$4"
-    value=$(curl -sS "$url" 2>/dev/null | jq -r "$jq_expr" 2>/dev/null) || value="ERROR"
+    value=$(curl -sS "${API_AUTH[@]}" "$url" 2>/dev/null | jq -r "$jq_expr" 2>/dev/null) || value="ERROR"
     if [ "$value" = "$expected" ]; then
         echo "  PASS  $label ($value)"
         PASS=$((PASS + 1))
@@ -78,7 +81,7 @@ check_json "Neo4j" "$API_BASE/api/health" '.backends[] | select(.backend=="neo4j
 
 echo ""
 echo "--- Index Stats ---"
-STATS=$(curl -sS "$API_BASE/api/index/stats" 2>/dev/null) || STATS="{}"
+STATS=$(curl -sS "${API_AUTH[@]}" "$API_BASE/api/index/stats" 2>/dev/null) || STATS="{}"
 GRAPH_NODES=$(echo "$STATS" | jq -r '.graph_nodes // 0')
 GRAPH_EDGES=$(echo "$STATS" | jq -r '.graph_edges // 0')
 SEMANTIC_DOCS=$(echo "$STATS" | jq -r '.semantic_documents // 0')
@@ -96,7 +99,7 @@ fi
 
 echo ""
 echo "--- Index Freshness ---"
-INGEST_STATUS=$(curl -sS "$API_BASE/api/index/ingest/status" 2>/dev/null) || INGEST_STATUS="{}"
+INGEST_STATUS=$(curl -sS "${API_AUTH[@]}" "$API_BASE/api/index/ingest/status" 2>/dev/null) || INGEST_STATUS="{}"
 UP_TO_DATE=$(echo "$INGEST_STATUS" | jq -r '.up_to_date // false')
 LAST_COMMIT=$(echo "$INGEST_STATUS" | jq -r '.last_indexed_commit // "none"' | cut -c1-8)
 HEAD_COMMIT=$(echo "$INGEST_STATUS" | jq -r '.current_head // "none"' | cut -c1-8)
