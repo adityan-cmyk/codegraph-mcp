@@ -13,3 +13,17 @@ datasources:
     access: proxy
     url: http://loki:3100
     editable: false
+
+  - name: Postgres
+    uid: pg-oncall
+    type: postgres
+    access: proxy
+    url: oncall-postgres:5432
+    user: grafana_ro
+    secureJsonData:
+      password: ${GRAFANA_PG_PASSWORD}
+    jsonData:
+      database: oncall
+      sslmode: disable
+      postgresVersion: 1600
+    editable: false

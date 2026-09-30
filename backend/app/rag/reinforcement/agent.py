@@ -115,6 +115,7 @@ def _agent_tick():
                     INDEX_STALE_HOURS.set(max(0.0, (_t.time() - int(when.stdout.strip())) / 3600))
         else:
             INDEX_STALE_HOURS.set(0.0)
+        from app.rag.retrieval.graph import graph_index
         stats = graph_index.get_stats()
         GRAPH_NODES.set(stats.get("graph_nodes", 0))
         GRAPH_EDGES.set(stats.get("graph_edges", 0))
