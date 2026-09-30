@@ -88,10 +88,23 @@ def _get_symbol_metadata(symbol_id: str) -> dict[str, object] | None:
     return None
 
 
+def _is_noise_symbol(symbol_id: str) -> bool:
+    """Filter index noise: wildcard bindings (`_`) and single-char
+    non-alphanumeric scraps that match everything fuzzily."""
+    name = symbol_id.split("::")[-1]
+    if name == "_":
+        return True
+    return len(name) <= 1 and not name.isalnum()
+
+
+def _filter_noise(results: list) -> list:
+    return [r for r in results if not _is_noise_symbol(r["symbol_id"] if isinstance(r, dict) else r)]
+
+
 def search_symbols(query: str, limit: int = 20) -> dict[str, object]:
     """Search for symbols in the graph by partial name match. Use this FIRST when you don't know the exact symbol_id — it returns matching symbol IDs that you can then pass to get_blast_radius or traverse_graph. Provide a partial name (e.g. 'InventoryClient', 'process_review', 'tag_inventory')."""
     limit = max(1, min(limit, 50))
-    results = graph_index.search_symbols(query, limit=limit)
+    results = _filter_noise(graph_index.search_symbols(query, limit=max(limit * 2, 50)))[:limit]
     return {
         "query": query,
         "matches": len(results),
@@ -192,19 +205,40 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
             result.pop(key, None)
         return _attach_stale_warning(result)
 
-    result["upstream"] = upstream[:_MAX_PER_DIRECTION]
-    result["downstream"] = downstream[:_MAX_PER_DIRECTION]
-    result["used_by"] = used_by[:_MAX_PER_DIRECTION]
-    result["uses"] = uses[:_MAX_PER_DIRECTION]
+    # Dedup preserving order — parallel edges (same target, different usage
+    # modes) must not produce duplicate entries in the flat lists
+    result["upstream"] = list(dict.fromkeys(upstream))[:_MAX_PER_DIRECTION]
+    result["downstream"] = list(dict.fromkeys(downstream))[:_MAX_PER_DIRECTION]
+    result["used_by"] = list(dict.fromkeys(used_by))[:_MAX_PER_DIRECTION]
+    result["uses"] = list(dict.fromkeys(uses))[:_MAX_PER_DIRECTION]
     result["used_by_modes"] = result.get("used_by_modes", {})
     result["uses_modes"] = result.get("uses_modes", {})
 
     if usage_modes_filter:
         used_by_modes = result.get("used_by_modes", {})
         uses_modes = result.get("uses_modes", {})
-        result["used_by"] = [s for s in result["used_by"] if any(m in used_by_modes.get(s, ["reference"]) for m in usage_modes_filter)]
-        result["uses"] = [s for s in result["uses"] if any(m in uses_modes.get(s, ["reference"]) for m in usage_modes_filter)]
-        result["filtered_by_usage_modes"] = usage_modes_filter
+        # Filter from the FULL mode maps (not the truncated top-N lists) so
+        # the filter actually narrows to matching edges across the whole
+        # neighborhood, and keep the maps consistent with the flat lists.
+        result["used_by"] = sorted(
+            s for s, modes in used_by_modes.items()
+            if any(m in modes for m in usage_modes_filter)
+        )[:_MAX_PER_DIRECTION]
+        result["uses"] = sorted(
+            s for s, modes in uses_modes.items()
+            if any(m in modes for m in usage_modes_filter)
+        )[:_MAX_PER_DIRECTION]
+        result["used_by_modes"] = {s: m for s, m in used_by_modes.items() if s in set(result["used_by"])}
+        result["uses_modes"] = {s: m for s, m in uses_modes.items() if s in set(result["uses"])}
+        result["filtered_by_usage_modes"] = {
+            "requested": usage_modes_filter,
+            "used_by_matches": sum(
+                1 for s, m in used_by_modes.items() if any(x in m for x in usage_modes_filter)
+            ),
+            "uses_matches": sum(
+                1 for s, m in uses_modes.items() if any(x in m for x in usage_modes_filter)
+            ),
+        }
 
     usage_modes: dict[str, int] = {}
     for mode_list in list(result.get("used_by_modes", {}).values()) + list(result.get("uses_modes", {}).values()):
@@ -230,10 +264,12 @@ def batch_blast_radius(symbol_ids: list[str]) -> dict[str, object]:
             continue
         for direction_key in ("upstream", "downstream", "used_by", "uses"):
             for edge in br.get(direction_key, []):
-                if isinstance(edge, dict):
-                    edge_sid = edge["symbol_id"]
-                    target_set = {"upstream": all_upstream, "downstream": all_downstream, "uses": all_uses, "used_by": all_used_by}[direction_key]
-                    target_set.add(edge_sid)
+                # Lists carry plain symbol_id strings; tolerate dict form too
+                edge_sid = edge["symbol_id"] if isinstance(edge, dict) else edge
+                if not edge_sid:
+                    continue
+                target_set = {"upstream": all_upstream, "downstream": all_downstream, "uses": all_uses, "used_by": all_used_by}[direction_key]
+                target_set.add(edge_sid)
         results.append({
             "symbol_id": br["symbol_id"],
             "risk_score": br["risk_score"],
@@ -499,24 +535,49 @@ def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False) -
     truncated = total_neighborhoods > _MAX_TRAVERSE_NEIGHBORHOODS
 
     if summary_only:
-        hop_counts: list[dict] = []
-        for i, n in enumerate(neighborhoods):
+        # Counts per BFS hop level (the doc contract): rebuild levels from
+        # the full neighborhood adjacency. new_symbols is deduplicated per
+        # level; discoveries_by_relation counts edge discoveries (a symbol
+        # reachable via two relations from the frontier counts once in
+        # new_symbols, twice in discoveries).
+        adjacency: dict[str, dict[str, list[str]]] = {}
+        for n in neighborhoods:
             nb = n.model_dump() if hasattr(n, "model_dump") else n
-            hop_counts.append({
-                "hop": i,
-                "symbol_id": nb.get("symbol_id", ""),
-                "upstream_count": len(nb.get("upstream", [])),
-                "downstream_count": len(nb.get("downstream", [])),
-                "used_by_count": len(nb.get("used_by", [])),
-                "uses_count": len(nb.get("uses", [])),
+            adjacency[nb.get("symbol_id", "")] = {
+                "upstream": nb.get("upstream", []),
+                "downstream": nb.get("downstream", []),
+                "used_by": nb.get("used_by", []),
+                "uses": nb.get("uses", []),
+            }
+        frontier = {symbol_id}
+        visited = {symbol_id}
+        levels: list[dict] = []
+        for level in range(1, depth + 1):
+            next_frontier: set[str] = set()
+            discoveries = {"upstream": 0, "downstream": 0, "used_by": 0, "uses": 0}
+            for sym in frontier:
+                rels = adjacency.get(sym) or {}
+                for rel, targets in rels.items():
+                    fresh = [t for t in targets if t not in visited]
+                    discoveries[rel] += len(fresh)
+                    next_frontier.update(fresh)
+            visited |= next_frontier
+            levels.append({
+                "hop": level,
+                "new_symbols": len(next_frontier),
+                "cumulative_reachable": len(visited) - 1,
+                "discoveries_by_relation": discoveries,
             })
+            frontier = next_frontier
+            if not frontier:
+                break
         return {
             "root_symbol": symbol_id,
             "depth": depth,
             "symbols_visited": total_neighborhoods,
             "total_reachable_symbols": len(all_symbols),
             "truncated": truncated,
-            "summary": hop_counts,
+            "summary": levels,
         }
 
     return {
@@ -542,7 +603,7 @@ def get_graph_stats() -> dict[str, object]:
 def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = True, fuzzy: bool = True) -> dict[str, object]:
     """Enhanced symbol search with file path matching and fuzzy name resolution. Use this when search_symbols returns 0 matches — it searches file paths, short names, and partial matches. Provide a partial name or file path (e.g. 'deactivate_customer', 'dormancy_report.rs', 'customer_controller')."""
     limit = max(1, min(limit, 50))
-    results = graph_index.search_symbols(query, limit=limit)
+    results = _filter_noise(graph_index.search_symbols(query, limit=max(limit * 2, 50)))[:limit]
 
     if not results and fuzzy:
         try:
