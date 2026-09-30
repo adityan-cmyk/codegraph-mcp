@@ -202,10 +202,20 @@ def _evaluate_quality(feedback_row: dict) -> tuple[float, str | None]:
 
 
 def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
-    """Run quality gating on pending feedback. Returns counts."""
+    """Run quality gating on pending AI feedback. Returns counts.
+
+    Gate order: local decision model (Ollama systemone, ~30s per entry —
+    capped at 5 entries per call so one call stays under ~3 min) with the
+    heuristic gate as fallback when the decision model is unavailable.
+    """
     _ensure_schema()
     accepted = 0
     rejected = 0
+
+    from app.core import systemone
+
+    use_decision_model = bool(settings.systemone_url)
+    effective_limit = min(limit, 5) if use_decision_model else limit
 
     with _connect() as conn:
         with conn.cursor() as cur:
@@ -214,12 +224,16 @@ def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
                 SELECT * FROM ai_feedback WHERE status = 'pending'
                 ORDER BY created_at ASC LIMIT %s
                 """,
-                (limit,),
+                (effective_limit,),
             )
             rows = cur.fetchall()
 
             for row in rows:
-                score, reason = _evaluate_quality(row)
+                judged = systemone.judge_feedback(row) if use_decision_model else None
+                if judged is not None:
+                    score, reason = systemone.gate_feedback(judged)
+                else:
+                    score, reason = _evaluate_quality(row)
                 if score > 0.5:
                     cur.execute(
                         """
@@ -243,7 +257,8 @@ def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
                     rejected += 1
         conn.commit()
 
-    logger.info("Feedback evaluation: %d accepted, %d rejected (of %d pending)", accepted, rejected, len(rows))
+    gate = "decision-model" if use_decision_model else "heuristic"
+    logger.info("Feedback evaluation (%s gate): %d accepted, %d rejected (of %d pending)", gate, accepted, rejected, len(rows))
     return {"accepted": accepted, "rejected": rejected, "evaluated": len(rows)}
 
 

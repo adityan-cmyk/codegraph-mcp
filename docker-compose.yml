@@ -167,9 +167,29 @@ services:
           cpus: "4.0"
           memory: 3G
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: oncall-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8G
+    healthcheck:
+      test: ["CMD", "/bin/ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 
 volumes:
   postgres_data:
   redis_data:
   neo4j_data:
   weaviate_data:
+  ollama_models:

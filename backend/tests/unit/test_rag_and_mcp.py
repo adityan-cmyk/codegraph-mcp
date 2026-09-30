@@ -7,6 +7,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app.core.index_store import index_metadata_store
+from app.core.systemone import gate_feedback
 from app.main import app
 from app.rag.ingestion.tree_sitter import extract_rust_chunks, generate_symbol_id
 from app.rag.indexing_service import index_rust_repository, replay_indexes_from_storage
@@ -42,6 +43,16 @@ fn login_user() {
             self.assertEqual(struct_chunks[0].symbol_id, generate_symbol_id("auth/handlers", "User"))
         if fn_chunks:
             self.assertEqual(fn_chunks[0].kind, "fn")
+
+    def test_short_reexport_only_file_does_not_crash(self) -> None:
+        """Regression: a 1-line `pub use ...;` file with no symbols hit
+        `lines.strip()` on a LIST in the no-match fallback branch and crashed
+        the nightly incremental ingest (2026-09-30, report_type.rs)."""
+        source = "pub use dashboard::types::api::mis_report::ReportType;\n"
+        chunks = extract_rust_chunks("async_service/product/core/report_type.rs", source)
+        # Either skipped as trivial or indexed as a module chunk — but never a crash
+        for c in chunks:
+            self.assertTrue(c.symbol_id)
 
     def test_semantic_index_returns_top_match(self) -> None:
         source = "fn login_user() { panic!(\"bad token\"); }"
@@ -240,6 +251,51 @@ class ReinforcementSyncIdempotencyTestCase(unittest.TestCase):
         self.assertEqual(len(applied_calls), 1, "second tick must not re-apply the same feedback")
         self.assertEqual(marked, [["fb1"]])
         self.assertFalse(applied_calls[0]["update_expansion"], "pseudo-query must not write query expansions")
+
+
+class SystemOneGateTestCase(unittest.TestCase):
+    """Decision-model feedback gate: actionable is the hard gate.
+
+    Validated against live nimble judgments on this host:
+    - good feedback:    specific=0.997, actionable=0.992, consistent=0.867
+    - garbage:          specific=0.027, actionable=0.065, consistent=0.391
+    - adversarial:      specific=0.999, actionable=0.042, consistent=0.995
+      (form-perfect, vacuous content — heuristic gate accepts it, model rejects)
+    """
+
+    def test_good_feedback_accepted(self) -> None:
+        score, reason = gate_feedback({"specific": 0.997, "actionable": 0.992, "consistent": 0.867})
+        self.assertIsNone(reason)
+        self.assertGreater(score, 0.5)
+
+    def test_garbage_rejected(self) -> None:
+        score, reason = gate_feedback({"specific": 0.027, "actionable": 0.065, "consistent": 0.391})
+        self.assertIsNotNone(reason)
+        self.assertLessEqual(score, 0.5)
+
+    def test_adversarial_form_perfect_but_vacuous_rejected(self) -> None:
+        score, reason = gate_feedback({"specific": 0.999, "actionable": 0.042, "consistent": 0.995})
+        self.assertIsNotNone(reason, "high specific + high consistent must NOT outweigh low actionable")
+        self.assertLessEqual(score, 0.5)
+
+    def test_judge_returns_none_when_service_unreachable(self) -> None:
+        """Fallback path: unreachable decision model must yield None, not raise."""
+        from unittest.mock import patch
+
+        from app.core import systemone
+
+        with patch.object(systemone.settings, "systemone_url", "http://127.0.0.1:1/v1/systemone"), \
+             patch.object(systemone.settings, "systemone_timeout", 2):
+            judged = systemone.judge_feedback({"client_id": "x", "quality_rating": 4})
+        self.assertIsNone(judged)
+
+    def test_judge_disabled_when_url_unset(self) -> None:
+        from unittest.mock import patch
+
+        from app.core import systemone
+
+        with patch.object(systemone.settings, "systemone_url", None):
+            self.assertIsNone(systemone.judge_feedback({"client_id": "x"}))
 
 
 if __name__ == "__main__":
