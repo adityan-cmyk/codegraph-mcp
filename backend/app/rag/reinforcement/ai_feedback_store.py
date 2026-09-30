@@ -119,6 +119,11 @@ def submit_feedback(
             row = cur.fetchone()
         conn.commit()
 
+    try:
+        from app.core.prom_metrics import FEEDBACK_SUBMISSIONS
+        FEEDBACK_SUBMISSIONS.inc()
+    except Exception:
+        pass
     logger.info(
         "AI feedback submitted: id=%s client=%s rating=%s tools=%d",
         feedback_id, client_id, quality_rating, len(tools_called),
@@ -239,11 +244,19 @@ def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
             rows = cur.fetchall()
 
             for row in rows:
+                import time as _t
+
+                from app.core.prom_metrics import FEEDBACK_SUBMISSIONS, GATE_LATENCY_MS, GATE_VERDICTS
+
+                _gate_start = _t.monotonic()
                 judged = systemone.judge_feedback(row) if use_decision_model else None
                 if judged is not None:
+                    GATE_LATENCY_MS.observe((_t.monotonic() - _gate_start) * 1000)
                     score, reason = systemone.gate_feedback(judged)
+                    GATE_VERDICTS.labels(verdict="decision_model").inc()
                 else:
                     score, reason = _evaluate_quality(row)
+                    GATE_VERDICTS.labels(verdict="heuristic_fallback").inc()
                 if score > 0.5:
                     cur.execute(
                         """

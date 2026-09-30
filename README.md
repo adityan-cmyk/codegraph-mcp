@@ -14,8 +14,8 @@ A stateless **MCP server** for code dependency graph analysis of Rust codebases 
 │  (any machine)   │     │  Server :8002    │────▶│  Weaviate          │  semantic vector search (shadow collections)
 │                  │     │  (16 tools)      │────▶│  PostgreSQL        │  snapshots, feedback, build registry
 │                  │────▶│  Feedback API    │     │  t2v-transformers  │  embedding model (BAAI/bge-base-en-v1.5)
-└──────────────────┘     │  :8000           │     └────────────────────┘
-                         └──────────────────┘
+└──────────────────┘     │  :8000           │     │  ollama            │  decision model (nimble 9B, feedback gate)
+                         └──────────────────┘     └────────────────────┘
                                  │
                          ┌──────────────────┐
                          │  Reinforcement   │
@@ -24,7 +24,27 @@ A stateless **MCP server** for code dependency graph analysis of Rust codebases 
                          │  - build monitor │
                          │  - auto-rollback │
                          └──────────────────┘
+
+Observability (internal-only except Grafana):
+
+┌─────────────────┐  10s scrape (bearer)  ┌──────────────┐
+│ backend         │──────────────────────▶│ Prometheus   │──┐
+│ /api/metrics    │                       │ (30d TSDB)   │  │
+└─────────────────┘                       └──────────────┤  │
+┌─────────────────┐  10s cadvisor         ┌──────────────┐│  │
+│ containers      │──────────────────────▶│              ││  │
+└─────────────────┘                       │  Grafana     │◀─┘
+┌─────────────────┐  10s docker_sd        │  :3000       │
+│ container logs  │──────────────────────▶│ (dashboards) │
+└─────────────────┘   ┌──────────────┐    │              │
+                      │ Loki         │───▶│              │
+                      │ (30d logs)   │    └──────────────┘
+                      └──────────────┘
 ```
+
+**Security posture of the observability stack**: Prometheus is pull-only (remote-write disabled, no host port), Loki's push API is reachable only inside the compose network (promtail is the sole writer), and Grafana is the only exposed service — admin login required, sign-up disabled, viewers are read-only. The scrape target `/api/metrics` sits behind the same `API_AUTH_TOKEN` as the rest of the API; Prometheus injects the token at startup from env.
+
+An interactive version of this diagram with full explanations lives in [docs/architecture.html](docs/architecture.html).
 
 ### Services
 
@@ -36,6 +56,12 @@ A stateless **MCP server** for code dependency graph analysis of Rust codebases 
 | `neo4j` | Code dependency graph (generation-tagged, zero-downtime rebuild) | 7474/7687 |
 | `weaviate` | Vector search (shadow collections, zero-downtime rebuild) | 8080 |
 | `t2v-transformers` | sentence-transformers BAAI/bge-base-en-v1.5 | 8081 |
+| `ollama` | Decision model for feedback quality gate (nimble 9B) | — |
+| `prometheus` | Metrics TSDB, 10s scrape, 30d retention | — (internal) |
+| `loki` | Log aggregation, 30d retention | — (internal) |
+| `promtail` | Ships oncall-* container logs to Loki | — |
+| `cadvisor` | Per-container CPU/memory metrics | — (internal) |
+| `grafana` | Dashboards (the only exposed observability port) | 3000 |
 
 ---
 

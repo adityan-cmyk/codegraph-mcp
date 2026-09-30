@@ -186,6 +186,101 @@ services:
       timeout: 10s
       retries: 3
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: oncall-prometheus
+    restart: unless-stopped
+    environment:
+      API_AUTH_TOKEN: "${API_AUTH_TOKEN}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        sed "s/__API_TOKEN__/$$API_AUTH_TOKEN/" /etc/prometheus/prometheus.yml.tpl > /tmp/prometheus.yml
+        && exec prometheus --config.file=/tmp/prometheus.yml
+        --storage.tsdb.retention.time=30d
+    volumes:
+      - ./monitoring/prometheus.yml.tpl:/etc/prometheus/prometheus.yml.tpl:ro
+      - prometheus_data:/prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  loki:
+    image: grafana/loki:latest
+    container_name: oncall-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: oncall-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: oncall-cadvisor
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: oncall-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_VIEWERS_CAN_EDIT: "false"
+      GF_SECURITY_ALLOW_ANONYMOUS: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/overview.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
 
 volumes:
   postgres_data:
@@ -193,3 +288,6 @@ volumes:
   neo4j_data:
   weaviate_data:
   ollama_models:
+  prometheus_data:
+  loki_data:
+  grafana_data:

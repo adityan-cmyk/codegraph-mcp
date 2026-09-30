@@ -749,17 +749,26 @@ async def _handle_mcp(request: Request) -> Response:
             })
 
         handler = _TOOLS[tool_name]["handler"]
+        import time as _t
+
+        from app.core.prom_metrics import MCP_TOOL_CALLS, MCP_TOOL_LATENCY_MS
+
+        _start = _t.monotonic()
         try:
             if asyncio.iscoroutinefunction(handler):
                 result = await handler(**arguments)
             else:
                 result = await asyncio.to_thread(handler, **arguments)
+            MCP_TOOL_LATENCY_MS.labels(tool=tool_name).observe((_t.monotonic() - _start) * 1000)
+            MCP_TOOL_CALLS.labels(tool=tool_name, status="ok").inc()
             _track_tool_usage(tool_name, arguments)
             return _respond(req_id, {
                 "content": [{"type": "text", "text": json.dumps(result, default=str)}],
                 "isError": False,
             })
         except Exception as exc:
+            MCP_TOOL_LATENCY_MS.labels(tool=tool_name).observe((_t.monotonic() - _start) * 1000)
+            MCP_TOOL_CALLS.labels(tool=tool_name, status="error").inc()
             logger.exception("Tool %s failed", tool_name)
             return _respond(req_id, {
                 "content": [{"type": "text", "text": json.dumps({"error": str(exc), "traceback": traceback.format_exc()[:2000]})}],
@@ -893,8 +902,9 @@ def _warn_if_auth_disabled():
 _app = Starlette(
     routes=_routes,
     middleware=[Middleware(BearerTokenAuthMiddleware)],
-    on_startup=[_warn_if_auth_disabled],
 )
+
+_warn_if_auth_disabled()
 
 
 def create_readonly_mcp_server():

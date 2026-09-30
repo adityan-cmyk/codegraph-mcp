@@ -201,6 +201,11 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
                 "Incremental reindex complete: %d symbols, %d edges",
                 result.symbols_indexed, result.graph_edges,
             )
+            try:
+                from app.core.prom_metrics import BUILD_DURATION_MS
+                BUILD_DURATION_MS.labels(build_type="incremental").observe((_time.time() - _start) * 1000)
+            except Exception:
+                pass
             notify_build_completed(
                 "incremental",
                 graph_nodes=result.graph_nodes,

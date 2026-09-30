@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>codegraph-mcp — Architecture</title>
+<style>
+  :root {
+    --ink: #16213e; --muted: #8b8fa3; --line: #e4e6eb;
+    --blue: #0f3460; --accent: #1d4ed8; --bg: #f4f5f7;
+    --green: #059669; --amber: #f59e0b; --red: #dc2626; --purple: #a21caf;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: var(--bg); color: var(--ink); padding: 32px; }
+  h1 { font-size: 26px; margin-bottom: 4px; }
+  .sub { color: var(--muted); margin-bottom: 28px; font-size: 14px; }
+  .lane { background: #fff; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .lane-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 14px; font-weight: 700; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch; }
+  .box { border: 2px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 210px; flex: 1; position: relative; }
+  .box h3 { font-size: 14px; margin-bottom: 6px; }
+  .box p { font-size: 12px; color: #4b5563; line-height: 1.5; }
+  .box .tag { position: absolute; top: -10px; right: 12px; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; color: #fff; }
+  .ext { border-color: var(--blue); } .ext .tag { background: var(--blue); }
+  .svc { border-color: var(--accent); } .svc .tag { background: var(--accent); }
+  .data { border-color: var(--green); } .data .tag { background: var(--green); }
+  .obs { border-color: var(--purple); } .obs .tag { background: var(--purple); }
+  .sec { border-color: var(--amber); } .sec .tag { background: var(--amber); }
+  .arrow-row { display: flex; gap: 14px; margin: 6px 0; }
+  .flow { font-size: 12px; color: var(--muted); padding: 4px 0 4px 12px; border-left: 3px solid var(--line); margin: 2px 0; }
+  .flow b { color: var(--ink); }
+  .badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: #eef1f6; color: var(--ink); margin-right: 6px; }
+  code { font-family: Consolas, monospace; font-size: 11.5px; background: #eef1f6; padding: 1px 5px; border-radius: 4px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th { text-align: left; background: var(--blue); color: #fff; padding: 7px 10px; }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  .ok { color: var(--green); font-weight: 700; } .no { color: var(--red); font-weight: 700; }
+</style>
+</head>
+<body>
+
+<h1>codegraph-mcp — System Architecture</h1>
+<p class="sub">Read-only code dependency graph + semantic search for Rust codebases, served to AI agents over MCP, with a reinforcement loop that learns from agent feedback.</p>
+
+<div class="lane">
+  <div class="lane-title">Clients &amp; Access</div>
+  <div class="row">
+    <div class="box ext"><span class="tag">EXTERNAL</span>
+      <h3>opencode Agents</h3>
+      <p>Any machine, any model. Calls the 16 MCP tools for PR review: blast radius, semantic search, diff analysis, feedback submission.</p>
+    </div>
+    <div class="box sec"><span class="tag">AUTH</span>
+      <h3>Tailscale Funnel</h3>
+      <p><code>https://tharun-pc…ts.net/mcp</code> — public entry to the MCP server only. Constant-time bearer token check, per-IP rate limiting with lockout. Team members can also reach services directly over the tailnet.</p>
+    </div>
+    <div class="box sec"><span class="tag">AUTH</span>
+      <h3>LAN / Tailnet</h3>
+      <p>REST API <code>:8000</code> (bearer token) and Grafana <code>:3000</code> (admin login). Sign-up disabled; viewers are read-only.</p>
+    </div>
+  </div>
+</div>
+
+<div class="lane">
+  <div class="lane-title">Serving Layer</div>
+  <div class="row">
+    <div class="box svc"><span class="tag">:8002</span>
+      <h3>Stateless MCP Server</h3>
+      <p>JSON-RPC over HTTP, survives client restarts. 14 read-only analysis tools + 2 feedback tools. Per-tool latency and call counters exported to Prometheus.</p>
+    </div>
+    <div class="box svc"><span class="tag">:8000</span>
+      <h3>REST API (FastAPI)</h3>
+      <p>Ingest triggers, build history, feedback evaluation, health. Bearer-token auth, rate limiting, request-size caps, trusted-host checks. All request latencies recorded in <b>ms</b>.</p>
+    </div>
+    <div class="box svc"><span class="tag">DAEMON</span>
+      <h3>Reinforcement Agent</h3>
+      <p>Every 5 min: quality-gates pending feedback (decision model), applies idempotent symbol boosts, refreshes gauges. Rerank refresh at 5 accepted, full rebuild at 10.</p>
+    </div>
+  </div>
+</div>
+
+<div class="lane">
+  <div class="lane-title">Storage &amp; Indexing</div>
+  <div class="row">
+    <div class="box data"><span class="tag">SOURCE OF TRUTH</span>
+      <h3>PostgreSQL</h3>
+      <p>Index snapshots (chunks + graph edges), build registry (parent-chained), AI feedback, boost weights, email audit log. Everything else is derived and rebuildable from here + git.</p>
+    </div>
+    <div class="box data"><span class="tag">DERIVED</span>
+      <h3>Neo4j</h3>
+      <p>Dependency graph, generation-tagged for zero-downtime swaps. Usage modes on USES edges (pattern_match, construction, trait_impl, …).</p>
+    </div>
+    <div class="box data"><span class="tag">DERIVED</span>
+      <h3>Weaviate</h3>
+      <p>Vector search with shadow-collection swaps. 768-dim embeddings from BAAI/bge-base-en-v1.5 (t2v-transformers).</p>
+    </div>
+    <div class="box data"><span class="tag">DECISIONS</span>
+      <h3>Ollama — nimble 9B</h3>
+      <p>Local decision model via <code>/v1/systemone</code>. Judges feedback content (specific / actionable / consistent) for the quality gate. ~30s/decision on CPU, async only, heuristic fallback.</p>
+    </div>
+    <div class="box data"><span class="tag">CACHE</span>
+      <h3>Redis</h3>
+      <p>Rate limiting, build duration history, query stats, known MCP client IPs. All keys TTL'd (90d).</p>
+    </div>
+  </div>
+  <p class="flow"><b>Ingestion:</b> git repo → regex/tree-sitter extraction → snapshot in Postgres → graph (Neo4j gen swap) + semantic (Weaviate shadow swap) in parallel → cleanup old generations. Nightly sync via cron; incremental with blast-radius expansion; full rebuild fallback.</p>
+</div>
+
+<div class="lane">
+  <div class="lane-title">Observability <span style="color:var(--purple)">— 10s resolution, 30-day retention</span></div>
+  <div class="row">
+    <div class="box obs"><span class="tag">SCRAPE</span>
+      <h3>Prometheus</h3>
+      <p>Pull-only TSDB. Scrapes backend <code>/api/metrics</code> (bearer-injected), cadvisor, itself. Remote-write disabled, <b>no host port</b>.</p>
+    </div>
+    <div class="box obs"><span class="tag">LOGS</span>
+      <h3>Loki + Promtail</h3>
+      <p>Promtail tails all <code>oncall-*</code> container logs (docker_sd, 10s refresh) and pushes to Loki over the internal network. Push API not exposed.</p>
+    </div>
+    <div class="box obs"><span class="tag">CONTAINERS</span>
+      <h3>cadvisor</h3>
+      <p>Per-container CPU cores, memory, network. Read-only mounts, internal only.</p>
+    </div>
+    <div class="box obs"><span class="tag">:3000 EXPOSED</span>
+      <h3>Grafana</h3>
+      <p>The only exposed observability port. Dashboards: infra on top (RAM, CPU cores), then index freshness, build status, MCP calls/s + latency (ms), feedback gate. Admin + read-only viewers.</p>
+    </div>
+  </div>
+</div>
+
+<div class="lane">
+  <div class="lane-title">Security Boundaries</div>
+  <div class="grid2">
+    <table>
+      <tr><th>Surface</th><th>Protection</th></tr>
+      <tr><td>MCP :8002 (public funnel)</td><td class="ok">Bearer token, constant-time, rate-limited lockout</td></tr>
+      <tr><td>REST :8000 (LAN)</td><td class="ok">Bearer token, rate limits, trusted hosts</td></tr>
+      <tr><td>Grafana :3000 (LAN/tailnet)</td><td class="ok">Admin login, no signup, viewers read-only</td></tr>
+      <tr><td>Prometheus / Loki / cadvisor</td><td class="ok">Internal-only network, no host ports</td></tr>
+      <tr><td>Metrics scrape</td><td class="ok">Token-authed target, pull-only, remote-write off</td></tr>
+    </table>
+    <table>
+      <tr><th>Safety Property</th><th>Mechanism</th></tr>
+      <tr><td>Tests can't wipe indexes</td><td>3 layers: memory-forcing conftest, reset guards, <code>--network none</code> runner</td></tr>
+      <tr><td>Zero-downtime rebuilds</td><td>Gen-tagged graph + shadow collections + atomic proxy swaps</td></tr>
+      <tr><td>Recoverable from any index loss</td><td>Postgres snapshots + git repo = full rebuild in ~2h</td></tr>
+      <tr><td>Feedback can't be gamed by form</td><td>Decision-model gate on content (actionable ≥ 0.5)</td></tr>
+      <tr><td>Supply chain</td><td>Hash-pinned deps, non-root containers, read-only rootfs, dropped caps</td></tr>
+    </table>
+  </div>
+</div>
+
+<p class="sub" style="margin-top:8px">codegraph-mcp · generated 2026-10-01 · see README.md for operational details</p>
+</body>
+</html>

@@ -199,6 +199,11 @@ def send_email(subject: str, body_html: str, retries: int = 3, retry_delay: floa
                 server.login(settings.smtp_user, settings.smtp_password)
                 server.send_message(msg)
 
+            try:
+                from app.core.prom_metrics import EMAILS
+                EMAILS.labels(status="sent").inc()
+            except Exception:
+                pass
             logger.info("Notification sent: %s", subject)
             _log_email(sender, recipient, subject, {
                 "status": "sent",
@@ -216,6 +221,11 @@ def send_email(subject: str, body_html: str, retries: int = 3, retry_delay: floa
                 import time
                 time.sleep(retry_delay)
             else:
+                try:
+                    from app.core.prom_metrics import EMAILS
+                    EMAILS.labels(status="failed").inc()
+                except Exception:
+                    pass
                 logger.warning("Failed to send notification after %d attempts: %s", retries, subject, exc_info=True)
                 _log_email(sender, recipient, subject, {
                     "status": "failed",

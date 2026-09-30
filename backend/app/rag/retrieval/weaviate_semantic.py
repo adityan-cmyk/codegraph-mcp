@@ -326,6 +326,11 @@ class WeaviateSemanticIndex:
             failed = batch.number_errors
             if failed:
                 logger.warning("Batch insert: %d objects failed out of %d chunks (batch %d)", failed, len(batch_chunks), i // embed_batch_size)
+            try:
+                from app.core.prom_metrics import BUILD_BATCHES
+                BUILD_BATCHES.inc()
+            except Exception:
+                pass
             logger.info("Embedded and inserted %d/%d chunks (collection: %s)", min(i + embed_batch_size, len(chunks)), len(chunks), write_name)
 
     # ---- reads (always hit active collection) ----

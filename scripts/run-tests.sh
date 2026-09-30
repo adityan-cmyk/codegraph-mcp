@@ -20,8 +20,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-IMAGE="$(docker compose -f "$PROJECT_ROOT/docker-compose.yml" images -q backend)"
-if [ -z "$IMAGE" ]; then
+# Use the latest BUILT image (docker compose images would return the
+# RUNNING container's image, which may be older than a fresh build).
+IMAGE="on-call-assistance-backend:latest"
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "ERROR: backend image not built yet — run: docker compose build backend" >&2
     exit 1
 fi
