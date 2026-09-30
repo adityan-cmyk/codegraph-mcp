@@ -244,7 +244,7 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
         use_block = "// Imports: " + ", ".join(use_stmts[:20]) + "\n\n"
 
     if not matches:
-        if len(lines) <= 3 and _count_trivial_lines(source) == len(lines.strip().splitlines()):
+        if len(lines) <= 3 and _count_trivial_lines(source) == len(source.strip().splitlines()):
             return []
         fallback_symbol = generate_symbol_id(file_path.removesuffix(".rs"), "module")
         module_content = use_block + source if use_block else source
