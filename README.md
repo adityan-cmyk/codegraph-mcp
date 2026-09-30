@@ -325,6 +325,34 @@ When reviewing a PR, use the `oncall-graph` MCP tools to understand blast radius
 
 The system improves search quality over time through a multi-stage feedback pipeline. Each time an external opencode agent uses the MCP tools for a PR review, it submits feedback about what was helpful, what was missing, and what could be better. The system learns from this feedback and applies it to future searches.
 
+### Decision-Model Quality Gate
+
+The quality gate is judged by a **local decision model** — [Ollama](https://ollama.com)'s `/v1/systemone` endpoint running `nimble` (Bespoke Labs' open-source 9B decision model, Jev-style typed decisions) — with a rule-based heuristic as automatic fallback when the model service is down.
+
+**Why a decision model instead of rules?** A form-based gate (length checks, symbol-citation counts, rating thresholds) is a Goodhart target: any LLM writes feedback that passes those checks by default, including when the feedback is wrong or vacuous. The decision model judges the *content*: whether the feedback describes expected-but-missing results — the substance that drives query expansion and symbol boosts. On live samples:
+
+| Feedback type | `specific` | `actionable` | `consistent` | Gate |
+|---|---|---|---|---|
+| Genuine (cites symbols, names gaps) | 0.997 | 0.992 | 0.867 | accepted |
+| Low-effort ("it was fine i guess") | 0.027 | 0.065 | 0.391 | rejected |
+| **Adversarial** (fake symbols, "everything perfect", rating 5) | 0.999 | **0.042** | 0.995 | **rejected** |
+
+The adversarial row is the case a form-based gate cannot catch — it has every surface signal of quality but zero informational content. The acceptance rule is a hard gate on `actionable >= 0.5`; `specific` and `consistent` feed the stored quality score.
+
+**Speed** (measured on the reference host — i9-14900K, CPU-only, ~1000 input tokens per decision):
+
+| Model | Per decision | Notes |
+|---|---|---|
+| `nimble` 9B (default) | **20-35s** | memory-bandwidth-bound — does not improve with more CPU cores |
+| `tev1` 4B | 4-12s | ~3x faster but weak separation (scores vacuous feedback 0.56 actionable) |
+| Hosted Jev API | 70-500ms | reference; requires network + paid key |
+
+This latency is acceptable because gating is **async and rare**: it runs in the 5-minute reinforcement loop, only when pending feedback exists (~18 submissions in 3 months of use), capped at 5 entries per evaluation. A decision model must never sit on a hot request path.
+
+**Impact on the loop**: the gate decides which feedback reaches signal extraction (symbol boosts, query expansion) and the rebuild thresholds. Better gating means boost weights track genuine usefulness instead of LLM politeness, and the reinforcement loop can't be steered by form-perfect empty feedback.
+
+**Ops**: `oncall-ollama` container (4 CPU / 8GB limits, `OLLAMA_KEEP_ALIVE=30m`), model volume persisted. `SYSTEMONE_URL` unset → gate disabled, heuristic used. Service down → per-request fallback, logged.
+
 ### Decision Pipeline
 
 ```
