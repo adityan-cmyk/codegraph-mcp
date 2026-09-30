@@ -760,6 +760,8 @@ async def _handle_mcp(request: Request) -> Response:
         params = body.get("params", {})
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
+        if not isinstance(arguments, dict):
+            return _jsonrpc_error(req_id, -32602, "Invalid params: 'arguments' must be an object")
 
         if tool_name not in _TOOLS:
             return _respond(req_id, {
@@ -826,9 +828,24 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
     """
 
     _failed_attempts: dict[str, list[float]] = {}
+    _tool_calls: dict[str, list[float]] = {}
     _MAX_ATTEMPTS = 5
     _WINDOW_SEC = 60
     _LOCKOUT_SEC = 300
+    _TOOL_RATE_PER_MIN = 60
+
+    def _tool_rate_limited(self, client_ip: str) -> bool:
+        import time
+
+        now = time.time()
+        calls = self._tool_calls.get(client_ip, [])
+        calls = [t for t in calls if now - t < 60]
+        if len(calls) >= self._TOOL_RATE_PER_MIN:
+            self._tool_calls[client_ip] = calls
+            return True
+        calls.append(now)
+        self._tool_calls[client_ip] = calls
+        return False
 
     def _is_rate_limited(self, client_ip: str) -> bool:
         import time
@@ -895,6 +912,27 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
             provided = auth[7:]
 
         if hmac.compare_digest(provided, token):
+            # Authenticated tool-call rate limiting (sliding 60s window per IP).
+            # Protects the process (and in-flight builds) from agent load tests
+            # and runaway loops — the GIL means unbounded concurrent tool calls
+            # starve embedding and indexing threads.
+            if request.method == "POST" and request.url.path.endswith("/mcp"):
+                if self._tool_rate_limited(client_ip):
+                    logger.warning("Tool-call rate limit hit for IP %s", client_ip)
+                    return JSONResponse(
+                        {
+                            "jsonrpc": "2.0", "id": None,
+                            "error": {
+                                "code": -32002,
+                                "message": (
+                                    f"Rate limit: max {self._TOOL_RATE_PER_MIN} MCP requests/min per client. "
+                                    "Back off and retry."
+                                ),
+                            },
+                        },
+                        status_code=429,
+                        headers={"Retry-After": "60"},
+                    )
             self._notify_new_client_if_needed(client_ip, request)
             return await call_next(request)
 
