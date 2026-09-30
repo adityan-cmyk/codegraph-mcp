@@ -41,6 +41,7 @@ from app.mcp.tools.graph_read_tools import (
     get_blast_radius_detailed,
     get_index_meta,
     get_symbols_in_file,
+    make_decision,
 )
 
 logger = logging.getLogger(__name__)
@@ -357,6 +358,24 @@ _TOOLS: dict[str, Any] = {
                 },
             },
             "required": ["file_path"],
+        },
+    },
+    "make_decision": {
+        "handler": make_decision,
+        "description": inspect.getdoc(make_decision) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "state": {
+                    "type": "string",
+                    "description": "The text or JSON to judge, max 8000 chars",
+                },
+                "questions": {
+                    "type": "object",
+                    "description": "Up to 8 named questions. Each: {type: 'noul'|'score'|'choice', instructions: string, criteria: object (choice) or array of labels (score)}. noul returns a yes/no probability, score ranks on the spectrum, choice picks one value.",
+                },
+            },
+            "required": ["state", "questions"],
         },
     },
 }

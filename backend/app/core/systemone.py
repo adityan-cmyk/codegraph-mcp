@@ -27,6 +27,39 @@ logger = logging.getLogger(__name__)
 # actionable=0.04 — correctly rejected).
 _ACTIONABLE_THRESHOLD = 0.5
 
+# Guards for the generic make_decision tool
+MAX_QUESTIONS = 8
+MAX_STATE_CHARS = 8000
+_ALLOWED_TYPES = ("noul", "score", "choice")
+
+
+def decide(state: str, questions: dict) -> dict | None:
+    """Generic typed-decision call — returns the raw answers dict or None on
+    failure (service down, timeout, malformed questions)."""
+    if not settings.systemone_url:
+        return None
+    if not isinstance(state, str) or not state.strip():
+        return None
+    if not isinstance(questions, dict) or not questions or len(questions) > MAX_QUESTIONS:
+        return None
+    for name, q in questions.items():
+        if not isinstance(q, dict) or q.get("type") not in _ALLOWED_TYPES:
+            return None
+
+    import requests
+
+    try:
+        response = requests.post(
+            settings.systemone_url,
+            json={"model": settings.systemone_model, "state": state, "questions": questions},
+            timeout=settings.systemone_timeout,
+        )
+        response.raise_for_status()
+        return response.json().get("answers") or None
+    except Exception:
+        logger.info("Decision call failed", exc_info=True)
+        return None
+
 
 def judge_feedback(feedback_row: dict) -> dict[str, float] | None:
     """Ask the decision model to judge a feedback entry.
