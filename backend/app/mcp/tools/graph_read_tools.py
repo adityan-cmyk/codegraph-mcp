@@ -5,6 +5,7 @@ No write, index, file, cargo, or mutation operations are accessible.
 """
 
 import logging
+import threading
 import uuid
 
 from app.rag.retrieval.graph import graph_index
@@ -892,3 +893,42 @@ def get_symbols_in_file(file_path: str) -> dict[str, object]:
         "symbols_found": len(symbols),
         "symbols": symbols,
     }
+
+
+# ============================================================================
+# Idea 10: Decision model gateway — typed yes/no, score, choice judgments
+# ============================================================================
+
+_DECISION_LOCK = threading.Lock()
+
+
+def make_decision(state: str, questions: dict) -> dict[str, object]:
+    """Get fast, typed judgments from a local decision model (Jev-style System One). Sends your state text plus named questions and gets back a choice, a score, or a calibrated yes/no probability (noul) for each — NOT chat. Takes 10-35 seconds per call (local CPU model), so use it for decisions worth waiting on: PR risk assessment, triage routing, content gating — not for anything per-message. Provide 'state' (the text/JSON to judge, max 8000 chars) and 'questions': an object of up to 8 named questions, each {type: 'noul'|'score'|'choice', instructions: string, criteria: for choice — an object of allowed values; for score — an array of labels low to high}. Example: {"state": "PR changes 446 files in wallet closure", "questions": {"risk": {"type": "score", "instructions": "How risky?", "criteria": ["low", "medium", "high"]}, "needs_review": {"type": "noul", "instructions": "Needs senior review?"}}}"""
+    from app.core import systemone
+
+    if not isinstance(state, str) or not state.strip():
+        return {"error": "state must be a non-empty string"}
+    if len(state) > systemone.MAX_STATE_CHARS:
+        return {"error": f"state too long ({len(state)} chars, max {systemone.MAX_STATE_CHARS})"}
+    if not isinstance(questions, dict) or not questions:
+        return {"error": "questions must be a non-empty object of named questions"}
+    if len(questions) > systemone.MAX_QUESTIONS:
+        return {"error": f"too many questions ({len(questions)}, max {systemone.MAX_QUESTIONS})"}
+    for name, q in questions.items():
+        if not isinstance(q, dict) or q.get("type") not in systemone._ALLOWED_TYPES:
+            return {"error": f"question '{name}' must have type noul, score, or choice"}
+
+    if not _DECISION_LOCK.acquire(blocking=False):
+        return {
+            "error": "decision model busy with another request — it processes one at a time (~30s); retry shortly"
+        }
+    try:
+        answers = systemone.decide(state, questions)
+        if answers is None:
+            return {
+                "error": "decision model unavailable (service down or timed out)",
+                "hint": "try again later or decide without the model",
+            }
+        return {"answers": answers, "model": "nimble"}
+    finally:
+        _DECISION_LOCK.release()
