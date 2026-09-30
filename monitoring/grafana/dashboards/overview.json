@@ -60,7 +60,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Host CPU cores in use",
+      "title": "CPU cores in use / total",
       "gridPos": {
         "h": 5,
         "w": 4,
@@ -69,7 +69,12 @@
       },
       "targets": [
         {
-          "expr": "rate(container_cpu_usage_seconds_total{id=\"/\"}[1m])"
+          "expr": "rate(container_cpu_usage_seconds_total{id=\"/\"}[1m])",
+          "legendFormat": "in use"
+        },
+        {
+          "expr": "machine_cpu_cores",
+          "legendFormat": "total"
         }
       ],
       "fieldConfig": {
@@ -406,6 +411,46 @@
           "legendFormat": "{{status}}"
         }
       ]
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "Build History (from Postgres \u2014 includes builds predating metrics)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "collapsed": false
+    },
+    {
+      "id": 41,
+      "type": "table",
+      "title": "All builds",
+      "datasource": {
+        "type": "postgres",
+        "uid": "pg-oncall"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "pg-oncall"
+          },
+          "rawSql": "SELECT build_type, status, chunk_count, graph_nodes, graph_edges, CASE WHEN completed_at IS NULL THEN 'running' ELSE round(EXTRACT(EPOCH FROM (completed_at - created_at))::numeric, 0) || 's' END AS duration, weaviate_collection, neo4j_gen, created_at FROM build_registry ORDER BY created_at DESC LIMIT 25",
+          "format": "table"
+        }
+      ],
+      "options": {
+        "showHeader": true
+      }
     }
   ]
 }
