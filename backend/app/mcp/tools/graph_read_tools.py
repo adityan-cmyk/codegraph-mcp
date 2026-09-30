@@ -610,6 +610,11 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
 # ============================================================================
 
 def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
+    import time as _t
+
+    from app.core.prom_metrics import SEMANTIC_SEARCH_LATENCY_MS
+
+    _search_start = _t.monotonic()
     """Search the codebase by meaning, not just by name. Use this to find all code related to a concept (e.g. 'payment validation', 'wallet closure logic', 'authentication flow'). Returns matching symbols with relevance scores. Includes hybrid BM25+vector search, timeout protection, and automatic fallback to graph search if Weaviate is slow. After reviewing the results, call submit_search_feedback to indicate which results were helpful."""
     limit = max(1, min(limit, 25))
 
@@ -676,6 +681,7 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
     except Exception:
         pass
 
+    SEMANTIC_SEARCH_LATENCY_MS.observe((_t.monotonic() - _search_start) * 1000)
     return _attach_stale_warning({
         "query": query,
         "query_id": query_id,

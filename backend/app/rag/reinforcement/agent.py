@@ -90,6 +90,37 @@ def _agent_tick():
     except Exception:
         logger.debug("Feedback evaluation failed", exc_info=True)
 
+    # 1b. Publish observability gauges (index freshness, graph size)
+    try:
+        import time as _t
+
+        from app.core.prom_metrics import GRAPH_EDGES, GRAPH_NODES, INDEX_STALE_HOURS
+        from app.rag.ingestion.git_ingestor import get_current_head, get_last_indexed_commit
+
+        head = get_current_head()
+        last = get_last_indexed_commit()
+        if head and last and head != last:
+            import subprocess
+
+            out = subprocess.run(
+                ["git", "merge-base", "--is-ancestor", last, head],
+                capture_output=True, cwd="/repos/codebase",
+            )
+            if out.returncode == 0:
+                when = subprocess.run(
+                    ["git", "show", "-s", "--format=%ct", head],
+                    capture_output=True, text=True, cwd="/repos/codebase",
+                )
+                if when.returncode == 0 and when.stdout.strip().isdigit():
+                    INDEX_STALE_HOURS.set(max(0.0, (_t.time() - int(when.stdout.strip())) / 3600))
+        else:
+            INDEX_STALE_HOURS.set(0.0)
+        stats = graph_index.get_stats()
+        GRAPH_NODES.set(stats.get("graph_nodes", 0))
+        GRAPH_EDGES.set(stats.get("graph_edges", 0))
+    except Exception:
+        logger.debug("Gauge publish failed", exc_info=True)
+
     # 2. Sync accepted AI feedback into per-symbol boost weights (idempotent —
     #    each entry is applied exactly once via boost_applied_at watermark)
     try:

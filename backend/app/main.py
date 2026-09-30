@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 
 from app.api.routers.feedback import router as feedback_router
 from app.api.routers.graph import router as graph_router
@@ -86,6 +86,24 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(TraceIdMiddleware)
 app.add_middleware(AuthMiddleware)
 
+
+@app.middleware("http")
+async def metrics_latency_middleware(request: Request, call_next):
+    """Record REST API request latency in ms for all /api routes."""
+    if request.url.path.startswith("/api/"):
+        import time as _t
+
+        from app.core.prom_metrics import API_REQUEST_LATENCY_MS
+
+        start = _t.monotonic()
+        try:
+            return await call_next(request)
+        finally:
+            API_REQUEST_LATENCY_MS.labels(
+                method=request.method, path=request.url.path
+            ).observe((_t.monotonic() - start) * 1000)
+    return await call_next(request)
+
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
 
@@ -119,8 +137,11 @@ def detailed_health() -> dict[str, object]:
 
 
 @app.get("/api/metrics")
-def get_metrics() -> dict[str, object]:
-    return metrics_collector.snapshot()
+def get_metrics():
+    from app.core.prom_metrics import exposition
+
+    body, content_type = exposition()
+    return Response(content=body, media_type=content_type)
 
 
 @app.get("/api/tracing/status")
