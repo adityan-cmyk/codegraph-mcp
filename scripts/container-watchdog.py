@@ -196,7 +196,7 @@ def heal_container(container: str, service: str, state: dict, env: dict) -> None
                     "",
                     "Weaviate data was corrupted (cluster join loop).",
                     "ACTION REQUIRED: trigger full reindex:",
-                    "  curl -X POST http://localhost:8000/api/index/repository -H 'Content-Type: application/json' -d '{\"repository_path\": \"/repos/codebase\"}'",
+                    "  curl -X POST http://localhost:8000/api/index/repository -H 'Content-Type: application/json' -H 'Authorization: Bearer <API_AUTH_TOKEN from .env>' -d '{\"repository_path\": \"/repos/codebase\"}'",
                 ]),
                 env=env,
             )

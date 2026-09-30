@@ -58,6 +58,7 @@ for attempt in 1 2 3; do
         log "Git pull failed after 3 attempts: $GIT_PULL_ERROR"
         curl -s -X POST "$API_URL/api/index/notify/nightly-sync-failed" \
             -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${API_AUTH_TOKEN:-}" \
             -d "{\"stage\": \"git_pull\", \"error\": \"$(echo "$GIT_PULL_ERROR" | head -c 500 | sed 's/"/\\"/g' | tr '\n' ' ')\"}" || true
         exit 1
     fi
@@ -67,7 +68,7 @@ log "Git pull complete"
 
 # Step 2: Trigger incremental reindex via API (git diff based, not full rebuild)
 log "Triggering incremental reindex..."
-RESPONSE=$(curl -s --max-time 14400 -X POST "$API_URL/api/index/ingest" 2>&1) || true
+RESPONSE=$(curl -s --max-time 14400 -X POST -H "Authorization: Bearer ${API_AUTH_TOKEN:-}" "$API_URL/api/index/ingest" 2>&1) || true
 log "Reindex response: $RESPONSE"
 
 log "Nightly sync complete"
