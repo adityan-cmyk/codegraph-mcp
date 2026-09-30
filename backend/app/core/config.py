@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     smtp_user: str | None = None
     smtp_password: str | None = None
     smtp_from: str | None = None
+
+    # Local decision model (Ollama /v1/systemone) for feedback quality gating.
+    # Empty = disabled, heuristic gate is used.
+    systemone_url: str | None = None
+    systemone_model: str = "nimble"
+    systemone_timeout: int = 90
     smtp_to: list[str] = Field(default_factory=list)
     smtp_use_tls: bool = True
 
