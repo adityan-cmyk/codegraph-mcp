@@ -300,3 +300,48 @@ class SystemOneGateTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFixesTestCase(unittest.TestCase):
+    """Regression tests from the 2026-10-01 deep-dive review."""
+
+    def setUp(self) -> None:
+        semantic_index.reset()
+        graph_index.reset()
+        index_metadata_store.reset()
+
+    def test_batch_blast_radius_counts_string_edges(self) -> None:
+        """combined_impact was all-zeros: aggregation expected dict edges but
+        lists carry plain strings — the isinstance guard skipped everything."""
+        from app.mcp.tools.graph_read_tools import batch_blast_radius
+
+        graph_index.upsert_symbol("app::wallet::debit", calls=["app::ledger::record"])
+        graph_index.upsert_symbol("app::audit::check", calls=["app::wallet::debit"])
+        result = batch_blast_radius(["app::wallet::debit"])
+        ci = result["combined_impact"]
+        self.assertGreaterEqual(ci["total_unique_callees"], 1)
+
+    def test_search_symbols_filters_wildcard_noise(self) -> None:
+        """`_` wildcard bindings must not appear in search results."""
+        from app.mcp.tools.graph_read_tools import search_symbols
+
+        graph_index.upsert_symbol("app::handlers::_")
+        graph_index.upsert_symbol("app::handlers::real_fn")
+        result = search_symbols("handlers")
+        names = [s["symbol_id"] for s in result["symbols"]]
+        self.assertNotIn("app::handlers::_", names)
+        self.assertIn("app::handlers::real_fn", names)
+
+    def test_traverse_summary_counts_per_hop_level(self) -> None:
+        """summary_only must return per-BFS-hop counts, not per-symbol rows
+        with a sequential index masquerading as hop distance."""
+        from app.mcp.tools.graph_read_tools import traverse_graph
+
+        graph_index.upsert_symbol("app::a::root", calls=["app::b::mid"])
+        graph_index.upsert_symbol("app::b::mid", calls=["app::c::leaf"])
+        result = traverse_graph("app::a::root", depth=2, summary_only=True)
+        levels = result["summary"]
+        self.assertGreaterEqual(len(levels), 2)
+        self.assertEqual(levels[0]["hop"], 1)
+        self.assertEqual(levels[1]["hop"], 2)
+        self.assertGreaterEqual(levels[1]["cumulative_reachable"], 2)
