@@ -817,6 +817,20 @@ _routes = [
 ]
 
 
+def _client_key(request: Request) -> str:
+    """Best-effort real client identity for rate limiting and notifications.
+
+    Tailscale Funnel traffic arrives from the Docker bridge gateway socket
+    (all funnel users share it), but Funnel sets X-Forwarded-For with the
+    real client IP — prefer that. Direct LAN connections have no XFF and
+    fall back to the socket peer.
+    """
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
 class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
     """Constant-time bearer token auth with IP-based rate limiting.
 
@@ -895,7 +909,7 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
         if not token:
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = _client_key(request)
 
         if self._is_rate_limited(client_ip):
             logger.warning("Auth rate-limited for IP %s — possible brute force", client_ip)
