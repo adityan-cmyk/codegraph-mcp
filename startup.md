@@ -120,10 +120,16 @@ calls in these scripts read `.env` for `API_AUTH_TOKEN`.
 ### 7. Deploy workflow (after setup)
 
 ```bash
-git push && docker compose build backend    # auto-deployer does the rest
+git push origin main    # that's it — GitOps converges the rest
 ```
 
-Rollback: `docker tag on-call-assistance-backend:last-good on-call-assistance-backend:latest && docker compose up -d backend`
+The loop (cron, every 2 min): `scripts/gitops-pull.sh` fetches origin/main,
+fast-forwards (never builds a dirty tree, never discards unpushed commits),
+builds — then `scripts/auto-deploy.sh` (every minute) deploys on image diff,
+tags the git SHA + `last-good`, verifies health, and emails on success or
+failure. A failed build never deploys; the old image keeps running.
+
+Manual rollback: `docker tag on-call-assistance-backend:last-good on-call-assistance-backend:latest && docker compose up -d backend`
 
 ## Troubleshooting
 
