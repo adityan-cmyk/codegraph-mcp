@@ -178,7 +178,10 @@ def _build_state(feedback_row: dict) -> str:
     tools = feedback_row.get("tools_called") or []
     if isinstance(tools, str):
         tools = json.loads(tools)
-    tool_names = [t.get("tool") if isinstance(t, dict) else str(t) for t in tools]
+    tool_names = [
+        str((t.get("tool") if isinstance(t, dict) else None) or (t.get("name") if isinstance(t, dict) else None) or t)
+        for t in tools
+    ]
 
     results_used = feedback_row.get("results_used") or []
     if isinstance(results_used, str):

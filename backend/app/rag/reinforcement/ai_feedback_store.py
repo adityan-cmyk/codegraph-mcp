@@ -266,15 +266,24 @@ def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
 
                 from app.core.prom_metrics import FEEDBACK_SUBMISSIONS, GATE_LATENCY_MS, GATE_VERDICTS
 
-                _gate_start = _t.monotonic()
-                judged = systemone.judge_feedback(row) if use_decision_model else None
-                if judged is not None:
-                    GATE_LATENCY_MS.observe((_t.monotonic() - _gate_start) * 1000)
-                    score, reason = systemone.gate_feedback(judged)
-                    GATE_VERDICTS.labels(verdict="decision_model").inc()
-                else:
-                    score, reason = _evaluate_quality(row)
-                    GATE_VERDICTS.labels(verdict="heuristic_fallback").inc()
+                try:
+                    _gate_start = _t.monotonic()
+                    judged = systemone.judge_feedback(row) if use_decision_model else None
+                    if judged is not None:
+                        GATE_LATENCY_MS.observe((_t.monotonic() - _gate_start) * 1000)
+                        score, reason = systemone.gate_feedback(judged)
+                        GATE_VERDICTS.labels(verdict="decision_model").inc()
+                    else:
+                        score, reason = _evaluate_quality(row)
+                        GATE_VERDICTS.labels(verdict="heuristic_fallback").inc()
+                except Exception as exc:
+                    # One malformed row must never block the whole queue —
+                    # this exact failure starved evaluation for 19 hours.
+                    logger.warning(
+                        "Gate crashed on feedback %s (%s: %s) — rejecting with reason",
+                        row.get("feedback_id"), type(exc).__name__, exc,
+                    )
+                    score, reason = 0.0, f"gate error: {type(exc).__name__}: {exc}"
                 if score > 0.5:
                     # Classify what the feedback is ABOUT before routing:
                     # only ranking feedback may adjust symbol weights; bug
