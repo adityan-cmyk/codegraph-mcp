@@ -186,7 +186,15 @@ def gate_feedback(judged: dict[str, float]) -> tuple[float, str | None]:
 def _build_state(feedback_row: dict) -> str:
     tools = feedback_row.get("tools_called") or []
     if isinstance(tools, str):
-        tools = json.loads(tools)
+        # Tolerate malformed/double-encoded JSON — agents sometimes submit
+        # stringified arrays that get truncated; the loss of the tool list
+        # must not kill the whole feedback entry.
+        try:
+            tools = json.loads(tools)
+        except (json.JSONDecodeError, ValueError):
+            tools = []
+    if not isinstance(tools, list):
+        tools = []
     tool_names = [
         str((t.get("tool") if isinstance(t, dict) else None) or (t.get("name") if isinstance(t, dict) else None) or t)
         for t in tools
@@ -194,7 +202,12 @@ def _build_state(feedback_row: dict) -> str:
 
     results_used = feedback_row.get("results_used") or []
     if isinstance(results_used, str):
-        results_used = json.loads(results_used)
+        try:
+            results_used = json.loads(results_used)
+        except (json.JSONDecodeError, ValueError):
+            results_used = []
+    if not isinstance(results_used, list):
+        results_used = []
     used_lines = []
     for r in results_used:
         if isinstance(r, dict):
