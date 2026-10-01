@@ -459,6 +459,7 @@ def get_feedback_stats() -> dict[str, object]:
         "accepted": counts.get("accepted", 0),
         "rejected": counts.get("rejected", 0),
         "consumed": counts.get("consumed", 0),
+        "total_feedback": sum(counts.values()),
         "avg_quality_score": round(float(avg_row["avg_score"] or 0), 4),
         "avg_quality_rating": round(float(rating_row["avg_rating"] or 0), 2),
         "unconsumed_accepted": len(top_pending),
