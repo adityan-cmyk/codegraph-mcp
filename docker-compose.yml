@@ -252,6 +252,20 @@ services:
           cpus: "1.0"
           memory: 512M
 
+  blackbox:
+    image: prom/blackbox-exporter:latest
+    container_name: oncall-blackbox
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/blackbox_exporter/blackbox.yml
+    volumes:
+      - ./monitoring/blackbox.yml:/etc/blackbox_exporter/blackbox.yml:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
   grafana:
     image: grafana/grafana:latest
     container_name: oncall-grafana
