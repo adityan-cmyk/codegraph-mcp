@@ -37,7 +37,7 @@ _ACTIONABLE_THRESHOLD = 0.5
 
 # Guards for the generic make_decision tool
 MAX_QUESTIONS = 8
-MAX_STATE_CHARS = 8000
+MAX_STATE_CHARS = 2000
 _ALLOWED_TYPES = ("noul", "score", "choice")
 
 # Feedback routing taxonomy — what a feedback entry is ABOUT. Weight
