@@ -345,3 +345,74 @@ class ReviewFixesTestCase(unittest.TestCase):
         self.assertEqual(levels[0]["hop"], 1)
         self.assertEqual(levels[1]["hop"], 2)
         self.assertGreaterEqual(levels[1]["cumulative_reachable"], 2)
+
+
+class FeedbackClassificationTestCase(unittest.TestCase):
+    """Feedback routing: bug reports must not adjust symbol weights."""
+
+    def test_classify_feedback_routes_tool_bug(self) -> None:
+        from unittest.mock import patch
+
+        from app.core import systemone
+
+        bug_row = {
+            "client_id": "agent", "pr_context": "test",
+            "tools_called": [{"tool": "find_dependency_path"}],
+            "results_used": [], "results_expected": "path routed through uuid_v7::now hub instead of the direct edge",
+            "quality_rating": 3,
+            "improvement_suggestions": "find_dependency_path returns noisy paths through summary nodes",
+        }
+        with patch.object(systemone.settings, "systemone_url", "http://x"), \
+             patch.object(systemone, "decide", lambda state, questions: {"kind": {"type": "choice", "choice": "tool_bug"}}):
+            self.assertEqual(systemone.classify_feedback(bug_row), "tool_bug")
+
+    def test_classify_feedback_defaults_to_ranking_on_failure(self) -> None:
+        from unittest.mock import patch
+
+        from app.core import systemone
+
+        with patch.object(systemone.settings, "systemone_url", None):
+            self.assertEqual(systemone.classify_feedback({"client_id": "x"}), "ranking")
+
+    def test_sync_reroutes_non_ranking_away_from_boosts(self) -> None:
+        from app.rag.reinforcement import agent as agent_module
+
+        entries = [
+            {"feedback_id": "fb-rank", "feedback_type": "ranking",
+             "results_used": json.dumps([{"symbol_id": "a::b", "helpful": True}]),
+             "quality_rating": 4, "quality_score": 0.8},
+            {"feedback_id": "fb-bug", "feedback_type": "tool_bug",
+             "results_used": json.dumps([{"symbol_id": "c::d", "helpful": True}]),
+             "quality_rating": 3, "quality_score": 0.7},
+        ]
+        boosted: list[str] = []
+        marked: list[list[str]] = []
+
+        class FakeAIStore:
+            @staticmethod
+            def get_unsynced_accepted_feedback(limit=50):
+                return entries
+
+            @staticmethod
+            def extract_symbol_signals_from_feedback(feedback):
+                return {r["results_used"] and "a::b": 0.5 for r in feedback if r["feedback_id"] == "fb-rank"}
+
+            @staticmethod
+            def mark_boost_applied(feedback_ids):
+                marked.append(list(feedback_ids))
+
+        class FakeFeedbackStore:
+            @staticmethod
+            def record_feedback(**kwargs):
+                boosted.append(kwargs["symbol_id"])
+
+        with patch.object(agent_module.ai_feedback_store, "get_unsynced_accepted_feedback", FakeAIStore.get_unsynced_accepted_feedback), \
+             patch.object(agent_module.ai_feedback_store, "extract_symbol_signals_from_feedback", FakeAIStore.extract_symbol_signals_from_feedback), \
+             patch.object(agent_module.ai_feedback_store, "mark_boost_applied", FakeAIStore.mark_boost_applied), \
+             patch.object(agent_module.feedback_store, "record_feedback", FakeFeedbackStore.record_feedback), \
+             patch.object(agent_module.ai_feedback_store, "evaluate_pending_feedback", lambda: {"evaluated": 0}), \
+             patch.object(agent_module.ai_feedback_store, "get_feedback_stats", lambda: {"unconsumed_accepted": 0}):
+            agent_module._agent_tick()
+
+        self.assertEqual(boosted, ["a::b"], "tool_bug feedback must not produce boosts")
+        self.assertEqual(sorted(marked[0]), ["fb-bug", "fb-rank"], "both entries still marked processed")

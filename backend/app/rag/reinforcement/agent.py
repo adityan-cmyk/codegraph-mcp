@@ -123,22 +123,31 @@ def _agent_tick():
         logger.debug("Gauge publish failed", exc_info=True)
 
     # 2. Sync accepted AI feedback into per-symbol boost weights (idempotent —
-    #    each entry is applied exactly once via boost_applied_at watermark)
+    #    each entry is applied exactly once via boost_applied_at watermark).
+    #    ONLY ranking feedback adjusts weights; tool_bug/index_gap/search_gap
+    #    entries are bug reports — they live in feedback_issues, not boosts.
     try:
         accepted = ai_feedback_store.get_unsynced_accepted_feedback(limit=50)
         if accepted:
-            signals = ai_feedback_store.extract_symbol_signals_from_feedback(accepted)
-            if signals:
-                for symbol_id, weight in signals.items():
-                    feedback_store.record_feedback(
-                        query_text="_ai_feedback",
-                        symbol_id=symbol_id,
-                        original_score=0.5,
-                        feedback=1 if weight > 0 else -1,
-                        reason=f"AI feedback signal (weight={weight:.3f})",
-                        update_expansion=False,
-                    )
-                logger.info("Reinforcement: applied %d symbol signals from AI feedback", len(signals))
+            ranking = [e for e in accepted if (e.get("feedback_type") or "ranking") == "ranking"]
+            rerouted = len(accepted) - len(ranking)
+            if rerouted:
+                logger.info(
+                    "Reinforcement: %d feedback entries rerouted to issues backlog (no weight changes)", rerouted
+                )
+            if ranking:
+                signals = ai_feedback_store.extract_symbol_signals_from_feedback(ranking)
+                if signals:
+                    for symbol_id, weight in signals.items():
+                        feedback_store.record_feedback(
+                            query_text="_ai_feedback",
+                            symbol_id=symbol_id,
+                            original_score=0.5,
+                            feedback=1 if weight > 0 else -1,
+                            reason=f"AI feedback signal (weight={weight:.3f})",
+                            update_expansion=False,
+                        )
+                    logger.info("Reinforcement: applied %d symbol signals from AI feedback", len(signals))
             ai_feedback_store.mark_boost_applied([e["feedback_id"] for e in accepted])
     except Exception:
         logger.debug("Signal extraction failed", exc_info=True)

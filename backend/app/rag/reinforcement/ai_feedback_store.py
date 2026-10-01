@@ -70,6 +70,24 @@ def _ensure_schema():
                     "ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS boost_applied_at TIMESTAMPTZ"
                 )
                 cur.execute(
+                    "ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS feedback_type TEXT"
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS feedback_issues (
+                        id          SERIAL PRIMARY KEY,
+                        feedback_id TEXT,
+                        issue_type  TEXT NOT NULL,
+                        summary     TEXT NOT NULL,
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        resolved_at TIMESTAMPTZ
+                    )
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS feedback_issues_created_idx ON feedback_issues(created_at)"
+                )
+                cur.execute(
                     "CREATE INDEX IF NOT EXISTS ai_fb_status_idx ON ai_feedback(status)"
                 )
                 cur.execute(
@@ -258,15 +276,39 @@ def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
                     score, reason = _evaluate_quality(row)
                     GATE_VERDICTS.labels(verdict="heuristic_fallback").inc()
                 if score > 0.5:
+                    # Classify what the feedback is ABOUT before routing:
+                    # only ranking feedback may adjust symbol weights; bug
+                    # reports go to the issues backlog instead.
+                    fb_type = "ranking"
+                    if use_decision_model:
+                        fb_type = systemone.classify_feedback(row)
+                    try:
+                        from app.core.prom_metrics import FEEDBACK_CLASSIFICATIONS
+                        FEEDBACK_CLASSIFICATIONS.labels(type=fb_type).inc()
+                    except Exception:
+                        pass
                     cur.execute(
                         """
                         UPDATE ai_feedback
-                        SET status = 'accepted', quality_score = %s, evaluated_at = %s
+                        SET status = 'accepted', quality_score = %s, evaluated_at = %s,
+                            feedback_type = %s
                         WHERE id = %s
                         """,
-                        (score, datetime.now(UTC), row["id"]),
+                        (score, datetime.now(UTC), fb_type, row["id"]),
                     )
                     accepted += 1
+                    if fb_type != "ranking":
+                        summary = " ".join(filter(None, [
+                            (row.get("results_expected") or "")[:400],
+                            (row.get("improvement_suggestions") or "")[:400],
+                        ])) or f"(no detail; rating {row.get('quality_rating')})"
+                        cur.execute(
+                            """
+                            INSERT INTO feedback_issues (feedback_id, issue_type, summary)
+                            VALUES (%s, %s, %s)
+                            """,
+                            (row.get("feedback_id"), fb_type, summary),
+                        )
                 else:
                     cur.execute(
                         """
@@ -294,7 +336,7 @@ def get_accepted_feedback(limit: int = 100) -> list[dict]:
                 """
                 SELECT feedback_id, client_id, pr_context, tools_called,
                        results_used, results_expected, quality_rating,
-                       improvement_suggestions, quality_score, created_at
+                       improvement_suggestions, quality_score, feedback_type, created_at
                 FROM ai_feedback
                 WHERE status = 'accepted' AND consumed_at IS NULL
                 ORDER BY quality_score DESC, created_at ASC
@@ -316,7 +358,7 @@ def get_unsynced_accepted_feedback(limit: int = 100) -> list[dict]:
                 """
                 SELECT feedback_id, client_id, pr_context, tools_called,
                        results_used, results_expected, quality_rating,
-                       improvement_suggestions, quality_score, created_at
+                       improvement_suggestions, quality_score, feedback_type, created_at
                 FROM ai_feedback
                 WHERE status = 'accepted' AND boost_applied_at IS NULL
                 ORDER BY quality_score DESC, created_at ASC
@@ -458,3 +500,21 @@ def extract_symbol_signals_from_feedback(feedback: list[dict]) -> dict[str, floa
             pass
 
     return {sid: sum(vals) / len(vals) for sid, vals in weights.items() if vals}
+
+
+def get_recent_issues(hours: int = 24) -> list[dict]:
+    """Recent feedback-routed issues (tool bugs, index gaps, search gaps)."""
+    _ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT issue_type, summary, created_at
+                FROM feedback_issues
+                WHERE created_at > NOW() - (%s || ' hours')::interval
+                ORDER BY created_at DESC
+                LIMIT 20
+                """,
+                (str(hours),),
+            )
+            return cur.fetchall()
