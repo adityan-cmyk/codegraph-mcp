@@ -88,7 +88,7 @@ def _agent_tick():
                 result["evaluated"], result["accepted"], result["rejected"],
             )
     except Exception:
-        logger.debug("Feedback evaluation failed", exc_info=True)
+        logger.warning("Feedback evaluation failed", exc_info=True)
 
     # 1b. Publish observability gauges (index freshness, graph size)
     try:
@@ -120,7 +120,7 @@ def _agent_tick():
         GRAPH_NODES.set(stats.get("graph_nodes", 0))
         GRAPH_EDGES.set(stats.get("graph_edges", 0))
     except Exception:
-        logger.debug("Gauge publish failed", exc_info=True)
+        logger.warning("Gauge publish failed", exc_info=True)
 
     # 2. Sync accepted AI feedback into per-symbol boost weights (idempotent —
     #    each entry is applied exactly once via boost_applied_at watermark).
@@ -150,7 +150,7 @@ def _agent_tick():
                     logger.info("Reinforcement: applied %d symbol signals from AI feedback", len(signals))
             ai_feedback_store.mark_boost_applied([e["feedback_id"] for e in accepted])
     except Exception:
-        logger.debug("Signal extraction failed", exc_info=True)
+        logger.warning("Signal extraction failed", exc_info=True)
 
     # 3. Incremental feedback consumption (Idea 5)
     try:
@@ -187,7 +187,7 @@ def _agent_tick():
                 finally:
                     _RERANK_LOCK.release()
     except Exception:
-        logger.debug("Auto-build check failed", exc_info=True)
+        logger.warning("Auto-build check failed", exc_info=True)
 
     # 4. Check if active build quality has regressed
     try:
@@ -203,7 +203,7 @@ def _agent_tick():
                 from app.rag.indexing_service import rollback_last_build
                 rollback_last_build(reason=f"quality score {current_score:.3f} < parent {parent_score:.3f}")
     except Exception:
-        logger.debug("Build quality check failed", exc_info=True)
+        logger.warning("Build quality check failed", exc_info=True)
 
     # 5. Log stats
     try:
@@ -218,7 +218,7 @@ def _agent_tick():
                 _AUTOBUILD_THRESHOLD,
             )
     except Exception:
-        logger.debug("Stats logging failed", exc_info=True)
+        logger.warning("Stats logging failed", exc_info=True)
 
 
 def _agent_loop():
