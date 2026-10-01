@@ -368,7 +368,7 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "state": {
                     "type": "string",
-                    "description": "The text or JSON to judge, max 8000 chars",
+                    "description": "The text or JSON to judge, max 2000 chars",
                 },
                 "questions": {
                     "type": "object",
