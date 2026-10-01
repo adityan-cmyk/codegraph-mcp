@@ -1,3 +1,10 @@
+"""On-Call Graph backend API + MCP server.
+
+Deployed images are tagged with the git SHA and `last-good` by
+scripts/auto-deploy.sh (cron, image-diff based). Rollback:
+docker tag on-call-assistance-backend:last-good on-call-assistance-backend:latest
+"""
+
 import logging
 from contextlib import asynccontextmanager
 

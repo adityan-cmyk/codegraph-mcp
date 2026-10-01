@@ -12,7 +12,7 @@ export PATH=/usr/bin:/bin:/usr/local/bin:$HOME/.local/bin
 set -u
 cd /home/adi/repos/on-call-assistance
 LOG=logs/auto-deploy.log
-IMAGE=oncall-assistance-backend
+IMAGE=on-call-assistance-backend
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
