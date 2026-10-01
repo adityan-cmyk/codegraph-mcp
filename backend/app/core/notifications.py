@@ -672,12 +672,33 @@ def notify_daily_digest() -> None:
         + _usage_section()
         + _index_health_section()
         + _reinforcement_section()
+        + _feedback_issues_section()
         + _recent_commits_section()
     )
 
     send_email(
         subject=f"[codegraph] Daily digest — {nodes:,} nodes, index {'current' if 'ok' in up_to_date else 'behind'}",
         body_html=body,
+    )
+
+
+def _feedback_issues_section() -> str:
+    """Recent feedback-routed issues: tool bugs and index gaps reported by
+    agents — routed away from weight adjustment into this backlog."""
+    try:
+        from app.rag.reinforcement.ai_feedback_store import get_recent_issues
+        issues = get_recent_issues(hours=24)
+    except Exception:
+        return ""
+    if not issues:
+        return ""
+    rows = "".join(
+        f"<tr><td><b>{i['issue_type']}</b></td><td>{i['summary'][:200]}</td><td>{i['created_at'].strftime('%H:%M')}</td></tr>"
+        for i in issues
+    )
+    return (
+        "<div class='section'>Feedback issues (24h) — bugs reported via feedback, not weight signals</div>"
+        f"<table><tr><th>Type</th><th>Summary</th><th>Time</th></tr>{rows}</table>"
     )
 
 

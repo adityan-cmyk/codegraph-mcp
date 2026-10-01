@@ -32,6 +32,49 @@ MAX_QUESTIONS = 8
 MAX_STATE_CHARS = 8000
 _ALLOWED_TYPES = ("noul", "score", "choice")
 
+# Feedback routing taxonomy — what a feedback entry is ABOUT. Weight
+# adjustment (boosts) only makes sense for ranking feedback; bug reports
+# must not pollute symbol weights.
+FEEDBACK_TYPES = ("ranking", "search_gap", "tool_bug", "index_gap")
+
+
+def classify_feedback(feedback_row: dict) -> str:
+    """Classify what a feedback entry is primarily about.
+
+    Returns one of FEEDBACK_TYPES; 'ranking' (the historical behavior) on
+    any failure — classification must never block the pipeline.
+    """
+    state = _build_state(feedback_row)
+    suggestions = (feedback_row.get("improvement_suggestions") or "")[:500]
+    expected = (feedback_row.get("results_expected") or "")[:500]
+    state = (
+        f"{state} Improvement suggestions: {suggestions or 'none'}. "
+        f"Results expected: {expected or 'not stated'}."
+    )
+    try:
+        answers = decide(
+            state,
+            {
+                "kind": {
+                    "type": "choice",
+                    "instructions": (
+                        "What is this feedback primarily about? "
+                        "ranking = which search results/symbols were helpful or unhelpful; "
+                        "search_gap = expected results were missing from search output; "
+                        "tool_bug = a tool malfunctioned (noisy edges, wrong resolutions, false callers, broken aggregation); "
+                        "index_gap = symbols or files are missing from the index itself."
+                    ),
+                    "criteria": {t: None for t in FEEDBACK_TYPES},
+                }
+            },
+        )
+        choice = (answers or {}).get("kind", {}).get("choice")
+        if choice in FEEDBACK_TYPES:
+            return choice
+    except Exception:
+        logger.debug("Feedback classification failed", exc_info=True)
+    return "ranking"
+
 
 def decide(state: str, questions: dict) -> dict | None:
     """Generic typed-decision call — returns the raw answers dict or None on

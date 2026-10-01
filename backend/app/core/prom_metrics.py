@@ -77,6 +77,12 @@ FEEDBACK_SUBMISSIONS = Counter(
     "AI feedback submissions received",
 )
 
+FEEDBACK_CLASSIFICATIONS = Counter(
+    "feedback_classifications_total",
+    "Feedback routing classification (what the feedback is about)",
+    ["type"],
+)
+
 EMAILS = Counter(
     "emails_total",
     "Emails sent via SMTP",
