@@ -5,10 +5,10 @@ Step-by-step to run this project on a fresh Linux machine. ~30-45 min end to end
 
 ## What you get
 
-12 Docker services: backend (API + MCP server), postgres, redis, neo4j, weaviate,
+13 Docker services: backend (API + MCP server), postgres, redis, neo4j, weaviate,
 t2v-transformers, ollama (decision model), prometheus, loki, promtail, cadvisor,
-grafana, blackbox. Plus 4 cron jobs on the host (nightly sync, watchdog, daily
-digest, auto-deploy).
+grafana, blackbox. Plus 5 cron jobs on the host (nightly sync, watchdog, daily
+digest, auto-deploy, gitops pull).
 
 ## Prerequisites
 
@@ -87,11 +87,14 @@ or the Build History panel in Grafana). The index also registers in
 
 ```bash
 curl http://localhost:8000/health                     # {"status":"ok"}
-curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
+curl -H "Authorization: Bearer $API_AUTH_TOKEN" \
   http://localhost:8000/api/health                    # backend checks: all backends
+curl -H "Authorization: Bearer $API_AUTH_TOKEN" \
+  http://localhost:8000/api/health/decision-model     # ollama reachable + nimble pulled
 ```
 
-- MCP endpoint: `http://<host>:8000/mcp` (or your funnel URL) with bearer auth
+- MCP endpoint: `http://<host>:8002/mcp` (port **8002**, not 8000 — or your
+  funnel URL) with bearer auth; `make_decision` states are capped at 2000 chars
 - Grafana: `http://<host>:3000` — login `admin` / `GRAFANA_ADMIN_PASSWORD`,
   dashboard **On-Call Graph Overview** (infra, service health, index, MCP
   traffic, feedback gate, build history, logs)
@@ -105,6 +108,7 @@ curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
 */5 * * * * /usr/bin/python3 <repo>/scripts/container-watchdog.py >> <repo>/logs/watchdog.log 2>&1
 0 18 * * *  <repo>/scripts/daily-digest.sh   >> <repo>/logs/daily-digest.log 2>&1
 * * * * *   <repo>/scripts/auto-deploy.sh    >> <repo>/logs/auto-deploy-cron.log 2>&1
+*/2 * * * * <repo>/scripts/gitops-pull.sh    >> <repo>/logs/gitops-cron.log 2>&1
 ```
 
 Install with `crontab -e` (replace `<repo>` with the absolute path). All API
@@ -116,6 +120,8 @@ calls in these scripts read `.env` for `API_AUTH_TOKEN`.
   suggestions, issues backlog — via SMTP
 - **auto-deploy** (1 min): deploys whenever the built image differs from the
   running one; tags with git SHA + `last-good`; emails on success/failure
+- **gitops-pull** (2 min): fetches `origin/main` and builds on change — the
+  first half of the deploy loop below
 
 ### 7. Deploy workflow (after setup)
 
@@ -123,13 +129,23 @@ calls in these scripts read `.env` for `API_AUTH_TOKEN`.
 git push origin main    # that's it — GitOps converges the rest
 ```
 
-The loop (cron, every 2 min): `scripts/gitops-pull.sh` fetches origin/main,
-fast-forwards (never builds a dirty tree, never discards unpushed commits),
-builds — then `scripts/auto-deploy.sh` (every minute) deploys on image diff,
-tags the git SHA + `last-good`, verifies health, and emails on success or
-failure. A failed build never deploys; the old image keeps running.
+The loop, fully automatic:
+
+1. **gitops-pull** (every 2 min): `git fetch origin/main`, then:
+   - working tree dirty → refuses to build, one-shot email (the deployed image
+     must always correspond to exactly one git SHA)
+   - local and remote diverged (unpushed commits) → refuses, one-shot email
+   - otherwise fast-forwards, builds, and tags the image with the git SHA
+2. **auto-deploy** (every 1 min): sees the image diff, retags `last-good`,
+   deploys, waits for health (120 s grace), emails the result with the SHA
+
+Properties: a failed build never deploys (old image keeps running), doc-only
+commits converge without a restart (identical image, just tagged), and every
+deploy is email-logged with its SHA.
 
 Manual rollback: `docker tag on-call-assistance-backend:last-good on-call-assistance-backend:latest && docker compose up -d backend`
+
+Deploy logs: `logs/gitops.log` + `logs/auto-deploy.log`.
 
 ## Troubleshooting
 
@@ -137,6 +153,9 @@ Manual rollback: `docker tag on-call-assistance-backend:last-good on-call-assist
   log. Healthcheck has a 120 s grace period (`start_period`).
 - **Feedback stuck `pending`**: gate calls the local ollama model (~30-60 s per
   entry, 5 per tick). Check `oncall-ollama` is up and `nimble` is pulled.
+- **make_decision fails / "unavailable"**: check
+  `/api/health/decision-model` first — it self-reports ollama reachability and
+  model presence without burning a ~30 s inference.
 - **Grafana panels empty**: datasources provision on first start; check
   `oncall-prometheus` / `oncall-loki` logs, and that prometheus token templating
   succeeded (`docker logs oncall-prometheus | grep -i error`).
