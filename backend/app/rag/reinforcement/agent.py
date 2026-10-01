@@ -209,7 +209,7 @@ def _agent_tick():
     try:
         fb_stats = ai_feedback_store.get_feedback_stats()
         build_stats = build_registry.get_build_stats()
-        if fb_stats["total_feedback"] > 0 or build_stats["total_builds"] > 0:
+        if fb_stats.get("total_feedback", 0) > 0 or build_stats.get("total_builds", 0) > 0:
             logger.info(
                 "Reinforcement stats: feedback(pending=%d accepted=%d rejected=%d consumed=%d) builds(active=%d rolled_back=%d) autobuild_threshold=%d",
                 fb_stats["pending"], fb_stats["accepted"],
