@@ -107,10 +107,20 @@ async def get_build_history() -> list[dict]:
     return build_registry.get_build_history()
 
 
+_EVALUATION_RUNNING = False
+
+
 @router.post("/evaluate")
 async def evaluate_pending_feedback() -> dict[str, object]:
     """Run quality gating on pending AI feedback. Accepts or rejects each entry."""
-    return ai_feedback_store.evaluate_pending_feedback()
+    global _EVALUATION_RUNNING
+    if _EVALUATION_RUNNING:
+        return {"error": "evaluation already in progress — the decision model processes one entry at a time; wait for the current batch"}
+    _EVALUATION_RUNNING = True
+    try:
+        return ai_feedback_store.evaluate_pending_feedback()
+    finally:
+        _EVALUATION_RUNNING = False
 
 
 @router.get("/reinforcement/stats")
