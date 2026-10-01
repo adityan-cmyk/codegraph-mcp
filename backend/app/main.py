@@ -138,6 +138,35 @@ def readiness_check() -> dict[str, object]:
     return check_readiness()
 
 
+@app.get("/api/health/decision-model")
+def decision_model_health() -> dict[str, object]:
+    """Self-reported decision-model health: ollama reachability, model presence,
+    and the configured endpoint. Lets agents and monitors detect make_decision
+    regressions without burning a ~30s inference."""
+    import requests as _requests
+
+    from app.core.config import settings
+
+    if not settings.systemone_url:
+        return {"available": False, "reason": "SYSTEMONE_URL not configured"}
+    base = settings.systemone_url.rsplit("/", 2)[0]  # strip /v1/systemone
+    try:
+        r = _requests.get(f"{base}/api/tags", timeout=5)
+        r.raise_for_status()
+        models = [m.get("name", "") for m in r.json().get("models", [])]
+        want = settings.systemone_model
+        present = any(m == want or m.split(":")[0] == want for m in models)
+        return {
+            "available": present,
+            "model": want,
+            "models_present": models,
+            "endpoint": settings.systemone_url,
+            "reason": None if present else f"model '{want}' not pulled on ollama",
+        }
+    except Exception as exc:
+        return {"available": False, "model": settings.systemone_model, "endpoint": settings.systemone_url, "reason": f"{type(exc).__name__}: {exc}"}
+
+
 @app.get("/api/health")
 def detailed_health() -> dict[str, object]:
     return check_all_backends()

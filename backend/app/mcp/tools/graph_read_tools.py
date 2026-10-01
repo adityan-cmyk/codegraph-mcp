@@ -964,13 +964,28 @@ _DECISION_LOCK = threading.Lock()
 
 
 def make_decision(state: str, questions: dict) -> dict[str, object]:
-    """Get fast, typed judgments from a local decision model (Jev-style System One). Sends your state text plus named questions and gets back a choice, a score, or a calibrated yes/no probability (noul) for each — NOT chat. Takes 10-35 seconds per call (local CPU model), so use it for decisions worth waiting on: PR risk assessment, triage routing, content gating — not for anything per-message. Provide 'state' (the text/JSON to judge, max 8000 chars) and 'questions': an object of up to 8 named questions, each {type: 'noul'|'score'|'choice', instructions: string, criteria: for choice — an object of allowed values; for score — an array of labels low to high}. Example: {"state": "PR changes 446 files in wallet closure", "questions": {"risk": {"type": "score", "instructions": "How risky?", "criteria": ["low", "medium", "high"]}, "needs_review": {"type": "noul", "instructions": "Needs senior review?"}}}"""
+    """Get fast, typed judgments from a local decision model (Jev-style System One). Sends your state text plus named questions and gets back a choice, a score, or a calibrated yes/no probability (noul) for each — NOT chat. Takes 10-35 seconds per call (local CPU model), so use it for decisions worth waiting on: PR risk assessment, triage routing, content gating — not for anything per-message. Provide 'state' (the text/JSON to judge, max 2000 chars) and 'questions': an object of up to 8 named questions, each {type: 'noul'|'score'|'choice', instructions: string, criteria: for choice — an object of allowed values; for score — an array of labels low to high}. Example: {"state": "PR changes 446 files in wallet closure", "questions": {"risk": {"type": "score", "instructions": "How risky?", "criteria": ["low", "medium", "high"]}, "needs_review": {"type": "noul", "instructions": "Needs senior review?"}}}"""
+    import json as _json
+
     from app.core import systemone
 
-    if not isinstance(state, str) or not state.strip():
+    # Tolerate clients that stringify nested args (common with JSON-RPC).
+    if isinstance(questions, str):
+        try:
+            questions = _json.loads(questions)
+        except _json.JSONDecodeError:
+            return {"error": "questions: received a string that is not valid JSON — send an object of named questions"}
+    if not isinstance(state, str):
+        if isinstance(state, dict):
+            state = _json.dumps(state)
+        else:
+            state = str(state)
+    if not state.strip():
         return {"error": "state must be a non-empty string"}
     if len(state) > systemone.MAX_STATE_CHARS:
-        return {"error": f"state too long ({len(state)} chars, max {systemone.MAX_STATE_CHARS})"}
+        return {
+            "error": f"state too long ({len(state)} chars, max {systemone.MAX_STATE_CHARS}) — truncate or summarize the state",
+        }
     if not isinstance(questions, dict) or not questions:
         return {"error": "questions must be a non-empty object of named questions"}
     if len(questions) > systemone.MAX_QUESTIONS:
