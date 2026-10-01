@@ -15,10 +15,18 @@ index and feedback flow must never depend on this service being up.
 
 import json
 import logging
+import threading
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# All internal gate/classification calls share one flight — ollama serves the
+# model sequentially anyway; concurrent requests just multiply latency and
+# starve the event loop (which once tripped the watchdog into restarting the
+# backend mid-evaluation). make_decision (agent-facing) keeps its own
+# non-blocking lock and reports busy instead of waiting.
+_INTERNAL_LOCK = threading.Lock()
 
 # Acceptance rule: the actionable dimension is the hard gate. Feedback that
 # doesn't describe expected-but-missing results is vacuous — it contributes
@@ -92,11 +100,12 @@ def decide(state: str, questions: dict) -> dict | None:
     import requests
 
     try:
-        response = requests.post(
-            settings.systemone_url,
-            json={"model": settings.systemone_model, "state": state, "questions": questions},
-            timeout=settings.systemone_timeout,
-        )
+        with _INTERNAL_LOCK:
+            response = requests.post(
+                settings.systemone_url,
+                json={"model": settings.systemone_model, "state": state, "questions": questions},
+                timeout=settings.systemone_timeout,
+            )
         response.raise_for_status()
         return response.json().get("answers") or None
     except Exception:
