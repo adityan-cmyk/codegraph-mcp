@@ -277,13 +277,20 @@ def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
                         score, reason = _evaluate_quality(row)
                         GATE_VERDICTS.labels(verdict="heuristic_fallback").inc()
                 except Exception as exc:
-                    # One malformed row must never block the whole queue —
-                    # this exact failure starved evaluation for 19 hours.
+                    # Infrastructure failure (malformed payload, model error)
+                    # is NOT a quality judgment — fall back to the heuristic
+                    # gate instead of permanently rejecting real feedback.
+                    # (A JSON glitch once rejected the most detailed feedback
+                    # of the week while sycophantic junk sailed through.)
                     logger.warning(
-                        "Gate crashed on feedback %s (%s: %s) — rejecting with reason",
+                        "Gate crashed on feedback %s (%s: %s) — falling back to heuristic gate",
                         row.get("feedback_id"), type(exc).__name__, exc,
                     )
-                    score, reason = 0.0, f"gate error: {type(exc).__name__}: {exc}"
+                    try:
+                        score, reason = _evaluate_quality(row)
+                        GATE_VERDICTS.labels(verdict="heuristic_fallback").inc()
+                    except Exception:
+                        score, reason = 0.0, f"gate error: {type(exc).__name__}: {exc}"
                 if score > 0.5:
                     # Classify what the feedback is ABOUT before routing:
                     # only ranking feedback may adjust symbol weights; bug
@@ -509,6 +516,29 @@ def extract_symbol_signals_from_feedback(feedback: list[dict]) -> dict[str, floa
             pass
 
     return {sid: sum(vals) / len(vals) for sid, vals in weights.items() if vals}
+
+
+def get_recent_suggestions(hours: int = 24, limit: int = 10) -> list[dict]:
+    """Recent accepted improvement suggestions — the actionable text agents
+    submitted with their feedback. Surfaced in the daily digest."""
+    _ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT feedback_id, feedback_type, client_id,
+                       improvement_suggestions, created_at
+                FROM ai_feedback
+                WHERE status = 'accepted'
+                  AND created_at > NOW() - (%s || ' hours')::interval
+                  AND improvement_suggestions IS NOT NULL
+                  AND length(trim(improvement_suggestions)) > 0
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (str(hours), limit),
+            )
+            return cur.fetchall()
 
 
 def get_recent_issues(hours: int = 24) -> list[dict]:

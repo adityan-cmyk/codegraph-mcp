@@ -672,6 +672,7 @@ def notify_daily_digest() -> None:
         + _usage_section()
         + _index_health_section()
         + _reinforcement_section()
+        + _feedback_suggestions_section()
         + _feedback_issues_section()
         + _recent_commits_section()
     )
@@ -679,6 +680,35 @@ def notify_daily_digest() -> None:
     send_email(
         subject=f"[codegraph] Daily digest — {nodes:,} nodes, index {'current' if 'ok' in up_to_date else 'behind'}",
         body_html=body,
+    )
+
+
+def _feedback_suggestions_section() -> str:
+    """Improvement suggestions from recently accepted agent feedback."""
+    try:
+        from app.rag.reinforcement.ai_feedback_store import get_recent_suggestions
+        suggestions = get_recent_suggestions(hours=24, limit=10)
+    except Exception:
+        return ""
+    if not suggestions:
+        return ""
+    rows = ""
+    for s in suggestions:
+        text = str(s.get("improvement_suggestions") or "").strip()
+        if not text:
+            continue
+        fb_type = s.get("feedback_type") or "ranking"
+        short_id = (s.get("feedback_id") or "")[:8]
+        rows += (
+            f"<tr><td><b>{fb_type}</b></td>"
+            f"<td>{text[:400].replace(chr(10), ' ')}</td>"
+            f"<td>{short_id}</td></tr>"
+        )
+    if not rows:
+        return ""
+    return (
+        "<div class='section'>Improvement suggestions (24h) — from accepted agent feedback</div>"
+        f"<table><tr><th>Type</th><th>Suggestion</th><th>Ref</th></tr>{rows}</table>"
     )
 
 
