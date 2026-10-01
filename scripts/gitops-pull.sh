@@ -65,5 +65,9 @@ if ! docker compose build backend > /dev/null 2>&1; then
         "[codegraph ALERT] GitOps build failed: $SHORT" \
         "docker compose build failed for $SHORT. The previously deployed image keeps running. Reproduce: <code>docker compose build backend</code>"
 fi
+# Tag the built image with the SHA ourselves — if the content is identical to
+# what's running, the deployer correctly no-ops, and this tag still marks the
+# running image as converged (otherwise we'd rebuild forever on doc commits).
+docker tag "$IMAGE:latest" "$IMAGE:$SHORT"
 log "built $SHORT — auto-deployer will converge within a minute"
 rm -f "$MARK"
