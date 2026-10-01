@@ -625,6 +625,27 @@ def reindex_semantic_only() -> IndexingResult | None:
         return None
     _start_semantic_rebuild_background(snapshot, force=True)
     graph_stats = graph_index.get_stats()
+
+    # Register semantic rebuilds (autobuild path) in build history too.
+    try:
+        from app.rag.reinforcement import build_registry
+        parent = build_registry.get_active_build()
+        build_id = build_registry.register_build(
+            build_type="semantic",
+            parent_build_id=parent["build_id"] if parent else None,
+            weaviate_collection=getattr(semantic_index, "get_active_collection_name", lambda: None)(),
+            neo4j_gen=None,
+        )
+        if build_id:
+            build_registry.complete_build(
+                build_id,
+                chunk_count=len(snapshot.chunks),
+                graph_nodes=graph_stats["graph_nodes"],
+                graph_edges=graph_stats["graph_edges"],
+            )
+    except Exception:
+        logger.warning("Failed to register semantic build", exc_info=True)
+
     return IndexingResult(
         symbols_indexed=len(snapshot.chunks),
         semantic_documents=0,
@@ -774,6 +795,31 @@ def incremental_update_symbols(
         )
 
     graph_stats = graph_index.get_stats()
+
+    # Register the incremental refresh so build history reflects reality —
+    # previously only full rebuilds created registry rows, leaving the
+    # dashboard's active build stale after nightly syncs.
+    try:
+        from app.rag.reinforcement import build_registry
+        parent = build_registry.get_active_build()
+        build_id = build_registry.register_build(
+            build_type="incremental",
+            parent_build_id=parent["build_id"] if parent else None,
+            weaviate_collection=getattr(semantic_index, "get_active_collection_name", lambda: None)(),
+            neo4j_gen=None,
+            metadata={"modified_files": len(modified_files), "symbols_updated": len(new_chunks)},
+        )
+        if build_id:
+            replaced = sum(1 for c in existing_chunks if c.symbol_id in modified_symbol_ids)
+            build_registry.complete_build(
+                build_id,
+                chunk_count=len(existing_chunks) - replaced + len(new_chunks),
+                graph_nodes=graph_stats["graph_nodes"],
+                graph_edges=graph_stats["graph_edges"],
+            )
+    except Exception:
+        logger.warning("Failed to register incremental build", exc_info=True)
+
     return IndexingResult(
         symbols_indexed=len(new_chunks),
         semantic_documents=len(new_chunks),
