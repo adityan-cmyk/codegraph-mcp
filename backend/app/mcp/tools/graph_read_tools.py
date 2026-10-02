@@ -509,10 +509,15 @@ def find_dependency_path(from_symbol: str, to_symbol: str, max_depth: int = 5) -
     gen = backend._gen
     driver = backend._get_driver()
     with driver.session() as session:
+        # DIRECTED traversal only — the undirected '-' form routed paths
+        # backwards through call edges, making distant pairs "reachable"
+        # via reversed hops (three independent reviewer instances).
+        # Direction 1: from_symbol's dependency chain reaches to_symbol
+        # (from calls ... calls to).
         result = session.run(
             f"""
             MATCH path = shortestPath(
-                (start:Symbol {{id: $from_id, gen: $gen}})-[:CALLS*1..{max_depth}]-(end:Symbol {{id: $to_id, gen: $gen}})
+                (start:Symbol {{id: $from_id, gen: $gen}})-[:CALLS*1..{max_depth}]->(end:Symbol {{id: $to_id, gen: $gen}})
             )
             RETURN [node in nodes(path) | node.id] AS symbol_path,
                    [rel in relationships(path) | type(rel)] AS edge_types
@@ -522,12 +527,31 @@ def find_dependency_path(from_symbol: str, to_symbol: str, max_depth: int = 5) -
             gen=gen,
         )
         record = result.single()
+        direction = "forward"  # from_symbol depends (transitively) on to_symbol
+
+        if not record:
+            # Direction 2: to_symbol's dependency chain reaches from_symbol
+            # (a change to from_symbol affects to_symbol's callers).
+            result = session.run(
+                f"""
+                MATCH path = shortestPath(
+                    (start:Symbol {{id: $to_id, gen: $gen}})-[:CALLS*1..{max_depth}]->(end:Symbol {{id: $from_id, gen: $gen}})
+                )
+                RETURN [node in nodes(path) | node.id] AS symbol_path,
+                       [rel in relationships(path) | type(rel)] AS edge_types
+                """,
+                from_id=from_symbol,
+                to_id=to_symbol,
+                gen=gen,
+            )
+            record = result.single()
+            direction = "reverse"  # to_symbol depends on from_symbol
 
         if not record:
             result = session.run(
                 f"""
                 MATCH path = shortestPath(
-                    (start:Symbol {{id: $from_id, gen: $gen}})-[:CALLS|USES*1..{max_depth}]-(end:Symbol {{id: $to_id, gen: $gen}})
+                    (start:Symbol {{id: $from_id, gen: $gen}})-[:CALLS|USES*1..{max_depth}]->(end:Symbol {{id: $to_id, gen: $gen}})
                 )
                 WHERE ALL(n IN nodes(path) WHERE NOT n.id ENDS WITH 'GlobalState' AND NOT n.id ENDS WITH 'FastagGlobalState' AND NOT n.id ENDS WITH 'AppState')
                 RETURN [node in nodes(path) | node.id] AS symbol_path,
@@ -538,6 +562,7 @@ def find_dependency_path(from_symbol: str, to_symbol: str, max_depth: int = 5) -
                 gen=gen,
             )
             record = result.single()
+            direction = "forward"
 
     if not record:
         return {"from": from_symbol, "to": to_symbol, "path_found": False, "message": f"No path found within {max_depth} hops."}
@@ -549,6 +574,12 @@ def find_dependency_path(from_symbol: str, to_symbol: str, max_depth: int = 5) -
         "from": from_symbol,
         "to": to_symbol,
         "path_found": True,
+        "direction": direction,
+        "direction_meaning": (
+            "forward: from_symbol's call chain reaches to_symbol (from depends on to)"
+            if direction == "forward"
+            else "reverse: to_symbol's call chain reaches from_symbol (to depends on from — a change to from affects to)"
+        ),
         "path_length": len(symbol_path) - 1,
         "path": symbol_path,
         "edge_types": edge_types,

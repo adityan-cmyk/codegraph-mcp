@@ -11,6 +11,10 @@ class CodeChunk(BaseModel):
     content: str
     start_line: int = Field(ge=1)
     end_line: int = Field(ge=1)
+    # True for #[test] fns and anything inside #[cfg(test)] modules — test
+    # symbols stay in the index (get_tests_for_symbol needs them) but are
+    # excluded from risk scoring.
+    is_test: bool = False
 
 
 class SemanticMatch(BaseModel):
