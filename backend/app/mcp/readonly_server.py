@@ -170,6 +170,14 @@ _TOOLS: dict[str, Any] = {
                     "type": "string",
                     "description": "Full symbol path",
                 },
+                "start_line": {
+                    "type": "integer",
+                    "description": "Page start — absolute file line within the symbol's range (for truncated 500+ line symbols)",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Page end — absolute file line within the symbol's range",
+                },
             },
             "required": ["symbol_id"],
         },

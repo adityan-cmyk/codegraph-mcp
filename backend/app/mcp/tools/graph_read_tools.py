@@ -355,8 +355,8 @@ def batch_blast_radius(symbol_ids: list[str]) -> dict[str, object]:
     }
 
 
-def get_symbol_content(symbol_id: str) -> dict[str, object]:
-    """Get the source code content of a symbol — its full implementation, file path, and line range. Use this after get_blast_radius to understand what a symbol actually does. Provide the full symbol_id."""
+def get_symbol_content(symbol_id: str, start_line: int | None = None, end_line: int | None = None) -> dict[str, object]:
+    """Get the source code content of a symbol — its full implementation, file path, and line range. Use this after get_blast_radius to understand what a symbol actually does. For 500+ line symbols the content is truncated — the response tells you the total line span, so re-call with start_line/end_line (absolute file line numbers within the symbol's range) to page through the rest."""
     meta = _get_symbol_metadata(symbol_id)
     if not meta:
         return {"error": f"Symbol '{symbol_id}' not found in the index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
@@ -366,14 +366,33 @@ def get_symbol_content(symbol_id: str) -> dict[str, object]:
     if snapshot:
         for chunk in snapshot.chunks:
             if chunk.symbol_id == symbol_id:
+                if start_line is not None or end_line is not None:
+                    lo = max(start_line or chunk.start_line, chunk.start_line)
+                    hi = min(end_line or chunk.end_line, chunk.end_line)
+                    if lo > hi:
+                        return {"error": f"line range [{lo}, {hi}] outside symbol range [{chunk.start_line}, {chunk.end_line}]", "symbol_id": symbol_id}
+                    page_lines = chunk.content.split("\n")[(lo - chunk.start_line):(hi - chunk.start_line + 1)]
+                    return {
+                        "symbol_id": chunk.symbol_id,
+                        "kind": chunk.kind,
+                        "file_path": chunk.file_path,
+                        "start_line": lo,
+                        "end_line": hi,
+                        "symbol_span": [chunk.start_line, chunk.end_line],
+                        "total_lines": chunk.end_line - chunk.start_line + 1,
+                        "content": "\n".join(page_lines)[:16000],
+                        "truncated": (hi - lo + 1) > 16000 // 40,
+                    }
                 return {
                     "symbol_id": chunk.symbol_id,
                     "kind": chunk.kind,
                     "file_path": chunk.file_path,
                     "start_line": chunk.start_line,
                     "end_line": chunk.end_line,
+                    "total_lines": chunk.end_line - chunk.start_line + 1,
                     "content": chunk.content[:8000],
                     "truncated": len(chunk.content) > 8000,
+                    "hint": "content truncated — re-call with start_line/end_line to page" if len(chunk.content) > 8000 else None,
                 }
 
     return {"error": f"Symbol '{symbol_id}' found in metadata but content not available.", "symbol_id": symbol_id}
@@ -651,6 +670,33 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
     """Enhanced symbol search with file path matching and fuzzy name resolution. Use this when search_symbols returns 0 matches — it searches file paths, short names, and partial matches. Provide a partial name or file path (e.g. 'deactivate_customer', 'dormancy_report.rs', 'customer_controller')."""
     limit = max(1, min(limit, 50))
     results = _filter_noise(graph_index.search_symbols(query, limit=max(limit * 2, 50)))[:limit]
+
+    # Multi-word queries ("notification sms") match nothing as a single
+    # substring — try each term and intersect/rank instead.
+    terms = [t for t in query.lower().split() if len(t) >= 2]
+    if not results and len(terms) > 1:
+        try:
+            from app.core.index_store import index_metadata_store
+            snapshot = index_metadata_store.load_snapshot()
+            if snapshot:
+                term_sets: list[set[str]] = []
+                for term in terms:
+                    term_hits = {
+                        c.symbol_id for c in snapshot.chunks
+                        if term in c.symbol_id.lower()
+                    }
+                    if term_hits:
+                        term_sets.append(term_hits)
+                if term_sets:
+                    from functools import reduce
+                    matches = sorted(reduce(set.intersection, term_sets))[:limit]
+                    results = [
+                        {"symbol_id": sid, "short_name": sid.split("::")[-1],
+                         "match_type": "multi_term_intersection"}
+                        for sid in matches
+                    ]
+        except Exception:
+            pass
 
     if not results and fuzzy:
         try:
