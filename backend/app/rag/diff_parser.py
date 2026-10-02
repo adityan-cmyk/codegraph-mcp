@@ -255,8 +255,34 @@ def resolve_diff_symbols(diff_text: str, graph_index) -> dict[str, object]:
     all_names = set(extraction["added_symbols"] + extraction["modified_symbols"])
     change_details = extraction.get("change_details", {})
 
+    # Diff-scoped resolution: a symbol name resolves ONLY against modules that
+    # the diff actually touches. Resolving globally attached 5 same-named
+    # symbols from unrelated files to every diff — pure phantom impact.
+    def _file_to_module(f: str) -> str:
+        parts = [p for p in f.removesuffix(".rs").split("/") if p != "src"]
+        return "::".join(parts)
+
+    changed_modules_set = {
+        _file_to_module(f) for f in extraction.get("changed_files", []) if f.endswith(".rs")
+    }
+
+    def _in_changed_module(symbol_id: str) -> bool:
+        return any(
+            symbol_id == m or symbol_id.startswith(m + "::")
+            for m in changed_modules_set
+        )
+
+    def _diff_scoped(name: str, limit: int) -> list[dict]:
+        results = graph_index.search_symbols(name, limit=limit * 4)
+        scoped = [r for r in results if _in_changed_module(r["symbol_id"])]
+        if not scoped and changed_modules_set:
+            # Symbol may be defined outside the diff's files (the diff calls
+            # into it) — fall back to global results, capped tight.
+            scoped = results[:limit]
+        return scoped[:limit]
+
     for name in all_names:
-        results = graph_index.search_symbols(name, limit=5)
+        results = _diff_scoped(name, 5)
         cd = change_details.get(name, {"change_type": "modified", "symbol_type": "function", "details": ""})
         if results:
             for r in results:

@@ -596,3 +596,29 @@ class ObservationsTestCase(unittest.TestCase):
         calls = _extract_call_targets(caller, name_index, path_index)
         self.assertIn("inv::InventoryClient::new", calls)
         self.assertEqual(len(calls), 1, f"qualified call must resolve to exactly one target, got {calls}")
+
+    def test_diff_scoped_resolution(self):
+        from app.rag.diff_parser import resolve_diff_symbols
+
+        class FakeGraph:
+            def search_symbols(self, name, limit=20):
+                # Two same-named symbols in different modules — the phantom case
+                return [
+                    {"symbol_id": "crates::wallet::queries::fetch_uam_users_map"},
+                    {"symbol_id": "dashboard::admin::fetch_uam_users_map"},
+                    {"symbol_id": "fastag::reports::fetch_uam_users_map"},
+                ][:limit]
+
+        diff = "\n".join([
+            "--- a/crates/wallet/queries.rs",
+            "+++ b/crates/wallet/queries.rs",
+            "@@ -10,3 +10,4 @@",
+            "-fn fetch_uam_users_map() -> Map {",
+            "+fn fetch_uam_users_map() -> HashMap<String, User> {",
+            "     let m = load();",
+            " }",
+        ])
+        resolved = resolve_diff_symbols(diff, FakeGraph())
+        ids = [s["symbol_id"] for s in resolved["changed_symbols"]]
+        self.assertEqual(ids, ["crates::wallet::queries::fetch_uam_users_map"],
+                         "must resolve only within the diff's modules")
