@@ -533,3 +533,18 @@ class ObservationsTestCase(unittest.TestCase):
         ])
         obs = extract_observations(src, "t.rs", [])
         self.assertFalse(any(o.kind == "commented_code" for o in obs))
+
+    def test_generic_params_not_mangled_into_symbol_ids(self):
+        from app.rag.ingestion.tree_sitter import extract_rust_chunks
+        src = "\n".join([
+            "pub async fn update_dispute_status<C: Client>(conn: &C, id: u32) -> Result<()> {",
+            "    Ok(())",
+            "}",
+            "",
+            "pub fn process<S>(s: S) -> S { s }",
+        ])
+        chunks = extract_rust_chunks("crates/wallet/queries.rs", src)
+        ids = [c.symbol_id for c in chunks]
+        self.assertIn("crates::wallet::queries::update_dispute_status", ids)
+        self.assertIn("crates::wallet::queries::process", ids)
+        self.assertFalse(any("_C" in i or "_S" in i for i in ids), f"mangled ids: {ids}")
