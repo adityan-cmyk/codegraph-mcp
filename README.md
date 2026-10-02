@@ -1,6 +1,6 @@
 # codegraph-mcp
 
-A stateless **MCP server** for code dependency graph analysis of Rust codebases — blast radius, semantic search, PR diff analysis, and a reinforcement loop that improves search quality from AI agent feedback. 15 of the 17 tools are read-only analysis (including a local decision-model tool); the two feedback tools write only to feedback tables.
+A stateless **MCP server** for code dependency graph analysis of Rust codebases — blast radius, semantic search, PR diff analysis, a metal detector for bugs hiding in comments and dead code (TODOs, swallowed errors, stubs), and a reinforcement loop that improves search quality from AI agent feedback. 17 of the 19 tools are read-only analysis (including a local decision-model tool); the two feedback tools write only to feedback tables.
 
 > **Note:** the full on-call assistant (incident lifecycle, LLM agent, chat, eval suites) lives on the [`oncall-assistant`](../../tree/oncall-assistant) branch. This branch is the MCP server only.
 
@@ -12,7 +12,7 @@ A stateless **MCP server** for code dependency graph analysis of Rust codebases 
 ┌──────────────────┐     ┌──────────────────┐     ┌────────────────────┐
 │  opencode Agent  │────▶│  Stateless MCP   │────▶│  Neo4j             │  dependency graph (gen-tagged, usage-mode edges)
 │  (any machine)   │     │  Server :8002    │────▶│  Weaviate          │  semantic vector search (shadow collections)
-│                  │     │  (17 tools)      │────▶│  PostgreSQL        │  snapshots, feedback, build registry
+│                  │     │  (19 tools)      │────▶│  PostgreSQL        │  snapshots, feedback, build registry
 │                  │────▶│  Feedback API    │     │  t2v-transformers  │  embedding model (BAAI/bge-base-en-v1.5)
 └──────────────────┘     │  :8000           │     │  ollama            │  decision model (nimble 9B, feedback gate)
                          └──────────────────┘     └────────────────────┘
@@ -119,26 +119,29 @@ Add this to your `opencode.json`:
 }
 ```
 
-### Available Tools (17)
+### Available Tools (19)
 
 | Tool | Description |
 |---|---|
 | `search_symbols` | Search symbols by partial name. Use this FIRST to find exact symbol_ids. |
-| `search_symbols_enhanced` | Enhanced search with file path matching + fuzzy name resolution. Use when search_symbols returns 0. |
-| `get_blast_radius` | Get immediate callers, callees, type-users, and used-types for a symbol. Includes risk score, risk factors, usage modes per edge, and optional `usage_modes_filter` to return only specific edge types (e.g. pattern_match, construction). |
+| `search_symbols_enhanced` | Enhanced search with file path matching + fuzzy name resolution + multi-word queries. Use when search_symbols returns 0. |
+| `get_blast_radius` | Get immediate callers, callees, type-references, and used-types for a symbol. Direct callers (CALLS edges) and type references (USES edges) are reported separately, never conflated. Includes risk score, risk factors, usage modes per edge, `usage_modes_filter`, and `exclude_shared_state_types` (filters god-types like GlobalState from the type expansion). |
 | `get_blast_radius_detailed` | Blast radius with confidence scores AND usage modes on each edge (high/medium/low confidence). |
 | `batch_blast_radius` | Get blast radius for multiple symbols at once. Returns combined impact analysis. |
-| `get_symbol_content` | Get the full source code of a symbol. |
+| `get_symbol_content` | Get the source code of a symbol. Supports `start_line`/`end_line` paging for 500+ line symbols. |
 | `semantic_search` | Search by meaning (natural language). Hybrid BM25+vector, 30s timeout, auto-fallback to graph search. Chunk enrichment prepends module path for better matching. |
-| `analyze_pr_diff` | Parse a git diff, extract changed symbols, classify change types (new, signature_change, body_only, trait_impl, struct_field, deleted), get blast radius for each — all in one call. |
+| `analyze_pr_diff` | Parse a git diff, extract changed symbols, classify change types (new, signature_change, body_only, trait_impl, struct_field, deleted), get blast radius for each — all in one call. Symbol resolution is scoped to the diff's files. |
 | `find_dependency_path` | Find the shortest dependency path between two symbols. Prefers CALLS over USES, filters config types (GlobalState, etc.). |
-| `traverse_graph` | Multi-hop dependency traversal from a symbol (depth 1-5). Supports `summary_only` mode for compact output (counts per hop only). |
-| `get_graph_stats` | Get total graph nodes and edges. |
-| `get_index_meta` | Get graph build metadata — gen number, commit hash, classifier version, timestamp, embedding model, features list. Use to verify graph freshness. |
+| `traverse_graph` | Multi-hop dependency traversal from a symbol (depth 1-5). Supports `summary_only` mode for compact output (counts per hop only, up to 1000 neighborhoods). |
+| `get_graph_stats` | Get total graph nodes and edges, with the node-vs-symbol-count reconciliation (graph excludes file summaries, module exports, trivial constants). |
+| `get_index_meta` | Get graph build metadata — gen number, commit hash, commits_behind (drift), per-file coverage stats, classifier version, timestamp, embedding model. Use to verify graph freshness. |
 | `get_symbols_in_file` | List all symbols defined in a file. Use to resolve a diff's file path to exact symbols without guessing. |
+| `find_warnings_in_blast_radius` | **Metal detector**: TODO/FIXME/HACK comments, swallowed errors (`let _ = fn()`), logging-only stub functions, commented-out code, and auth fail-open defaults (`unwrap_or_default()`) within a symbol's dependency blast radius. The bug classes that live in comments and dead code — invisible to the dependency graph. |
+| `diff_modules` | Symbol-set drift between counterpart modules (sync vs async report generators, handler mirrors). Catches implementations that have drifted apart. |
 | `submit_search_feedback` | Rate semantic_search results (+1 helpful, -1 not helpful, or query-level with no symbol). |
 | `submit_ai_feedback` | Submit full post-analysis feedback summary after PR review. PRIMARY feedback mechanism. |
 | `get_reinforcement_stats` | Get reinforcement learning statistics — boosted/penalized symbols, query expansions. |
+| `make_decision` | Typed judgments (noul yes/no, score, choice) from the local decision model. Single model pass for all questions (~10-60s); for decisions worth waiting on — PR risk, triage, gating. |
 
 ### Tool Usage Guide
 
@@ -196,8 +199,28 @@ Get the full source code of a symbol.
 ```json
 {"symbol_id": "crates::inventory::client::InventoryClient"}
 ```
-- Returns: `content` (source code, max 8000 chars), `file_path`, `start_line`, `end_line`, `truncated`.
+- Returns: `content` (source code, max 8000 chars), `file_path`, `start_line`, `end_line`, `total_lines`, `truncated`, and a paging hint.
+- For 500+ line symbols the content is truncated — re-call with `start_line`/`end_line` (absolute file line numbers within the symbol's span) to page through the rest:
+```json
+{"symbol_id": "crates::inventory::client::InventoryClient", "start_line": 200, "end_line": 400}
+```
 - Use after `get_blast_radius` to understand what a symbol actually does.
+
+#### `find_warnings_in_blast_radius`
+The metal detector — bugs live in comments, dead code, and swallowed errors, none of which are visible in a dependency graph.
+```json
+{"symbol_id": "crates::wallet::core::close_wallets_batch", "radius": 2, "kinds": ["todo", "error_swallow"]}
+```
+- Warning kinds: `todo`, `fixme`, `hack`, `xxx`, `commented_code` (3+ commented-out code lines), `error_swallow` (`let _ = fn()` discarding Results), `fail_open` (`unwrap_or_default()` on auth paths), `stub_fn` (function bodies that are only logging).
+- Observations are extracted during indexing and attached to the nearest enclosing symbol; the tool joins them against the blast radius.
+- Precision-first by design: a missed warning is acceptable, a fabricated one destroys trust.
+
+#### `diff_modules`
+Symbol-set drift between counterpart modules — catches sync/async implementations that have grown apart.
+```json
+{"module_a": "dashboard::product::mis_report", "module_b": "dashboard::product::generators"}
+```
+- Returns `only_in_a` / `only_in_b` (the drift) plus shared counts and a drift score.
 
 #### `semantic_search`
 Search the codebase by meaning, not by name. Hybrid BM25+vector search with 30s timeout and auto-fallback to graph search.
@@ -786,6 +809,44 @@ ADRs are in `docs/adr/000-architecture-decisions.md`, covering:
 | `OUTBOUND_TIMEOUT_SECONDS` | `30` | Timeout for outbound HTTP calls |
 | `OUTBOUND_RETRY_COUNT` | `3` | Retry attempts for transient failures |
 | `SEMANTIC_SEARCH_TIMEOUT_SECONDS` | `30` | Weaviate query timeout before fallback |
+
+---
+
+## Operations
+
+### Deployment (GitOps loop)
+
+```bash
+git push origin main    # that's it
+```
+
+1. **gitops-pull** (cron, 2 min): fetch `origin/main`, fast-forward only — refuses dirty trees and diverged branches with one-shot email alerts, builds and tags the image with the git SHA
+2. **auto-deploy** (cron, 1 min): deploys on image diff, defers while indexing is running, verifies health (120s grace), runs the **functional smoke suite**, and only then tags `last-good` — a failed build or failed smoke never ships
+
+Rollback: `docker tag on-call-assistance-backend:last-good on-call-assistance-backend:latest && docker compose up -d backend`
+
+### Post-deploy smoke suite
+
+`scripts/smoke.py` — 11 functional invariants, not just liveness: make_decision actually answers, semantic scores have spread (not flat 1.0), graph stats reconcile, traverse + metal detector + multi-word search work, feedback submissions accepted. The deployer runs it after every deploy and emails failures. Each check pins a failure class that actually happened.
+
+### Contract-drift tests
+
+The unit suite includes tests that pin cross-component contracts so they cannot drift silently: the advertised make_decision state cap must equal the enforced cap, the tick's stats keys must exist in the store's return, and the deployer's indexing-guard regex must match the log lines the indexer actually emits.
+
+### Testing
+
+```bash
+./scripts/run-tests.sh          # unit tests in a network-isolated container
+```
+
+**Never** run pytest with the compose environment attached — test setup resets index singletons and will wipe live backends.
+
+### Other docs
+
+- `startup.md` — from-scratch setup guide
+- `ROADMAP.md` — consolidated backlog with progress
+- `AGENTS.md` — PR-review workflow for AI agents
+- `docs/architecture.html` — interactive architecture diagram
 
 ---
 

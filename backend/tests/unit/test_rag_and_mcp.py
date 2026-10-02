@@ -622,3 +622,74 @@ class ObservationsTestCase(unittest.TestCase):
         ids = [s["symbol_id"] for s in resolved["changed_symbols"]]
         self.assertEqual(ids, ["crates::wallet::queries::fetch_uam_users_map"],
                          "must resolve only within the diff's modules")
+
+
+class ContractDriftTestCase(unittest.TestCase):
+    """Pin the interfaces between components so they cannot drift silently.
+    Every test here corresponds to a real outage from 2026-10-02."""
+
+    def test_make_decision_schema_state_cap_matches_code(self):
+        """The schema advertised 8000-char states while code enforced 2000 —
+        every spec-following client was rejected."""
+        from app.mcp import readonly_server
+        import re
+
+        schema = readonly_server._TOOLS["make_decision"]["schema"]
+        m = re.search(r"max (\d+) chars", schema["properties"]["state"]["description"])
+        self.assertIsNotNone(m, "state description must state the cap")
+        from app.core import systemone
+        self.assertEqual(int(m.group(1)), systemone.MAX_STATE_CHARS,
+                         "advertised cap must equal enforced cap")
+
+    def test_docstring_state_cap_matches_code(self):
+        from app.mcp.tools.graph_read_tools import make_decision
+        from app.core import systemone
+        import re
+
+        doc = make_decision.__doc__ or ""
+        m = re.search(r"max (\d+) chars", doc)
+        self.assertIsNotNone(m)
+        self.assertEqual(int(m.group(1)), systemone.MAX_STATE_CHARS)
+
+    def test_feedback_stats_keys_cover_tick_requirements(self):
+        """get_feedback_stats never returned total_feedback; the tick
+        KeyError'd on it every cycle for months, invisibly."""
+        import inspect
+        import re
+
+        from app.rag.reinforcement import agent, ai_feedback_store
+
+        source = inspect.getsource(ai_feedback_store.get_feedback_stats)
+        tick_source = inspect.getsource(agent)
+        # keys the tick reads
+        required = {"total_feedback"}
+        m = re.search(r"fb_stats\.get\(\"(\w+)\", 0\)|fb_stats\[\"(\w+)\"\]", tick_source)
+        keys_used = set(re.findall(r"fb_stats(?:\.get)?\[?\"(\w+)\"", tick_source)) | required
+        # keys the store returns
+        returned = set(re.findall(r"\"(\w+)\":", source))
+        missing = keys_used - returned - {"get"}
+        self.assertFalse(missing, f"tick reads keys the store never returns: {missing}")
+
+    def test_deployer_guard_matches_indexing_log_lines(self):
+        """The deployer's indexing-deferral grep matched NONE of the actual
+        log lines — a mid-index deploy would have killed a 1.8h build."""
+        import re
+        from pathlib import Path
+
+        deployer = Path("/app/scripts/auto-deploy.sh")
+        if not deployer.exists():
+            self.skipTest("scripts/ not mounted (running outside run-tests.sh)")
+        deployer_text = deployer.read_text()
+        m = re.search(r'grep -qE "([^"]+)"', deployer_text)
+        self.assertIsNotNone(m, "deployer must have an indexing guard")
+        guard = re.compile(m.group(1))
+
+        sources = {
+            Path("/app/app/rag/indexing_service.py").read_text(),
+            Path("/app/app/rag/retrieval/weaviate_semantic.py").read_text(),
+        }
+        # every logged message the guard relies on must exist in the source
+        for literal in ("Embedded and inserted", "Rebuilding semantic index", "Building new graph"):
+            self.assertTrue(any(literal in src for src in sources),
+                            f"indexing no longer logs '{literal}' — guard is stale")
+            self.assertTrue(guard.search(literal), f"guard regex does not match '{literal}'")

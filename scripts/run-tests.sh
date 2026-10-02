@@ -31,6 +31,7 @@ fi
 docker run --rm --network none \
     -v "$PROJECT_ROOT/backend/app:/app/app:ro" \
     -v "$PROJECT_ROOT/backend/tests:/app/tests:ro" \
+    -v "$PROJECT_ROOT/scripts:/app/scripts:ro" \
     -e PYTHONDONTWRITEBYTECODE=1 \
     -e HF_HOME=/app/.cache/huggingface \
     --user "$(id -u):$(id -g)" \
