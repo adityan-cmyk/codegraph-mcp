@@ -42,6 +42,8 @@ from app.mcp.tools.graph_read_tools import (
     get_index_meta,
     get_symbols_in_file,
     find_warnings_in_blast_radius,
+    resolve_stacktrace,
+    find_dead_code,
     diff_modules,
     make_decision,
 )
@@ -414,6 +416,42 @@ _TOOLS: dict[str, Any] = {
                 },
             },
             "required": ["symbol_id"],
+        },
+    },
+    "resolve_stacktrace": {
+        "handler": resolve_stacktrace,
+        "description": inspect.getdoc(resolve_stacktrace) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "stacktrace": {
+                    "type": "string",
+                    "description": "Raw stacktrace or log text containing file.rs:line frames",
+                },
+                "include_neighborhood": {
+                    "type": "boolean",
+                    "description": "Add callers/risk per frame (default false)",
+                },
+            },
+            "required": ["stacktrace"],
+        },
+    },
+    "find_dead_code": {
+        "handler": find_dead_code,
+        "description": inspect.getdoc(find_dead_code) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max symbols to return (default 50, max 200)",
+                },
+                "module_prefix": {
+                    "type": "string",
+                    "description": "Scope to a module prefix, e.g. 'crates::wallet'",
+                },
+            },
+            "required": [],
         },
     },
     "diff_modules": {

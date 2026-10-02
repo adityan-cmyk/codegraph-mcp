@@ -1120,6 +1120,108 @@ def get_symbols_in_file(file_path: str) -> dict[str, object]:
 _DECISION_LOCK = threading.Lock()
 
 
+def resolve_stacktrace(stacktrace: str, include_neighborhood: bool = False) -> dict[str, object]:
+    """Map panic backtraces or file:line log entries to graph symbols. Provide raw stacktrace text (any format) — every 'path/to/file.rs:LINE' found is resolved to the innermost enclosing symbol with its location. Use this during incidents to go from a crash to the code neighborhood in one call. Optional: include_neighborhood=true adds a compact blast-radius summary per frame."""
+    import re as _re
+
+    from app.core.index_store import index_metadata_store
+
+    frames = _re.findall(r"([A-Za-z0-9_./-]+\.rs):(\d+)", stacktrace)
+    if not frames:
+        return {"error": "no 'file.rs:line' frames found in the stacktrace text"}
+
+    snapshot = index_metadata_store.load_snapshot()
+    if not snapshot:
+        return {"error": "no index snapshot loaded"}
+
+    by_file: dict[str, list] = {}
+    for c in snapshot.chunks:
+        by_file.setdefault(c.file_path, []).append(c)
+
+    resolved: list[dict] = []
+    seen: set[str] = set()
+    for file_path, line_str in frames:
+        line = int(line_str)
+        candidates = [
+            c for c in by_file.get(file_path, [])
+            if c.start_line <= line <= c.end_line and c.kind in ("fn", "method", "struct", "enum", "trait", "impl", "module")
+        ]
+        if not candidates:
+            # tolerate path prefix differences (leading crates/, src/)
+            suffix = file_path.rsplit("/", 2)[-1] if "/" in file_path else file_path
+            candidates = [
+                c for c in snapshot.chunks
+                if c.file_path.endswith(suffix) and c.start_line <= line <= c.end_line
+            ]
+        if not candidates:
+            resolved.append({"file_path": file_path, "line": line, "symbol_id": None,
+                             "note": "no enclosing symbol in the index"})
+            continue
+        innermost = max(candidates, key=lambda c: c.start_line)
+        key = f"{innermost.symbol_id}:{line}"
+        if key in seen:
+            continue
+        seen.add(key)
+        entry = {
+            "file_path": file_path,
+            "line": line,
+            "symbol_id": innermost.symbol_id,
+            "kind": innermost.kind,
+            "symbol_lines": [innermost.start_line, innermost.end_line],
+        }
+        if include_neighborhood and graph_index.has_symbol(innermost.symbol_id):
+            br = get_blast_radius(innermost.symbol_id, summary_only=True)
+            entry["callers"] = br.get("callers_direct_count", 0)
+            entry["type_references"] = br.get("type_reference_count", 0)
+            entry["risk_score"] = br.get("risk_score", "unknown")
+        resolved.append(entry)
+
+    return {
+        "frames_found": len(frames),
+        "resolved": len([r for r in resolved if r.get("symbol_id")]),
+        "frames": resolved,
+    }
+
+
+def find_dead_code(limit: int = 50, module_prefix: str = "") -> dict[str, object]:
+    """Find symbols with zero inbound callers or type-references in the index — cleanup candidates and a parser-accuracy check (false positives usually point to missed edges from dynamic dispatch, macros, or trait objects). Excludes test files, pseudo-symbols, and main/entry functions. Optional: module_prefix to scope, limit (default 50)."""
+    limit = max(1, min(limit, 200))
+    with graph_index._active()._get_driver().session() as session:
+        result = session.run(
+            """
+            MATCH (s:Symbol {gen: $gen})
+            WHERE (s.id STARTS WITH $prefix)
+              AND NOT EXISTS { ()-[:CALLS]->(s) }
+              AND NOT EXISTS { ()-[:USES]->(s) }
+              AND NOT s.id ENDS WITH '::file_summary'
+              AND NOT s.id ENDS WITH '::module_exports'
+              AND NOT s.id ENDS WITH '::main'
+              AND NOT s.id CONTAINS 'test'
+              AND NOT s.id ENDS WITH '::fn'
+            RETURN s.id AS symbol_id,
+                   [(s)-[:CALLS|USES]->(t) | t.id][0..5] AS calls_out
+            ORDER BY size(calls_out) DESC
+            LIMIT $limit
+            """,
+            gen=graph_index._active()._gen,
+            prefix=module_prefix,
+            limit=limit,
+        )
+        dead = [
+            {
+                "symbol_id": r["symbol_id"],
+                "outgoing_connections": len(r["calls_out"]),
+                "caveat": "no inbound edges in the index — verify against dynamic dispatch / macro callers before deleting",
+            }
+            for r in result
+        ]
+    return {
+        "dead_symbols": dead,
+        "count": len(dead),
+        "caveat": "the index has no visibility into dyn-dispatch, macro-generated calls, or external crate consumers — treat as cleanup candidates, not a deletion list",
+    }
+
+
 def diff_modules(module_a: str, module_b: str) -> dict[str, object]:
     """Diff the symbol sets of two modules — finds drift between counterparts (e.g. a sync report generator vs its async version, a handler and its mirror). Returns symbols present in A but missing from B and vice versa, matched by short name. Use this to catch sync/async implementations that have drifted apart (fields or functions added to one but not the other). Provide module prefixes, e.g. 'dashboard::product::mis_report' and 'dashboard::product::generators'."""
     try:
