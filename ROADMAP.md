@@ -9,29 +9,29 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [x] make_decision regression — docs/schema said 8000-char states, code capped at 2000 (`e66e386`)
 - [x] Health-check endpoint — `/api/health/decision-model` self-reports model presence
 - [x] Honest error messages — validation says exactly what was wrong
-- [ ] MCP timeout ~30s/question — batch or parallelize questions; document the hard limit
+- [x] MCP timeout ~30s/question — batch or parallelize questions; document the hard limit
 
 ### P1 — Data quality (the graph must not lie)
 - [ ] Strip generic-param mangling from symbol ids (`_S`, `_C_`, `_F_`, `_T_` monomorphization artifacts)
-- [ ] Phantom high-confidence edges — calibrate confidence on resolved targets, not edge count; deweight hub names
-- [ ] Separate `called_by` from `referenced_by` in blast radius output (TtumStatus "208 callers" is mostly field refs)
-- [ ] Index `src/scripts/*` and bins; surface per-file coverage stats (generators/mod.rs was 13/23)
-- [ ] Show commit drift in `get_index_meta` (commits behind HEAD)
-- [ ] `exclude_shared_state_types` filter (GlobalState: 449 type-users, 907 reachable — pure noise)
+- [x] Phantom high-confidence edges — calibrate confidence on resolved targets, not edge count; deweight hub names
+- [x] Separate `called_by` from `referenced_by` in blast radius output (TtumStatus "208 callers" is mostly field refs)
+- [x] Index `src/scripts/*` and bins; surface per-file coverage stats (generators/mod.rs was 13/23)
+- [x] Show commit drift in `get_index_meta` (commits behind HEAD)
+- [x] `exclude_shared_state_types` filter (GlobalState: 449 type-users, 907 reachable — pure noise)
 
 ### P2 — Metal detector (bugs live in comments, dead code, swallowed errors)
-- [ ] TODO/FIXME/HACK indexing + `find_todos_in_blast_radius(symbol)` — highest-value single addition
-- [ ] Error-swallowing detection: `let _ = fn()` on money paths (7 instances found by grep)
-- [ ] Commented-out code blocks (disabled dedup checks, dormancy guards)
-- [ ] Stub/println-function detection (dispute codes 452/474 settle no funds)
-- [ ] Sync/async counterpart pairing (diff `mis_report::X` vs `generators::X_report` field sets)
-- [ ] Fail-open defaults: `unwrap_or_default()` on auth headers
+- [x] TODO/FIXME/HACK indexing + `find_todos_in_blast_radius(symbol)` — highest-value single addition
+- [x] Error-swallowing detection: `let _ = fn()` on money paths (7 instances found by grep)
+- [x] Commented-out code blocks (disabled dedup checks, dormancy guards)
+- [x] Stub/println-function detection (dispute codes 452/474 settle no funds)
+- [x] Sync/async counterpart pairing (diff `mis_report::X` vs `generators::X_report` field sets)
+- [x] Fail-open defaults: `unwrap_or_default()` on auth headers
 
 ### P3 — API design
-- [ ] `analyze_pr_diff`: scope symbol resolution to the diff's file paths
-- [ ] `search_symbols_enhanced`: multi-word queries ("notification sms" → 0 results)
+- [x] `analyze_pr_diff`: scope symbol resolution to the diff's file paths
+- [x] `search_symbols_enhanced`: multi-word queries ("notification sms" → 0 results)
 - [x] `usage_modes_filter` no-op on call edges (`235b658`)
-- [ ] `get_symbol_content`: return line ranges, let callers page (truncates ~50% on 500+ line fns)
+- [x] `get_symbol_content`: return line ranges, let callers page (truncates ~50% on 500+ line fns)
 
 ## Phase 2 — Next list
 
