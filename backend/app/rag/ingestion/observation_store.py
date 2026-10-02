@@ -22,7 +22,7 @@ _DSN = settings.postgres_dsn
 _schema_lock = threading.Lock()
 _schema_ready = False
 
-KINDS = ("todo", "fixme", "hack", "xxx", "commented_code", "error_swallow", "fail_open", "stub_fn")
+KINDS = ("todo", "fixme", "hack", "xxx", "commented_code", "error_swallow", "fail_open", "stub_fn", "unsafe_block", "ffi_boundary", "panic_path", "unwrap_density")
 
 
 def _connect():

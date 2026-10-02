@@ -25,6 +25,10 @@ _ERROR_SWALLOW = re.compile(
 )
 _FAIL_OPEN = re.compile(r"\.(unwrap_or_default|unwrap_or\(false\))\s*\(")
 _AUTH_HINT = re.compile(r"auth|token|header|permission|secret|api_?key|signature|claim|session|role", re.IGNORECASE)
+_UNSAFE_BLOCK = re.compile(r"^\s*unsafe\s*\{")
+_EXTERN_FFI = re.compile(r"^\s*(?:pub\s+)?extern\s*[\"']?\w*[\"']?\s*(\(|\{|fn\b)")
+_PANIC_PATH = re.compile(r"^\s*(panic!|unreachable!|todo!|unimplemented!)\s*[!(]")
+_UNWRAP_EXPECT = re.compile(r"\.(unwrap|expect)\s*\(")
 _CODE_IN_COMMENT = re.compile(
     r"(\bfn\s|\blet\s|\bmatch\s|\bimpl\s|\bstruct\s|\buse\s|\.await|\breturn\s|^\s*//\s*[\w:.]+\(.*\)\s*;|\}|\{)"
 )
@@ -58,9 +62,16 @@ def extract_observations(source: str, file_path: str, chunks: list[CodeChunk]) -
             out.append(Observation(file_path, i, "error_swallow", line.strip()[:200]))
         if _FAIL_OPEN.search(line) and _auth_context(lines, i):
             out.append(Observation(file_path, i, "fail_open", line.strip()[:200]))
+        if _UNSAFE_BLOCK.match(line):
+            out.append(Observation(file_path, i, "unsafe_block", line.strip()[:200]))
+        if _EXTERN_FFI.match(line):
+            out.append(Observation(file_path, i, "ffi_boundary", line.strip()[:200]))
+        if _PANIC_PATH.match(line):
+            out.append(Observation(file_path, i, "panic_path", line.strip()[:200]))
 
     out.extend(_commented_code_blocks(lines, file_path))
     out.extend(_stub_functions(chunks, file_path))
+    out.extend(_unwrap_density(chunks, file_path))
 
     fn_chunks = sorted(
         (c for c in chunks if c.kind in ("fn", "method") and c.start_line and c.end_line),
@@ -120,6 +131,22 @@ def _stub_functions(chunks: list[CodeChunk], file_path: str) -> list[Observation
             out.append(
                 Observation(file_path, chunk.start_line, "stub_fn",
                             f"body is only logging: {body_lines[0][:120]}")
+            )
+    return out
+
+
+def _unwrap_density(chunks: list[CodeChunk], file_path: str) -> list[Observation]:
+    """Functions with high unwrap()/expect() density — cheap to detect,
+    correlates with incidents, and reviews want to know before touching one."""
+    out: list[Observation] = []
+    for chunk in chunks:
+        if chunk.kind not in ("fn", "method"):
+            continue
+        count = len(_UNWRAP_EXPECT.findall(chunk.content))
+        if count >= 5:
+            out.append(
+                Observation(file_path, chunk.start_line, "unwrap_density",
+                            f"{count} unwrap()/expect() calls in one function")
             )
     return out
 
