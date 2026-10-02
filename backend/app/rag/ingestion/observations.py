@@ -20,7 +20,9 @@ _TODO_LINE = re.compile(r"//\s*(TODO|FIXME|HACK|XXX)\b[:\s]*(.*)", re.IGNORECASE
 _LOG_STMT = re.compile(
     r"^\s*(println!|eprintln!|print!|dbg!|log::|tracing::|debug!|info!|warn!|error!|trace!)"
 )
-_ERROR_SWALLOW = re.compile(r"^\s*let\s+_\s*=\s*[A-Za-z_][\w:.]*\s*(\(.*\)|[A-Za-z_][\w:.]*)\s*;")
+_ERROR_SWALLOW = re.compile(
+    r"^\s*let\s+_\s*=\s*[A-Za-z_][\w:.]*\s*\(.*\)(\s*\.\s*await)*(\s*\.\s*[A-Za-z_][\w:.]*\s*\(.*\))*(\s*\.\s*await)*\s*;"
+)
 _FAIL_OPEN = re.compile(r"\.(unwrap_or_default|unwrap_or\(false\))\s*\(")
 _AUTH_HINT = re.compile(r"auth|token|header|permission|secret|api_?key|signature|claim|session|role", re.IGNORECASE)
 _CODE_IN_COMMENT = re.compile(
@@ -54,7 +56,7 @@ def extract_observations(source: str, file_path: str, chunks: list[CodeChunk]) -
             continue
         if _ERROR_SWALLOW.match(line):
             out.append(Observation(file_path, i, "error_swallow", line.strip()[:200]))
-        if _FAIL_OPEN.search(line) and _AUTH_HINT.search(line):
+        if _FAIL_OPEN.search(line) and _auth_context(lines, i):
             out.append(Observation(file_path, i, "fail_open", line.strip()[:200]))
 
     out.extend(_commented_code_blocks(lines, file_path))
@@ -120,6 +122,13 @@ def _stub_functions(chunks: list[CodeChunk], file_path: str) -> list[Observation
                             f"body is only logging: {body_lines[0][:120]}")
             )
     return out
+
+
+def _auth_context(lines: list[str], line_no: int) -> bool:
+    """Auth hint on the same line or within the two preceding non-empty lines
+    (covers multi-line match arms and builder chains)."""
+    window = lines[max(0, line_no - 3) : line_no]
+    return any(_AUTH_HINT.search(ln) for ln in window)
 
 
 def _symbol_for_line(fn_chunks: list[CodeChunk], line: int) -> str | None:

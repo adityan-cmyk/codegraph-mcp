@@ -506,3 +506,20 @@ class ObservationsTestCase(unittest.TestCase):
         for o in obs:
             if o.kind in ("fixme", "error_swallow"):
                 self.assertEqual(o.symbol_id, "m::outer")
+
+    def test_error_swallow_await_chain(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "let _ = tx.commit().await;\nlet _ = client.send(req).await.map_err(log).await;\n"
+        obs = extract_observations(src, "t.rs", [])
+        self.assertEqual(len([o for o in obs if o.kind == "error_swallow"]), 2)
+
+    def test_fail_open_context_lines(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "\n".join([
+            "match headers.get(\"X-Auth-Token\") {",
+            "    Some(v) => v,",
+            "    None => default_token.clone().unwrap_or_default(),",
+            "}",
+        ])
+        obs = extract_observations(src, "t.rs", [])
+        self.assertTrue(any(o.kind == "fail_open" for o in obs))
