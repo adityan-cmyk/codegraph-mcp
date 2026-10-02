@@ -89,10 +89,12 @@ def _get_symbol_metadata(symbol_id: str) -> dict[str, object] | None:
 
 
 def _is_noise_symbol(symbol_id: str) -> bool:
-    """Filter index noise: wildcard bindings (`_`) and single-char
-    non-alphanumeric scraps that match everything fuzzily."""
+    """Filter index noise: wildcard bindings (`_`), single-char scraps, and
+    pseudo-symbols (file summaries, module exports, keyword-named parser
+    artifacts). Pseudo-symbols kept surfacing as top-ranked results and
+    collecting +1 feedback — index artifacts are not rankable code."""
     name = symbol_id.split("::")[-1]
-    if name == "_":
+    if name in ("_", "file_summary", "module_exports", "fn", "let", "match", "if", "Relation"):
         return True
     return len(name) <= 1 and not name.isalnum()
 
@@ -834,6 +836,8 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
 
     reranked = []
     for m in matches:
+        if _is_noise_symbol(m.symbol_id):
+            continue  # pseudo-symbols are not rankable code — never surface them
         boost = boost_weights.get(m.symbol_id, 0.0)
         adjusted = m.score + _BOOST_ALPHA * boost
         reranked.append((m, adjusted, boost))

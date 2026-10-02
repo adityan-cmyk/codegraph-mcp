@@ -182,13 +182,13 @@ class BoostWeightFormulaTestCase(unittest.TestCase):
         self.assertAlmostEqual(compute_boost_weight(1, 0), 1 / 6)
 
     def test_single_negative_vote_is_mild_not_maximal(self) -> None:
-        self.assertAlmostEqual(compute_boost_weight(0, 1), -1 / 6)
+        self.assertAlmostEqual(compute_boost_weight(0, 1), -2 / 7)  # negatives weigh 2x (k=2)
 
     def test_no_votes_is_neutral(self) -> None:
         self.assertEqual(compute_boost_weight(0, 0), 0.0)
 
     def test_heavy_negative_stays_bounded(self) -> None:
-        self.assertAlmostEqual(compute_boost_weight(0, 31), -31 / 36)
+        self.assertAlmostEqual(compute_boost_weight(0, 31), -62 / 67)  # k=2: neg=62
         self.assertGreaterEqual(compute_boost_weight(0, 31), -1.0)
 
     def test_heavy_positive_stays_bounded(self) -> None:
@@ -202,7 +202,10 @@ class BoostWeightFormulaTestCase(unittest.TestCase):
                 self.assertLessEqual(abs(w), 1.0, f"out of bounds for p={p}, n={n}")
 
     def test_symmetry(self) -> None:
-        self.assertAlmostEqual(compute_boost_weight(7, 3), -compute_boost_weight(3, 7))
+        # k=2 asymmetry is intentional (rich-get-richer correction):
+        # corrections at half the positive rate neutralize exactly.
+        self.assertAlmostEqual(compute_boost_weight(10, 5), 0.0)
+        self.assertAlmostEqual(compute_boost_weight(3, 7), -0.5)
 
 
 class ReinforcementSyncIdempotencyTestCase(unittest.TestCase):
@@ -693,3 +696,26 @@ class ContractDriftTestCase(unittest.TestCase):
             self.assertTrue(any(literal in src for src in sources),
                             f"indexing no longer logs '{literal}' — guard is stale")
             self.assertTrue(guard.search(literal), f"guard regex does not match '{literal}'")
+
+    def test_negative_asymmetry_counters_entrenchment(self):
+        from app.rag.reinforcement.feedback_store import compute_boost_weight
+        # 19 accumulated positives vs 1 correction: k=1 kept it at 0.72 (entrenched)
+        w_k2 = compute_boost_weight(19, 1)
+        self.assertLess(w_k2, 19 / 25, "one correction must dent the k=1 entrenchment (0.72)")
+        # a fresh symbol with one negative goes clearly negative
+        self.assertLess(compute_boost_weight(0, 1), 0)
+        # with k=2 the neutral point is p = 2n, not p = n
+        self.assertAlmostEqual(compute_boost_weight(10, 5), 0.0)
+
+    def test_pseudo_symbols_rejected_from_feedback(self):
+        from unittest.mock import patch
+
+        from app.rag.reinforcement import feedback_store
+
+        def _boom(*a, **k):
+            raise AssertionError("store must not be touched for pseudo-symbols")
+
+        with patch.object(feedback_store, "_ensure_schema", _boom), \
+                patch.object(feedback_store, "_connect", _boom):
+            feedback_store.record_feedback("q", "fastag::netc_handlers::module_exports", 0.5, 1)
+            feedback_store.record_feedback("q", "x::y::file_summary", 0.5, 1)
