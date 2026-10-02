@@ -42,6 +42,7 @@ from app.mcp.tools.graph_read_tools import (
     get_index_meta,
     get_symbols_in_file,
     find_warnings_in_blast_radius,
+    diff_modules,
     make_decision,
 )
 
@@ -413,6 +414,24 @@ _TOOLS: dict[str, Any] = {
                 },
             },
             "required": ["symbol_id"],
+        },
+    },
+    "diff_modules": {
+        "handler": diff_modules,
+        "description": inspect.getdoc(diff_modules) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "module_a": {
+                    "type": "string",
+                    "description": "First module prefix, e.g. 'dashboard::product::mis_report'",
+                },
+                "module_b": {
+                    "type": "string",
+                    "description": "Second module prefix (the counterpart)",
+                },
+            },
+            "required": ["module_a", "module_b"],
         },
     },
 }
