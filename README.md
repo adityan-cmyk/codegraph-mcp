@@ -833,6 +833,10 @@ Rollback: `docker tag on-call-assistance-backend:last-good on-call-assistance-ba
 
 The unit suite includes tests that pin cross-component contracts so they cannot drift silently: the advertised make_decision state cap must equal the enforced cap, the tick's stats keys must exist in the store's return, and the deployer's indexing-guard regex must match the log lines the indexer actually emits.
 
+### Backups
+
+`scripts/backup-postgres.sh` (cron 01:00): nightly gzipped pg_dump to `backups/postgres/` with 7-day retention. Every dump is restore-tested immediately — restored into a scratch database, key tables counted, dropped. Failures (dump error, empty restore, stale backup >25h) email an alert. Postgres is the source of truth; an untested backup is a hope, not a backup.
+
 ### Testing
 
 ```bash
