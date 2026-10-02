@@ -69,9 +69,16 @@ PYEOF
 }
 
 if [ "$OK" = 1 ]; then
-    docker tag "$LATEST_ID" "$IMAGE:last-good"
-    log "deployed $SHA clean"
-    notify "[codegraph] Auto-deploy: $SHA" "Deployed <code>$SHA</code> — container healthy. Tagged <code>$IMAGE:$SHA</code> and updated <code>last-good</code>."
+    # Functional smoke — health alone missed make_decision dying, flat scores,
+    # and stats drift. If smoke fails: alert and DO NOT bless the new image.
+    if python3 /home/adi/repos/on-call-assistance/scripts/smoke.py >> "$LOG" 2>&1; then
+        docker tag "$LATEST_ID" "$IMAGE:last-good"
+        log "deployed $SHA clean (smoke passed)"
+        notify "[codegraph] Auto-deploy: $SHA" "Deployed <code>$SHA</code> — healthy, smoke passed. Tagged <code>$IMAGE:$SHA</code> and updated <code>last-good</code>."
+    else
+        log "DEPLOYED $SHA but SMOKE FAILED — last-good NOT updated; rollback when ready"
+        notify "[codegraph ALERT] Smoke failed after deploy: $SHA" "Container is up but functional invariants failed (see smoke output in auto-deploy.log). <code>last-good</code> still points at the previous image. Rollback: <code>docker tag $IMAGE:last-good $IMAGE:latest &amp;&amp; docker compose up -d backend</code>"
+    fi
 else
     log "DEPLOY $SHA FAILED — unhealthy after 180s"
     notify "[codegraph ALERT] Auto-deploy failed: $SHA" "Container UNHEALTHY after deploying <code>$SHA</code>. Rollback: <code>docker tag $IMAGE:last-good $IMAGE:latest &amp;&amp; docker compose up -d backend</code>"
