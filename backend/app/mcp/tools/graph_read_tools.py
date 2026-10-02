@@ -603,7 +603,9 @@ def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False) -
         capped_neighborhoods.append(nb)
 
     total_neighborhoods = len(neighborhoods)
-    truncated = total_neighborhoods > max_hoods
+    # >= not >: the BFS loop stops at exactly the cap with a possibly
+    # non-empty queue — that state IS truncated.
+    truncated = total_neighborhoods >= max_hoods
 
     if summary_only:
         # Counts per BFS hop level (the doc contract): rebuild levels from
@@ -646,8 +648,12 @@ def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False) -
             "root_symbol": symbol_id,
             "depth": depth,
             "symbols_visited": total_neighborhoods,
-            "total_reachable_symbols": len(all_symbols),
+            "total_reachable_symbols": len(visited) - 1,
             "truncated": truncated,
+            "count_definitions": {
+                "symbols_visited": "symbols whose neighborhoods were traversed (capped)",
+                "total_reachable_symbols": "unique symbols reachable within depth, excluding the root (lower bound when truncated=true)",
+            },
             "summary": levels,
         }
 

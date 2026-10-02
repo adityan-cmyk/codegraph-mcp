@@ -227,8 +227,10 @@ class Neo4jGraphIndex:
                 continue
 
             visited.add(current)
-            query_depth = depth if current_depth == 0 else 1
-            neighborhood = self.get_neighbors(current, depth=query_depth)
+            # Always 1-hop neighborhoods: querying the seed at full `depth`
+            # flattened multi-hop neighbors into hop 1, collapsing the level
+            # structure (traverse reported depth-1 hops systematically).
+            neighborhood = self.get_neighbors(current, depth=1)
             neighborhoods.append(neighborhood)
 
             if current_depth < depth:

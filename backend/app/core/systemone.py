@@ -27,6 +27,41 @@ logger = logging.getLogger(__name__)
 # backend mid-evaluation). make_decision (agent-facing) keeps its own
 # non-blocking lock and reports busy instead of waiting.
 _INTERNAL_LOCK = threading.Lock()
+# One model, two classes of caller: agent-facing decisions (make_decision,
+# latency-sensitive, few) and background gate/classification (feedback ticks,
+# bursty, many). Decisions get priority: background calls yield their next
+# slot while a decision waits, and decisions can wait ~one background call
+# (100s) instead of a whole tick (up to ~7 min). Without this, feedback
+# submissions starved make_decision until MCP timeout — reviewers reporting
+# the timeouts were causing them.
+_DECISION_WAITERS = 0
+_WAITERS_LOCK = threading.Lock()
+
+
+def _decision_acquire(timeout: float) -> bool:
+    """Priority acquire for agent-facing decisions."""
+    global _DECISION_WAITERS
+    with _WAITERS_LOCK:
+        _DECISION_WAITERS += 1
+    try:
+        return _INTERNAL_LOCK.acquire(timeout=timeout)
+    finally:
+        with _WAITERS_LOCK:
+            _DECISION_WAITERS -= 1
+
+
+def _background_acquire(max_yield_seconds: float = 120.0) -> None:
+    """Acquire for gate/classification — yields the next model slot to any
+    waiting decision before taking the lock."""
+    import time as _time
+
+    yield_start = _time.monotonic()
+    while _time.monotonic() - yield_start < max_yield_seconds:
+        with _WAITERS_LOCK:
+            if _DECISION_WAITERS == 0:
+                break
+        _time.sleep(0.5)
+    _INTERNAL_LOCK.acquire()
 
 # Acceptance rule: the actionable dimension is the hard gate. Feedback that
 # doesn't describe expected-but-missing results is vacuous — it contributes
@@ -100,12 +135,9 @@ def decide(state: str, questions: dict) -> dict | None:
     import requests
 
     try:
-        # Agent-facing path must never queue indefinitely behind background
-        # gate/classification calls — a blocking acquire here once stretched
-        # make_decision into client timeouts whenever the tick was gating.
-        # Bounded wait, then explicit busy.
-        if not _INTERNAL_LOCK.acquire(timeout=5):
-            logger.info("Decision call skipped — model busy with gate/classification")
+        acquired = _decision_acquire(timeout=100)
+        if not acquired:
+            logger.info("Decision call skipped — model busy beyond 100s")
             return {"__busy__": True}
         try:
             response = requests.post(
@@ -154,11 +186,15 @@ def judge_feedback(feedback_row: dict) -> dict[str, float] | None:
     }
 
     try:
-        response = requests.post(
-            settings.systemone_url,
-            json=payload,
-            timeout=settings.systemone_timeout,
-        )
+        _background_acquire()
+        try:
+            response = requests.post(
+                settings.systemone_url,
+                json=payload,
+                timeout=settings.systemone_timeout,
+            )
+        finally:
+            _INTERNAL_LOCK.release()
         response.raise_for_status()
         answers = response.json().get("answers", {})
         judged: dict[str, float] = {}

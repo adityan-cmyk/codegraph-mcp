@@ -719,3 +719,28 @@ class ContractDriftTestCase(unittest.TestCase):
                 patch.object(feedback_store, "_connect", _boom):
             feedback_store.record_feedback("q", "fastag::netc_handlers::module_exports", 0.5, 1)
             feedback_store.record_feedback("q", "x::y::file_summary", 0.5, 1)
+
+    def test_diff_deleted_symbols_scoped_to_diff(self):
+        from app.rag.diff_parser import resolve_diff_symbols
+
+        class FakeGraph:
+            def search_symbols(self, name, limit=20):
+                if name != "fetch_uam_users_map":
+                    return []
+                return [
+                    {"symbol_id": "crates::wallet::queries::fetch_uam_users_map"},
+                    {"symbol_id": "dashboard::admin::fetch_uam_users_map"},
+                ][:limit]
+
+        diff = "\n".join([
+            "--- a/crates/wallet/queries.rs",
+            "+++ b/crates/wallet/queries.rs",
+            "@@ -10,2 +10,1 @@",
+            "-fn fetch_uam_users_map() -> Map {",
+            "-fn gone_helper() {}",
+        ])
+        resolved = resolve_diff_symbols(diff, FakeGraph())
+        ids = [s["symbol_id"] for s in resolved["deleted_symbols"]]
+        self.assertEqual(ids, ["crates::wallet::queries::fetch_uam_users_map"],
+                         "deleted symbols must resolve only within the diff's modules — "
+                         "global resolution invented deletions in files not in the diff")
