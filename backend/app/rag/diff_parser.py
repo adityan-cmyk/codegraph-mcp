@@ -307,7 +307,7 @@ def resolve_diff_symbols(diff_text: str, graph_index) -> dict[str, object]:
             })
 
     for name in extraction["deleted_symbols"]:
-        results = graph_index.search_symbols(name, limit=3)
+        results = _diff_scoped(name, 3)
         cd = change_details.get(name, {"change_type": "deleted", "symbol_type": "unknown", "details": ""})
         for r in results:
             deleted_symbols.append({
