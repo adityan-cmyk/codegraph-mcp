@@ -1097,6 +1097,53 @@ def get_symbols_in_file(file_path: str) -> dict[str, object]:
 _DECISION_LOCK = threading.Lock()
 
 
+def diff_modules(module_a: str, module_b: str) -> dict[str, object]:
+    """Diff the symbol sets of two modules — finds drift between counterparts (e.g. a sync report generator vs its async version, a handler and its mirror). Returns symbols present in A but missing from B and vice versa, matched by short name. Use this to catch sync/async implementations that have drifted apart (fields or functions added to one but not the other). Provide module prefixes, e.g. 'dashboard::product::mis_report' and 'dashboard::product::generators'."""
+    try:
+        from app.core.index_store import index_metadata_store
+        snapshot = index_metadata_store.load_snapshot()
+    except Exception:
+        return {"error": "index metadata store unavailable"}
+    if not snapshot:
+        return {"error": "no snapshot loaded"}
+
+    def _symbols_for(prefix: str) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        p = prefix.strip().strip(":")
+        for c in snapshot.chunks:
+            sid = c.symbol_id
+            if sid == p or sid.startswith(p + "::"):
+                if c.kind in ("file_summary", "module_exports"):
+                    continue
+                out.setdefault(sid.split("::")[-1], []).append(sid)
+        return out
+
+    a = _symbols_for(module_a)
+    b = _symbols_for(module_b)
+    if not a:
+        return {"error": f"no symbols found under '{module_a}' — check the prefix with search_symbols"}
+    if not b:
+        return {"error": f"no symbols found under '{module_b}' — check the prefix with search_symbols"}
+
+    only_a = sorted({sid for name, sids in a.items() if name not in b for sid in sids})
+    only_b = sorted({sid for name, sids in b.items() if name not in a for sid in sids})
+    shared = sorted(set(a) & set(b))
+
+    return {
+        "module_a": module_a,
+        "module_b": module_b,
+        "symbols_a": len(a),
+        "symbols_b": len(b),
+        "shared_symbol_names": len(shared),
+        "only_in_a": only_a[:100],
+        "only_in_a_count": len(only_a),
+        "only_in_b": only_b[:100],
+        "only_in_b_count": len(only_b),
+        "drift_score": round(len(only_a) + len(only_b)) / max(1, len(shared) + len(only_a) + len(only_b)),
+        "note": "only_in_a / only_in_b are the drift — counterparts missing from one side",
+    }
+
+
 def find_warnings_in_blast_radius(symbol_id: str, radius: int = 2, kinds: list[str] | None = None) -> dict[str, object]:
     """Find code warnings (TODO/FIXME/HACK comments, swallowed errors, stub functions, commented-out code, fail-open defaults) in a symbol's blast radius. This is the metal detector: bugs live in comments, dead code, and discarded Results — none visible in the dependency graph. Use during PR review or incident triage on hotspots. Provide the full symbol_id. Optional: radius (default 2, max 3 — how many dependency hops to include), kinds=['todo','fixme','hack','xxx','commented_code','error_swallow','fail_open','stub_fn'] to filter."""
     if not graph_index.has_symbol(symbol_id):
@@ -1151,7 +1198,7 @@ def find_warnings_in_blast_radius(symbol_id: str, radius: int = 2, kinds: list[s
 
 
 def make_decision(state: str, questions: dict) -> dict[str, object]:
-    """Get fast, typed judgments from a local decision model (Jev-style System One). Sends your state text plus named questions and gets back a choice, a score, or a calibrated yes/no probability (noul) for each — NOT chat. Takes 10-35 seconds per call (local CPU model), so use it for decisions worth waiting on: PR risk assessment, triage routing, content gating — not for anything per-message. Provide 'state' (the text/JSON to judge, max 2000 chars) and 'questions': an object of up to 8 named questions, each {type: 'noul'|'score'|'choice', instructions: string, criteria: for choice — an object of allowed values; for score — an array of labels low to high}. Example: {"state": "PR changes 446 files in wallet closure", "questions": {"risk": {"type": "score", "instructions": "How risky?", "criteria": ["low", "medium", "high"]}, "needs_review": {"type": "noul", "instructions": "Needs senior review?"}}}"""
+    """Get fast, typed judgments from a local decision model (Jev-style System One). Sends your state text plus named questions and gets back a choice, a score, or a calibrated yes/no probability (noul) for each — NOT chat. Takes 10-35 seconds per call (local CPU model), so use it for decisions worth waiting on: PR risk assessment, triage routing, content gating — not for anything per-message. Provide 'state' (the text/JSON to judge, max 2000 chars). All questions are answered in ONE model pass (~10-60s total, not per question) — set client timeouts to at least 120s and 'questions': an object of up to 8 named questions, each {type: 'noul'|'score'|'choice', instructions: string, criteria: for choice — an object of allowed values; for score — an array of labels low to high}. Example: {"state": "PR changes 446 files in wallet closure", "questions": {"risk": {"type": "score", "instructions": "How risky?", "criteria": ["low", "medium", "high"]}, "needs_review": {"type": "noul", "instructions": "Needs senior review?"}}}"""
     import json as _json
 
     from app.core import systemone
