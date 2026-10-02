@@ -107,6 +107,7 @@ curl -H "Authorization: Bearer $API_AUTH_TOKEN" \
 0 0 * * *  <repo>/scripts/nightly-sync.sh    >> <repo>/logs/nightly-sync.log 2>&1
 */5 * * * * /usr/bin/python3 <repo>/scripts/container-watchdog.py >> <repo>/logs/watchdog.log 2>&1
 0 18 * * *  <repo>/scripts/daily-digest.sh   >> <repo>/logs/daily-digest.log 2>&1
+0 1 * * *   <repo>/scripts/backup-postgres.sh >> <repo>/logs/backup-cron.log 2>&1
 * * * * *   <repo>/scripts/auto-deploy.sh    >> <repo>/logs/auto-deploy-cron.log 2>&1
 */2 * * * * <repo>/scripts/gitops-pull.sh    >> <repo>/logs/gitops-cron.log 2>&1
 ```
@@ -118,6 +119,8 @@ calls in these scripts read `.env` for `API_AUTH_TOKEN`.
 - **watchdog** (5 min): restarts unhealthy `oncall-*` containers, alerts on loops
 - **daily-digest** (18:00): index stats, feedback gate results, improvement
   suggestions, issues backlog — via SMTP
+- **backup-postgres** (01:00): pg_dump + gzip to `backups/postgres/` (7-day
+  retention), restore-tested every run, email alert on failure or staleness
 - **auto-deploy** (1 min): deploys whenever the built image differs from the
   running one; tags with git SHA + `last-good`; emails on success/failure
 - **gitops-pull** (2 min): fetches `origin/main` and builds on change — the
