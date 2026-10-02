@@ -26,7 +26,7 @@ _ERROR_SWALLOW = re.compile(
 _FAIL_OPEN = re.compile(r"\.(unwrap_or_default|unwrap_or\(false\))\s*\(")
 _AUTH_HINT = re.compile(r"auth|token|header|permission|secret|api_?key|signature|claim|session|role", re.IGNORECASE)
 _CODE_IN_COMMENT = re.compile(
-    r"\b(fn\s|let\s|match\s|if\s|loop\s|return\s|impl\s|struct\s|use\s|\.await|for\s)"
+    r"(\bfn\s|\blet\s|\bmatch\s|\bimpl\s|\bstruct\s|\buse\s|\.await|\breturn\s|^\s*//\s*[\w:.]+\(.*\)\s*;|\}|\{)"
 )
 _ATTR_LINE = re.compile(r"^\s*#!?\[")
 _BRACE_ONLY = re.compile(r"^\s*[{}()]*\s*$")
@@ -88,7 +88,7 @@ def _commented_code_blocks(lines: list[str], file_path: str) -> list[Observation
         run = lines[i:j]
         if len(run) >= 3:
             codeish = sum(1 for ln in run if _CODE_IN_COMMENT.search(ln))
-            if codeish >= 2 and codeish >= len(run) // 2:
+            if codeish >= 2 and codeish >= (len(run) + 1) // 2:
                 detail = " ".join(ln.strip().lstrip("/").strip() for ln in run[:3])[:200]
                 out.append(Observation(file_path, i + 1, "commented_code", detail))
         i = j
