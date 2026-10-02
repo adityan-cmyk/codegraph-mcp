@@ -548,3 +548,51 @@ class ObservationsTestCase(unittest.TestCase):
         self.assertIn("crates::wallet::queries::update_dispute_status", ids)
         self.assertIn("crates::wallet::queries::process", ids)
         self.assertFalse(any("_C" in i or "_S" in i for i in ids), f"mangled ids: {ids}")
+
+    def test_hub_names_do_not_create_phantom_edges(self):
+        from app.rag.indexing_service import _build_name_index, _extract_call_targets
+        from app.schemas.codebase import CodeChunk
+        chunks = [
+            CodeChunk(symbol_id=f"m{i}::new", file_path=f"src/file{i}.rs", kind="fn",
+                      content="fn new() -> Self", start_line=1, end_line=1)
+            for i in range(10)
+        ]
+        name_index = _build_name_index(chunks)
+        caller = CodeChunk(symbol_id="x::caller", file_path="src/other.rs", kind="fn",
+                           content="let c = new();", start_line=1, end_line=1)
+        self.assertEqual(_extract_call_targets(caller, name_index), [],
+                         "hub name 'new' with 10 candidates must not resolve cross-file")
+
+    def test_scoped_resolution_prefers_same_file(self):
+        from app.rag.indexing_service import _build_name_index, _extract_call_targets
+        from app.schemas.codebase import CodeChunk
+        chunks = [
+            CodeChunk(symbol_id="m::process", file_path="src/a.rs", kind="fn",
+                      content="fn process() {}", start_line=1, end_line=1),
+            CodeChunk(symbol_id="n::process", file_path="src/b.rs", kind="fn",
+                      content="fn process() {}", start_line=1, end_line=1),
+        ]
+        name_index = _build_name_index(chunks)
+        caller = CodeChunk(symbol_id="x::caller", file_path="src/a.rs", kind="fn",
+                           content="process();", start_line=1, end_line=1)
+        calls = _extract_call_targets(caller, name_index)
+        self.assertEqual(calls, ["m::process"], "same-file candidate must win")
+
+    def test_qualified_call_resolves_precisely(self):
+        from app.rag.indexing_service import _build_name_index, _build_path_index, _extract_call_targets
+        from app.schemas.codebase import CodeChunk
+        chunks = [
+            CodeChunk(symbol_id="inv::InventoryClient::new", file_path="src/inv.rs", kind="fn",
+                      content="fn new() {}", start_line=1, end_line=1),
+        ] + [
+            CodeChunk(symbol_id=f"m{i}::new", file_path=f"src/f{i}.rs", kind="fn",
+                      content="fn new() {}", start_line=1, end_line=1)
+            for i in range(8)
+        ]
+        name_index = _build_name_index(chunks)
+        path_index = _build_path_index(chunks)
+        caller = CodeChunk(symbol_id="h::handler", file_path="src/h.rs", kind="fn",
+                           content="let c = InventoryClient::new();", start_line=1, end_line=1)
+        calls = _extract_call_targets(caller, name_index, path_index)
+        self.assertIn("inv::InventoryClient::new", calls)
+        self.assertEqual(len(calls), 1, f"qualified call must resolve to exactly one target, got {calls}")

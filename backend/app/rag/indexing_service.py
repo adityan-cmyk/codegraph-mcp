@@ -20,6 +20,59 @@ _semantic_rebuild_in_progress = False
 
 CALL_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:!\s*)?\(")
 METHOD_CALL_PATTERN = re.compile(r"\.([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+QUALIFIED_CALL_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+)\s*(?:!\s*)?\(")
+
+# Short names that must never resolve as call/type targets: pseudo-symbols,
+# parser artifacts, and noise kinds.
+_RESOLVE_SKIP_NAMES = frozenset(
+    {"file_summary", "module_exports", "fn", "let", "match", "if", "Relation"}
+)
+# A short name mapping to more than this many symbols is a hub (new, from,
+# generate...) — resolving it creates phantom edges to every same-named symbol.
+HUB_LIMIT = 3
+
+
+def _build_name_index(chunks: list[CodeChunk]) -> dict[str, list[tuple[str, str]]]:
+    """short name -> [(symbol_id, file_path)] — file info powers scoped resolution."""
+    idx: dict[str, list[tuple[str, str]]] = {}
+    for c in chunks:
+        idx.setdefault(_symbol_name(c.symbol_id), []).append((c.symbol_id, c.file_path))
+    return idx
+
+
+def _build_path_index(chunks: list[CodeChunk]) -> dict[str, list[str]]:
+    """'Impl::method' / 'module::fn' -> [symbol_ids] — precise qualified-call resolution."""
+    idx: dict[str, list[str]] = {}
+    for c in chunks:
+        parts = c.symbol_id.split("::")
+        if len(parts) >= 2:
+            idx.setdefault(f"{parts[-2]}::{parts[-1]}", []).append(c.symbol_id)
+    return idx
+
+
+def _parent_dir(file_path: str) -> str:
+    return file_path.rsplit("/", 1)[0] if "/" in file_path else ""
+
+
+def _resolve_candidates(candidate: str, file_path: str, name_index: dict[str, list[tuple[str, str]]]) -> list[str]:
+    """Scoped short-name resolution, in priority order:
+    same file > same directory > small ambiguity (<= HUB_LIMIT) > drop.
+    Hub names (new/from/generate with dozens of same-named symbols) used to
+    resolve to EVERY candidate — the phantom-edge problem."""
+    if candidate in _RESOLVE_SKIP_NAMES:
+        return []
+    entries = name_index.get(candidate) or []
+    if not entries:
+        return []
+    same_file = [sid for sid, f in entries if f == file_path]
+    if same_file:
+        return same_file
+    same_dir = [sid for sid, f in entries if _parent_dir(f) == _parent_dir(file_path)]
+    if same_dir:
+        return same_dir
+    if len(entries) <= HUB_LIMIT:
+        return [sid for sid, _ in entries]
+    return []
 TYPE_REF_PATTERN = re.compile(
     r"(?:"
     r"\b(?:impl|dyn|as|where|:\s*|->\s*|<|,\s*)"
@@ -249,33 +302,51 @@ def _should_skip_for_graph(chunk: CodeChunk) -> bool:
     short_name = _symbol_name(chunk.symbol_id)
     if short_name in ("Relation",):
         return True
+    if short_name in ("fn", "let", "match", "if"):
+        return True  # parser artifacts — no symbol is legitimately named these
     if short_name == "new" and chunk.kind == "fn" and len(chunk.content.strip()) < 50:
         return True
     return False
 
 
-def _extract_call_targets(chunk: CodeChunk, name_index: dict[str, list[str]]) -> list[str]:
+def _extract_call_targets(
+    chunk: CodeChunk,
+    name_index: dict[str, list[tuple[str, str]]],
+    path_index: dict[str, list[str]] | None = None,
+) -> list[str]:
     calls: list[str] = []
+    # Qualified calls first (Foo::new, Type::method) — precise resolution by
+    # path suffix, immune to hub-name ambiguity.
+    if path_index is not None:
+        for match in QUALIFIED_CALL_PATTERN.finditer(chunk.content):
+            qual = match.group(1)
+            parts = qual.split("::")
+            if len(parts) < 2 or parts[-1] in _RESOLVE_SKIP_NAMES:
+                continue
+            key = f"{parts[-2]}::{parts[-1]}"
+            for symbol_id in path_index.get(key, [])[:HUB_LIMIT]:
+                if symbol_id != chunk.symbol_id and symbol_id not in calls:
+                    calls.append(symbol_id)
     for match in CALL_PATTERN.finditer(chunk.content):
         candidate = match.group(1)
         if candidate in RUST_KEYWORDS or candidate in RUST_GENERIC_METHODS:
             continue
         if candidate in DERIVE_TRAIT_NAMES:
             continue
-        for symbol_id in name_index.get(candidate, []):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index):
             if symbol_id != chunk.symbol_id and symbol_id not in calls:
                 calls.append(symbol_id)
     for match in METHOD_CALL_PATTERN.finditer(chunk.content):
         candidate = match.group(1)
         if candidate in RUST_KEYWORDS or candidate in RUST_GENERIC_METHODS:
             continue
-        for symbol_id in name_index.get(candidate, []):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index):
             if symbol_id != chunk.symbol_id and symbol_id not in calls:
                 calls.append(symbol_id)
     return calls
 
 
-def _extract_type_references(chunk: CodeChunk, name_index: dict[str, list[str]]) -> list[str]:
+def _extract_type_references(chunk: CodeChunk, name_index: dict[str, list[tuple[str, str]]]) -> list[str]:
     uses: list[str] = []
     for match in TYPE_REF_PATTERN.finditer(chunk.content):
         candidate = match.group(1) or match.group(2)
@@ -285,7 +356,7 @@ def _extract_type_references(chunk: CodeChunk, name_index: dict[str, list[str]])
             continue
         if candidate in DERIVE_TRAIT_NAMES:
             continue
-        for symbol_id in name_index.get(candidate, []):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index):
             if symbol_id != chunk.symbol_id and symbol_id not in uses and symbol_id not in chunk.symbol_id.split("::")[:-1]:
                 uses.append(symbol_id)
     return uses
@@ -337,7 +408,7 @@ def _extract_type_references_with_modes(chunk: CodeChunk, name_index: dict[str, 
             continue
         if candidate in DERIVE_TRAIT_NAMES:
             continue
-        for symbol_id in name_index.get(candidate, []):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index):
             if symbol_id != chunk.symbol_id and symbol_id not in seen and symbol_id not in chunk.symbol_id.split("::")[:-1]:
                 seen.add(symbol_id)
                 modes = _classify_usage_modes(chunk.content, candidate)
@@ -548,14 +619,15 @@ def index_rust_repository(repository_path: str | None = None) -> IndexingResult:
         if module_exports:
             chunks.append(module_exports)
         all_chunks.extend(chunks)
-        for chunk in chunks:
-            name_index.setdefault(_symbol_name(chunk.symbol_id), []).append(chunk.symbol_id)
+
+    name_index = _build_name_index(all_chunks)
+    path_index = _build_path_index(all_chunks)
 
     graph_edges: list[GraphEdge] = []
     for chunk in all_chunks:
         if _should_skip_for_graph(chunk):
             continue
-        calls = _extract_call_targets(chunk, name_index)
+        calls = _extract_call_targets(chunk, name_index, path_index)
         graph_edges.extend(
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=target_symbol_id, relation="calls")
             for target_symbol_id in calls
@@ -719,10 +791,6 @@ def incremental_update_symbols(
     
     modified_symbol_ids: set[str] = set()
     new_chunks: list[CodeChunk] = []
-    name_index: dict[str, list[str]] = {}
-
-    for chunk in existing_chunks:
-        name_index.setdefault(_symbol_name(chunk.symbol_id), []).append(chunk.symbol_id)
 
     for file_path_str in modified_files:
         absolute_path = target_path / file_path_str
@@ -741,16 +809,17 @@ def incremental_update_symbols(
         for chunk in file_chunks:
             modified_symbol_ids.add(chunk.symbol_id)
             new_chunks.append(chunk)
-            name_index.setdefault(_symbol_name(chunk.symbol_id), []).append(chunk.symbol_id)
 
         existing_chunks = [chunk for chunk in existing_chunks if chunk.file_path != file_path_str]
 
     all_chunks = existing_chunks + new_chunks
     existing_edges = [edge for edge in existing_edges if edge.source_symbol_id not in modified_symbol_ids]
+    name_index = _build_name_index(all_chunks)
+    path_index = _build_path_index(all_chunks)
 
     new_edges: list[GraphEdge] = []
     for chunk in new_chunks:
-        calls = _extract_call_targets(chunk, name_index)
+        calls = _extract_call_targets(chunk, name_index, path_index)
         new_edges.extend(
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=target_id, relation="calls")
             for target_id in calls
