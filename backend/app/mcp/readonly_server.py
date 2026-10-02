@@ -80,6 +80,11 @@ _TOOLS: dict[str, Any] = {
                     "description": "Return counts grouped by module + risk score WITHOUT full symbol lists. Use for widely-used symbols where the full output would be huge.",
                     "default": False,
                 },
+                "exclude_shared_state_types": {
+                    "type": "boolean",
+                    "description": "Filter god-types (GlobalState-like types with >50 type-references) from the type expansion. Default true — set false to include them.",
+                    "default": True,
+                },
             },
             "required": ["symbol_id"],
         },

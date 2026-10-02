@@ -156,8 +156,38 @@ def _attach_stale_warning(result: dict) -> dict:
     return result
 
 
-def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None, summary_only: bool = False) -> dict[str, object]:
-    """Get the immediate blast radius of a symbol — its direct callers, callees, type-users, and used types. Use this during PR review to understand the impact of changing a symbol. Provide the full symbol_id (e.g. 'crates::inventory::client::InventoryClient'). Optional: usage_modes_filter=['pattern_match', 'construction'] to return only callers that pattern-match or construct this type. Optional: summary_only=true to return counts grouped by module + risk score WITHOUT full symbol lists — use this for widely-used symbols where the full output would be huge."""
+def _god_type_blocklist() -> set[str]:
+    """Types with massive USES fan-in (GlobalState, config structs) — including
+    them in blast-radius type expansion turns every query into noise."""
+    import time as _time
+
+    global _GOD_TYPES_CACHE
+    now = _time.time()
+    if _GOD_TYPES_CACHE and now - _GOD_TYPES_CACHE[0] < 300:
+        return _GOD_TYPES_CACHE[1]
+    try:
+        with graph_index._active()._get_driver().session() as session:
+            result = session.run(
+                """
+                MATCH (t:Symbol {gen: $gen})<-[r:USES]-(u:Symbol {gen: $gen})
+                WITH t, count(r) AS fan_in
+                WHERE fan_in > 50
+                RETURN t.id AS id
+                """,
+                gen=graph_index._active()._gen,
+            )
+            blocked = {r["id"] for r in result}
+    except Exception:
+        blocked = set()
+    _GOD_TYPES_CACHE = (now, blocked)
+    return blocked
+
+
+_GOD_TYPES_CACHE: tuple[float, set[str]] | None = None
+
+
+def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None, summary_only: bool = False, exclude_shared_state_types: bool = True) -> dict[str, object]:
+    """Get the immediate blast radius of a symbol — direct callers (CALLS edges), callees, type-references (USES edges), and used types. Callers are functions that CALL this symbol; type-references are symbols that merely mention the type (fields, params) — they are reported separately and never conflated. Use this during PR review to understand the impact of changing a symbol. Provide the full symbol_id (e.g. 'crates::inventory::client::InventoryClient'). Optional: usage_modes_filter=['pattern_match', 'construction'] to return only callers that pattern-match or construct this type; summary_only=true for counts grouped by module + risk score; exclude_shared_state_types=true (default) filters god-types (GlobalState-like, >50 type-references) from the type expansion — set false to see them."""
     if not graph_index.has_symbol(symbol_id):
         return {"error": f"Symbol '{symbol_id}' not found in the graph index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
 
@@ -172,6 +202,23 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
     downstream = result.get("downstream", [])
     used_by = result.get("used_by", [])
     uses = result.get("uses", [])
+
+    # God-type filter: drop shared-state types from the USES expansion.
+    if exclude_shared_state_types:
+        blocked = _god_type_blocklist()
+        if blocked:
+            used_by = [s for s in used_by if s not in blocked]
+            uses = [s for s in uses if s not in blocked]
+
+    # Explicit semantics: direct callers vs type references, never conflated.
+    result["callers_direct_count"] = len(upstream)
+    result["type_reference_count"] = len(used_by)
+    result["connection_breakdown"] = {
+        "callers_of_this_symbol": len(upstream),
+        "called_by_this_symbol": len(downstream),
+        "type_references_to_this_symbol": len(used_by),
+        "types_used_by_this_symbol": len(uses),
+    }
 
     result["total_upstream"] = len(upstream)
     result["total_downstream"] = len(downstream)
