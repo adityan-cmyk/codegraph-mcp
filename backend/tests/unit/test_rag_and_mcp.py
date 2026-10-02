@@ -775,3 +775,40 @@ class ContractDriftTestCase(unittest.TestCase):
         dense = [o for o in obs if o.kind == "unwrap_density"]
         self.assertEqual(len(dense), 1)
         self.assertIn("6 unwrap", dense[0].detail)
+
+    def test_block_comment_fns_not_indexed(self):
+        from app.rag.ingestion.tree_sitter import extract_rust_chunks
+        src = "\n".join([
+            "/*",
+            "fn is_eligible_for_post_dated_cb() -> bool {",
+            "    false // old version, dead",
+            "}",
+            "*/",
+            "fn is_eligible_for_post_dated_cb() -> bool {",
+            "    true",
+            "}",
+        ])
+        chunks = extract_rust_chunks("crates/x.rs", src)
+        fns = [c for c in chunks if c.symbol_id.endswith("is_eligible_for_post_dated_cb")]
+        self.assertEqual(len(fns), 1, "fn inside /* */ must not be indexed as live")
+
+    def test_block_comment_dead_code_observed(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "/*\nfn old_fn(x: u32) -> u32 {\n    let y = x + 1;\n    y\n}\n*/\nfn live() {}"
+        obs = extract_observations(src, "t.rs", [])
+        blocks = [o for o in obs if o.kind == "commented_code" and "/*" in o.detail or "dead code" in o.detail]
+        self.assertTrue(any("dead code" in (o.detail or "") for o in obs), f"expected dead-code observation, got {[o.kind for o in obs]}")
+
+    def test_in_body_modification_via_hunk_header(self):
+        from app.rag.diff_parser import extract_symbols_from_diff
+        diff = "\n".join([
+            "--- a/crates/wallet/core.rs",
+            "+++ b/crates/wallet/core.rs",
+            "@@ -40,6 +40,7 @@ fn settle_transaction",
+            "     let tx = begin();",
+            "+    let guard = acquire_lock();",
+            "     Ok(())",
+        ])
+        extraction = extract_symbols_from_diff(diff)
+        self.assertIn("settle_transaction", extraction["modified_symbols"],
+                      "in-body changes must attribute to the enclosing fn from the hunk header")

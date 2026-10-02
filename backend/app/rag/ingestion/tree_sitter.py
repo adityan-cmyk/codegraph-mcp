@@ -241,9 +241,62 @@ def _extract_impl_methods(impl_match: re.Match, source: str, module_id: str, all
     return method_chunks
 
 
+def _block_comment_spans(source: str) -> list[tuple[int, int]]:
+    """Spans of (nested) /* */ block comments, ignoring those inside strings.
+
+    The regex extractor has no comment awareness — an old fn version left
+    inside /* */ was indexed as a live symbol (disk-verified duplicate:
+    is_eligible_for_post_dated_cb at both 211 and 238). This scanner gives
+    the extractor the context it lacks.
+    """
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(source)
+    depth = 0
+    span_start = -1
+    in_string = False
+    string_ch = ""
+    while i < n:
+        ch = source[i]
+        nxt = source[i + 1] if i + 1 < n else ""
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == string_ch:
+                in_string = False
+            i += 1
+            continue
+        if depth == 0 and ch in ('"', "'"):
+            in_string = True
+            string_ch = ch
+            i += 1
+            continue
+        if ch == "/" and nxt == "*":
+            if depth == 0:
+                span_start = i
+            depth += 1
+            i += 2
+            continue
+        if ch == "*" and nxt == "/" and depth > 0:
+            depth -= 1
+            if depth == 0:
+                spans.append((span_start, i + 2))
+            i += 2
+            continue
+        i += 1
+    if depth > 0 and span_start >= 0:
+        spans.append((span_start, n))
+    return spans
+
+
 def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
     lines = source.splitlines()
-    matches = list(RUST_SYMBOL_PATTERN.finditer(source))
+    comment_spans = _block_comment_spans(source)
+    matches = [
+        m for m in RUST_SYMBOL_PATTERN.finditer(source)
+        if not any(s <= m.start() < e for s, e in comment_spans)
+    ]
 
     use_stmts = _extract_use_statements(source)
     use_block = ""
