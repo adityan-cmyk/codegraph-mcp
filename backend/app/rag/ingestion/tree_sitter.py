@@ -89,8 +89,15 @@ def generate_symbol_id(module_path: str, symbol_name: str) -> str:
     parts = module_path.split("/")
     cleaned = [p for p in parts if p != "src"]
     normalized_module = "::".join(cleaned).strip(":")
-    clean_name = symbol_name.replace("<", "_").replace(">", "_").replace(",", "_")
-    return f"{normalized_module}::{clean_name}"
+    # Strip generic-parameter artifacts: the regex name group captures
+    # 'foo<C' / 'foo<S>' for generic fns, which used to be mangled into
+    # 'foo_C_' / 'foo_S_' symbol ids — monomorphization noise that broke
+    # lookups and polluted the graph. Generic params are not part of a
+    # symbol's identity for navigation.
+    base_name = symbol_name.split("<")[0].strip().rstrip("_")
+    if not base_name:
+        base_name = symbol_name.replace("<", "_").replace(">", "_").replace(",", "_")
+    return f"{normalized_module}::{base_name}"
 
 
 def _infer_domain(file_path: str) -> str:
