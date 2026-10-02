@@ -25,7 +25,8 @@ RUNNING_ID=$(docker inspect oncall-backend --format '{{.Image}}')
 [ "$LATEST_ID" != "$RUNNING_ID" ] || exit 0
 
 # Never deploy mid-indexing — a container restart loses build progress.
-if docker logs oncall-backend --since 10m 2>&1 | grep -qE "Indexed batch|Incremental reindex|semantic rebuild|Build FAILED"; then
+# Patterns match all three indexing paths: full rebuild, incremental, semantic.
+if docker logs oncall-backend --since 10m 2>&1 | grep -qE "Embedded and inserted|Rebuilding semantic index|Building new graph|Indexed batch|Incremental reindex|Build FAILED"; then
     log "new image waiting, indexing in progress — deferring"
     exit 0
 fi
