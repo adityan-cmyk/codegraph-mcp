@@ -963,6 +963,59 @@ def get_symbols_in_file(file_path: str) -> dict[str, object]:
 _DECISION_LOCK = threading.Lock()
 
 
+def find_warnings_in_blast_radius(symbol_id: str, radius: int = 2, kinds: list[str] | None = None) -> dict[str, object]:
+    """Find code warnings (TODO/FIXME/HACK comments, swallowed errors, stub functions, commented-out code, fail-open defaults) in a symbol's blast radius. This is the metal detector: bugs live in comments, dead code, and discarded Results — none visible in the dependency graph. Use during PR review or incident triage on hotspots. Provide the full symbol_id. Optional: radius (default 2, max 3 — how many dependency hops to include), kinds=['todo','fixme','hack','xxx','commented_code','error_swallow','fail_open','stub_fn'] to filter."""
+    if not graph_index.has_symbol(symbol_id):
+        return {"error": f"Symbol '{symbol_id}' not found in the graph index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
+    radius = max(1, min(int(radius), 3))
+
+    # Collect the neighborhood up to `radius` hops, both directions.
+    frontier = {symbol_id}
+    seen = {symbol_id}
+    for _ in range(radius):
+        next_frontier: set[str] = set()
+        for sym in frontier:
+            neighborhood = (
+                graph_index.get_blast_radius(sym)
+                if hasattr(graph_index, "get_blast_radius")
+                else graph_index.get_neighbors(sym)
+            )
+            result = neighborhood.model_dump() if hasattr(neighborhood, "model_dump") else neighborhood
+            for group in ("upstream", "downstream", "used_by", "uses"):
+                for entry in result.get(group, []):
+                    target = entry.get("symbol_id") if isinstance(entry, dict) else entry
+                    if target and target not in seen:
+                        seen.add(target)
+                        next_frontier.add(target)
+        frontier = next_frontier
+        if not frontier:
+            break
+
+    try:
+        from app.rag.ingestion import observation_store
+        observations = observation_store.get_observations_for_symbols(sorted(seen), kinds=kinds)
+    except Exception:
+        return {"error": "observation store unavailable", "symbol_id": symbol_id, "hint": "Postgres may be down"}
+
+    by_symbol: dict[str, list[dict]] = {}
+    for o in observations:
+        by_symbol.setdefault(o["symbol_id"], []).append(
+            {"kind": o["kind"], "file_path": o["file_path"], "line": o["line"], "detail": o["detail"]}
+        )
+    kind_counts: dict[str, int] = {}
+    for o in observations:
+        kind_counts[o["kind"]] = kind_counts.get(o["kind"], 0) + 1
+
+    return {
+        "symbol_id": symbol_id,
+        "radius": radius,
+        "symbols_scanned": len(seen),
+        "warnings_total": len(observations),
+        "warnings_by_kind": kind_counts,
+        "warnings": by_symbol,
+    }
+
+
 def make_decision(state: str, questions: dict) -> dict[str, object]:
     """Get fast, typed judgments from a local decision model (Jev-style System One). Sends your state text plus named questions and gets back a choice, a score, or a calibrated yes/no probability (noul) for each — NOT chat. Takes 10-35 seconds per call (local CPU model), so use it for decisions worth waiting on: PR risk assessment, triage routing, content gating — not for anything per-message. Provide 'state' (the text/JSON to judge, max 2000 chars) and 'questions': an object of up to 8 named questions, each {type: 'noul'|'score'|'choice', instructions: string, criteria: for choice — an object of allowed values; for score — an array of labels low to high}. Example: {"state": "PR changes 446 files in wallet closure", "questions": {"risk": {"type": "score", "instructions": "How risky?", "criteria": ["low", "medium", "high"]}, "needs_review": {"type": "noul", "instructions": "Needs senior review?"}}}"""
     import json as _json

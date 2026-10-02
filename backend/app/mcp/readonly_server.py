@@ -41,6 +41,7 @@ from app.mcp.tools.graph_read_tools import (
     get_blast_radius_detailed,
     get_index_meta,
     get_symbols_in_file,
+    find_warnings_in_blast_radius,
     make_decision,
 )
 
@@ -378,6 +379,29 @@ _TOOLS: dict[str, Any] = {
             "required": ["state", "questions"],
         },
     },
+    "find_warnings_in_blast_radius": {
+        "handler": find_warnings_in_blast_radius,
+        "description": inspect.getdoc(find_warnings_in_blast_radius) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "symbol_id": {
+                    "type": "string",
+                    "description": "Full symbol_id, e.g. 'crates::wallet::core::close_wallets_batch'",
+                },
+                "radius": {
+                    "type": "integer",
+                    "description": "Dependency hops to include (default 2, max 3)",
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["todo", "fixme", "hack", "xxx", "commented_code", "error_swallow", "fail_open", "stub_fn"]},
+                    "description": "Filter by warning kind (default: all)",
+                },
+            },
+            "required": ["symbol_id"],
+        },
+    },
 }
 
 _DIRECTORY = {
@@ -658,6 +682,29 @@ _DIRECTORY = {
                 "file_path": "string",
                 "symbols_found": "int",
                 "symbols": [{"symbol_id": "string", "kind": "string", "start_line": "int", "end_line": "int"}],
+            },
+        },
+        {
+            "name": "make_decision",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Typed judgments (noul yes/no, score, choice) from the local decision model. For decisions worth a ~30s wait — PR risk, triage, gating — not per-message.",
+            "arguments": {"state": "string (required, max 2000 chars)", "questions": "object (required) of named questions"},
+            "response_shape": {"answers": "object — one answer per named question", "model": "string"},
+        },
+        {
+            "name": "find_warnings_in_blast_radius",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Metal detector: TODO/FIXME comments, swallowed errors (let _ =), stub logging-only functions, commented-out code, and fail-open defaults within a symbol's dependency blast radius. Use on hotspots during PR review and incident triage.",
+            "arguments": {"symbol_id": "string (required)", "radius": "int (optional, default 2, max 3)", "kinds": "array (optional) — filter by warning kind"},
+            "response_shape": {
+                "symbol_id": "string",
+                "radius": "int",
+                "symbols_scanned": "int",
+                "warnings_total": "int",
+                "warnings_by_kind": "object",
+                "warnings": "object — symbol_id -> [{kind, file_path, line, detail}]",
             },
         },
     ],

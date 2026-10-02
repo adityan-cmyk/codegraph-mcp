@@ -590,6 +590,13 @@ def index_rust_repository(repository_path: str | None = None) -> IndexingResult:
     )
     index_metadata_store.replace_snapshot(snapshot)
 
+    # Metal-detector pass: TODOs, swallowed errors, stubs, commented-out code.
+    try:
+        from app.rag.ingestion import observation_store
+        observation_store.sync_observations(target_path, snapshot.chunks)
+    except Exception:
+        logger.warning("Observation sync failed (full index)", exc_info=True)
+
     graph_stats = _rebuild_graph_and_semantic_parallel(snapshot, force=True)
 
     return IndexingResult(
@@ -766,6 +773,15 @@ def incremental_update_symbols(
         modified_edges=new_edges,
         removed_edge_keys=removed_edge_keys,
     )
+
+    # Metal-detector pass for the changed files only.
+    try:
+        from app.rag.ingestion import observation_store
+        observation_store.sync_observations(
+            target_path, list(snapshot.chunks), files=[str(p) for p in modified_files]
+        )
+    except Exception:
+        logger.warning("Observation sync failed (incremental)", exc_info=True)
 
     for i in range(0, len(new_chunks), 64):
         semantic_index.upsert_chunks(new_chunks[i:i + 64])
