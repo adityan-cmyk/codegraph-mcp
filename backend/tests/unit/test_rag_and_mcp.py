@@ -523,3 +523,13 @@ class ObservationsTestCase(unittest.TestCase):
         ])
         obs = extract_observations(src, "t.rs", [])
         self.assertTrue(any(o.kind == "fail_open" for o in obs))
+
+    def test_prose_comment_not_flagged_as_code(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "\n".join([
+            "// Resolve TLS certificates for both modes.",
+            "// This is more efficient if the pool is warm.",
+            "// Note: the logging for CA is common.",
+        ])
+        obs = extract_observations(src, "t.rs", [])
+        self.assertFalse(any(o.kind == "commented_code" for o in obs))
