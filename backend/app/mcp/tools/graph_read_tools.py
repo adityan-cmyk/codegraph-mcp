@@ -876,7 +876,7 @@ _USAGE_MODE_WEIGHTS = {
 
 
 def get_index_meta() -> dict[str, object]:
-    """Get graph build metadata — build timestamp, commit hash, classifier version, gen number, and collection info. Use this to verify the graph is fresh and which classifier version was used. Read-only, safe to call anytime."""
+    """Get graph build metadata — build timestamp, commit hash, commit drift (commits_behind), coverage stats, gen number, and collection info. Use this to verify the graph is fresh and which classifier version was used. Read-only, safe to call anytime."""
     from app.core.index_store import index_metadata_store
     from app.rag.retrieval.graph import _get_current_gen, graph_index
 
@@ -901,11 +901,51 @@ def get_index_meta() -> dict[str, object]:
         except Exception:
             pass
 
+    # Coverage: files on disk vs indexed (tests are excluded by design).
+    coverage = None
+    if snapshot and snapshot.repository_path:
+        try:
+            from pathlib import Path
+
+            repo = Path(snapshot.repository_path)
+            disk = [
+                p for p in repo.rglob("*.rs")
+                if ".git" not in p.parts and "target" not in p.parts
+                and "tests" not in p.relative_to(repo).parts
+                and not p.relative_to(repo).name.endswith(("_test.rs", "_tests.rs", "tests.rs", "test.rs"))
+            ]
+            indexed_files = {c.file_path for c in snapshot.chunks}
+            missing = [str(p.relative_to(repo)) for p in disk if str(p.relative_to(repo)) not in indexed_files]
+            coverage = {
+                "rust_files_on_disk": len(disk),
+                "files_indexed": len(indexed_files),
+                "missing_from_index": missing[:20],
+                "missing_count": len(missing),
+            }
+        except Exception:
+            coverage = None
+
+    # Commit drift: how many commits HEAD is ahead of the indexed commit.
+    commits_behind = None
+    if last_commit and head and head != "unknown" and last_commit != head:
+        try:
+            import subprocess as _sp
+
+            out = _sp.run(
+                ["git", "-C", snapshot.repository_path, "rev-list", "--count", f"{last_commit}..{head}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if out.returncode == 0 and out.stdout.strip().isdigit():
+                commits_behind = int(out.stdout.strip())
+        except Exception:
+            pass
+
     return {
         "graph_gen": gen,
         "classifier_version": _CLASSIFIER_VERSION,
         "last_indexed_commit": last_commit[:12],
         "current_head": head[:12],
+        "commits_behind": commits_behind,
         "up_to_date": last_commit == head if last_commit and head != "unknown" else False,
         "snapshot_created_at": snapshot.created_at.isoformat() if snapshot and snapshot.created_at else None,
         "files_indexed": snapshot.files_indexed if snapshot else 0,
@@ -913,6 +953,7 @@ def get_index_meta() -> dict[str, object]:
         "total_edges": len(snapshot.graph_edges) if snapshot else 0,
         "weaviate_collection": weaviate_collection,
         "embedding_model": "BAAI/bge-base-en-v1.5",
+        "coverage": coverage,
         "embedding_dimensions": 768,
         "features": [
             "hybrid_bm25_vector_search",
