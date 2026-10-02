@@ -168,6 +168,7 @@ def record_feedback(
                     NEGATIVE_WEIGHT,
                     NEGATIVE_WEIGHT,
                     datetime.now(UTC),
+                    datetime.now(UTC),
                 ),
             )
 
