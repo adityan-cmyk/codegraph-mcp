@@ -44,16 +44,16 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 
 ### Risk scoring
 - [ ] Git history signals: churn, co-change coupling, ownership concentration, fix/revert frequency
-- [ ] Code risk markers: unsafe blocks, FFI boundaries, unwrap()/expect() density, panic! paths
+- [x] Code risk markers: unsafe blocks, FFI boundaries, unwrap()/expect() density, panic! paths
 - [ ] Backtest the score against history (reverts + hotfixes as labels); tune thresholds from data
 
 ### New tools
 - [ ] `get_tests_for_symbol` — which tests reach a symbol ("12 callers, 0 tests")
-- [ ] `resolve_stacktrace` — map panic backtraces / file:line logs to symbols + neighborhoods
+- [x] `resolve_stacktrace` — map panic backtraces / file:line logs to symbols + neighborhoods
 - [ ] `recent_changes_near` — commits from last N days touching a symbol or its blast radius
 - [ ] `find_hotspots` — high-churn + highly-connected + poorly-tested, ranked
 - [ ] `find_cycles` — dependency cycles between modules/crates
-- [ ] `find_dead_code` — no callers outside tests; false positives double as parser-accuracy checks
+- [x] `find_dead_code` — no callers outside tests; false positives double as parser-accuracy checks
 
 ### Search quality
 - [ ] Cross-encoder reranker (bge-reranker-base) over top hybrid results
@@ -73,7 +73,7 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [ ] Version tool schemas + contract tests (response-shape changes shouldn't silently break agents)
 
 ### Operations and reliability
-- [ ] **Postgres backups** — nightly pg_dump to another disk/object storage + tested restore (most important item here; Postgres is the source of truth)
+- [x] **Postgres backups** — nightly pg_dump to another disk/object storage + tested restore (most important item here; Postgres is the source of truth)
 - [ ] Run tests before deploying (deployer already gates `last-good` on health; add the test gate)
 - [ ] Grafana alerting on tool latency / error rates / nightly sync failures (replace some cron+email)
 - [ ] Docker secrets instead of plain .env for SMTP password + auth tokens
