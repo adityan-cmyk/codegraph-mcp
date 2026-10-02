@@ -100,12 +100,21 @@ def decide(state: str, questions: dict) -> dict | None:
     import requests
 
     try:
-        with _INTERNAL_LOCK:
+        # Agent-facing path must never queue indefinitely behind background
+        # gate/classification calls — a blocking acquire here once stretched
+        # make_decision into client timeouts whenever the tick was gating.
+        # Bounded wait, then explicit busy.
+        if not _INTERNAL_LOCK.acquire(timeout=5):
+            logger.info("Decision call skipped — model busy with gate/classification")
+            return {"__busy__": True}
+        try:
             response = requests.post(
                 settings.systemone_url,
                 json={"model": settings.systemone_model, "state": state, "questions": questions},
                 timeout=settings.systemone_timeout,
             )
+        finally:
+            _INTERNAL_LOCK.release()
         response.raise_for_status()
         return response.json().get("answers") or None
     except Exception:

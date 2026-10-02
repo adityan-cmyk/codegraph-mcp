@@ -581,7 +581,10 @@ def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False) -
     if not graph_index.has_symbol(symbol_id):
         return {"error": f"Symbol '{symbol_id}' not found in the graph index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
 
-    neighborhoods = graph_index.traverse(symbol_id, depth=depth)
+    # summary_only only needs counts, not full neighborhoods — allow a much
+    # larger traversal than the payload-protecting default cap.
+    max_hoods = 1000 if summary_only else _MAX_TRAVERSE_NEIGHBORHOODS
+    neighborhoods = graph_index.traverse(symbol_id, depth=depth, max_neighborhoods=max_hoods)
 
     all_symbols: set[str] = set()
     capped_neighborhoods: list[dict] = []
@@ -598,7 +601,7 @@ def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False) -
         capped_neighborhoods.append(nb)
 
     total_neighborhoods = len(neighborhoods)
-    truncated = total_neighborhoods > _MAX_TRAVERSE_NEIGHBORHOODS
+    truncated = total_neighborhoods > max_hoods
 
     if summary_only:
         # Counts per BFS hop level (the doc contract): rebuild levels from
@@ -658,8 +661,18 @@ def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False) -
 
 
 def get_graph_stats() -> dict[str, object]:
-    """Get current graph index statistics — total nodes and edges. Read-only, safe to call anytime."""
-    return graph_index.get_stats()
+    """Get current graph index statistics — total nodes and edges. Read-only, safe to call anytime. Note: graph_nodes counts only symbols eligible for the dependency graph (file summaries, module exports, and trivial constants are excluded) — get_index_meta's total_symbols counts every indexed chunk, so graph_nodes < total_symbols is expected, not drift."""
+    stats = dict(graph_index.get_stats())
+    try:
+        from app.core.index_store import index_metadata_store
+        snapshot = index_metadata_store.load_snapshot()
+        if snapshot:
+            stats["total_symbols_all_chunks"] = len(snapshot.chunks)
+            stats["excluded_from_graph"] = len(snapshot.chunks) - stats.get("graph_nodes", len(snapshot.chunks))
+            stats["exclusion_note"] = "file summaries, module exports, trivial constants, keyword-named parser artifacts"
+    except Exception:
+        pass
+    return stats
 
 
 # ============================================================================
@@ -1221,6 +1234,14 @@ def make_decision(state: str, questions: dict) -> dict[str, object]:
             "error": f"state too long ({len(state)} chars, max {systemone.MAX_STATE_CHARS}) — truncate or summarize the state",
         }
     if not isinstance(questions, dict) or not questions:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "make_decision rejected questions: type=%s len=%s sample=%.80r",
+            type(questions).__name__,
+            len(questions) if hasattr(questions, "__len__") else "n/a",
+            questions,
+        )
         return {"error": "questions must be a non-empty object of named questions"}
     if len(questions) > systemone.MAX_QUESTIONS:
         return {"error": f"too many questions ({len(questions)}, max {systemone.MAX_QUESTIONS})"}
@@ -1234,6 +1255,10 @@ def make_decision(state: str, questions: dict) -> dict[str, object]:
         }
     try:
         answers = systemone.decide(state, questions)
+        if isinstance(answers, dict) and answers.get("__busy__"):
+            return {
+                "error": "decision model busy with background feedback gating — it processes one request at a time; retry in ~30s",
+            }
         if answers is None:
             return {
                 "error": "decision model unavailable (service down or timed out)",

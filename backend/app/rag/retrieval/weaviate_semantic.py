@@ -62,6 +62,18 @@ def _code_chunk_schema():
     ]
 
 
+
+def _obj_score(obj) -> float:
+    """Distance -> score, but never lie: hybrid BM25 hits carry no vector
+    distance (None), and `None or 0.0` used to turn them into flat 1.0s."""
+    dist = getattr(obj.metadata, "distance", None) if obj.metadata else None
+    if dist is not None:
+        return max(0.0, 1.0 - float(dist))
+    raw = getattr(obj.metadata, "score", None) if obj.metadata else None
+    if isinstance(raw, (int, float)):
+        return max(0.0, min(1.0, float(raw)))
+    return 0.5
+
 class WeaviateSemanticIndex:
     def __init__(self, url: str = "http://localhost:8080") -> None:
         from urllib.parse import urlparse
@@ -220,8 +232,7 @@ class WeaviateSemanticIndex:
         )
         results: list[SemanticMatch] = []
         for obj in response.objects:
-            dist = obj.metadata.distance or 0.0
-            score = max(0.0, 1.0 - dist)
+            score = _obj_score(obj)
             results.append(
                 SemanticMatch(
                     symbol_id=obj.properties["symbol_id"],
@@ -251,8 +262,7 @@ class WeaviateSemanticIndex:
                         return_metadata=MetadataQuery(distance=True, score=True),
                     )
                     for obj in response.objects:
-                        dist = obj.metadata.distance or 0.0
-                        score = max(0.0, 1.0 - dist)
+                        score = _obj_score(obj)
                         results.append(
                             SemanticMatch(
                                 symbol_id=obj.properties["symbol_id"],
@@ -349,8 +359,7 @@ class WeaviateSemanticIndex:
 
         results: list[SemanticMatch] = []
         for obj in response.objects:
-            dist = obj.metadata.distance or 0.0
-            score = max(0.0, 1.0 - dist)
+            score = _obj_score(obj)
             results.append(
                 SemanticMatch(
                     symbol_id=obj.properties["symbol_id"],
