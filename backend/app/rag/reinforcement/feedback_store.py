@@ -273,6 +273,13 @@ def get_reinforcement_stats() -> dict[str, object]:
             cur.execute("SELECT COUNT(*) AS n FROM symbol_reinforcement WHERE boost_weight < 0")
             penalized = cur.fetchone()["n"]
             cur.execute("SELECT COUNT(*) AS n FROM query_expansion")
+            expansion_rows = cur.fetchone()["n"]
+            # Only weight > 1.0 expansions are ever APPLIED at query time
+            # (get_query_expansions) — repeat-validated terms for the exact
+            # same query text. Raw rows include first-touch weight-1.0 terms
+            # that never fire. Reporting only the raw count made the counter
+            # and the expansion_applied flag disagree.
+            cur.execute("SELECT COUNT(*) AS n FROM query_expansion WHERE weight > 1.0")
             expansions = cur.fetchone()["n"]
             cur.execute(
                 """
@@ -289,6 +296,7 @@ def get_reinforcement_stats() -> dict[str, object]:
         "boosted_symbols": boosted,
         "penalized_symbols": penalized,
         "query_expansions": expansions,
+        "query_expansion_rows_raw": expansion_rows,
         "top_adjusted_symbols": [
             {
                 "symbol_id": r["symbol_id"],

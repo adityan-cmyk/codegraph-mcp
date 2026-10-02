@@ -30,13 +30,18 @@ _RESOLVE_SKIP_NAMES = frozenset(
 # A short name mapping to more than this many symbols is a hub (new, from,
 # generate...) — resolving it creates phantom edges to every same-named symbol.
 HUB_LIMIT = 3
+# Only these kinds may be CALL targets; type kinds resolve through USES.
+_CALLABLE_KINDS = ("fn", "method", "impl")
+_TYPE_KINDS = ("struct", "enum", "trait", "type", "impl", "fn", "method", "const", "static")
 
 
-def _build_name_index(chunks: list[CodeChunk]) -> dict[str, list[tuple[str, str]]]:
-    """short name -> [(symbol_id, file_path)] — file info powers scoped resolution."""
-    idx: dict[str, list[tuple[str, str]]] = {}
+def _build_name_index(chunks: list[CodeChunk]) -> dict[str, list[tuple[str, str, str]]]:
+    """short name -> [(symbol_id, file_path, kind)] — file info powers scoped
+    resolution; kind powers call-vs-type disambiguation (constructing an enum
+    variant or struct tuple is a USES edge, not a CALLS edge)."""
+    idx: dict[str, list[tuple[str, str, str]]] = {}
     for c in chunks:
-        idx.setdefault(_symbol_name(c.symbol_id), []).append((c.symbol_id, c.file_path))
+        idx.setdefault(_symbol_name(c.symbol_id), []).append((c.symbol_id, c.file_path, c.kind))
     return idx
 
 
@@ -54,24 +59,31 @@ def _parent_dir(file_path: str) -> str:
     return file_path.rsplit("/", 1)[0] if "/" in file_path else ""
 
 
-def _resolve_candidates(candidate: str, file_path: str, name_index: dict[str, list[tuple[str, str]]]) -> list[str]:
+def _resolve_candidates(candidate: str, file_path: str, name_index: dict[str, list[tuple[str, str, str]]],
+                        kinds: tuple[str, ...] | None = None) -> list[str]:
     """Scoped short-name resolution, in priority order:
     same file > same directory > small ambiguity (<= HUB_LIMIT) > drop.
     Hub names (new/from/generate with dozens of same-named symbols) used to
-    resolve to EVERY candidate — the phantom-edge problem."""
+    resolve to EVERY candidate — the phantom-edge problem. `kinds` restricts
+    resolution to those symbol kinds (calls resolve only fns/methods; enum
+    variants and struct tuple constructors are type constructions, not calls)."""
     if candidate in _RESOLVE_SKIP_NAMES:
         return []
     entries = name_index.get(candidate) or []
     if not entries:
         return []
-    same_file = [sid for sid, f in entries if f == file_path]
+    if kinds is not None:
+        entries = [e for e in entries if e[2] in kinds]
+        if not entries:
+            return []
+    same_file = [sid for sid, f, _ in entries if f == file_path]
     if same_file:
         return same_file
-    same_dir = [sid for sid, f in entries if _parent_dir(f) == _parent_dir(file_path)]
+    same_dir = [sid for sid, f, _ in entries if _parent_dir(f) == _parent_dir(file_path)]
     if same_dir:
         return same_dir
     if len(entries) <= HUB_LIMIT:
-        return [sid for sid, _ in entries]
+        return [sid for sid, _, _ in entries]
     return []
 TYPE_REF_PATTERN = re.compile(
     r"(?:"
@@ -333,14 +345,14 @@ def _extract_call_targets(
             continue
         if candidate in DERIVE_TRAIT_NAMES:
             continue
-        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index, kinds=_CALLABLE_KINDS):
             if symbol_id != chunk.symbol_id and symbol_id not in calls:
                 calls.append(symbol_id)
     for match in METHOD_CALL_PATTERN.finditer(chunk.content):
         candidate = match.group(1)
         if candidate in RUST_KEYWORDS or candidate in RUST_GENERIC_METHODS:
             continue
-        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index, kinds=_CALLABLE_KINDS):
             if symbol_id != chunk.symbol_id and symbol_id not in calls:
                 calls.append(symbol_id)
     return calls
@@ -356,7 +368,7 @@ def _extract_type_references(chunk: CodeChunk, name_index: dict[str, list[tuple[
             continue
         if candidate in DERIVE_TRAIT_NAMES:
             continue
-        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index, kinds=_TYPE_KINDS):
             if symbol_id != chunk.symbol_id and symbol_id not in uses and symbol_id not in chunk.symbol_id.split("::")[:-1]:
                 uses.append(symbol_id)
     return uses
@@ -408,7 +420,7 @@ def _extract_type_references_with_modes(chunk: CodeChunk, name_index: dict[str, 
             continue
         if candidate in DERIVE_TRAIT_NAMES:
             continue
-        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index, kinds=_TYPE_KINDS):
             if symbol_id != chunk.symbol_id and symbol_id not in seen and symbol_id not in chunk.symbol_id.split("::")[:-1]:
                 seen.add(symbol_id)
                 modes = _classify_usage_modes(chunk.content, candidate)
