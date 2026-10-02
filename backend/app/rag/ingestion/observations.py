@@ -70,6 +70,7 @@ def extract_observations(source: str, file_path: str, chunks: list[CodeChunk]) -
             out.append(Observation(file_path, i, "panic_path", line.strip()[:200]))
 
     out.extend(_commented_code_blocks(lines, file_path))
+    out.extend(_block_comment_dead_code(source, file_path))
     out.extend(_stub_functions(chunks, file_path))
     out.extend(_unwrap_density(chunks, file_path))
 
@@ -103,6 +104,26 @@ def _commented_code_blocks(lines: list[str], file_path: str) -> list[Observation
                 detail = " ".join(ln.strip().lstrip("/").strip() for ln in run[:3])[:200]
                 out.append(Observation(file_path, i + 1, "commented_code", detail))
         i = j
+    return out
+
+
+def _block_comment_dead_code(source: str, file_path: str) -> list[Observation]:
+    """Old code left inside /* */ blocks — the disk-verified duplicate-fn
+    case. A block comment containing fn/struct definitions is dead code
+    pretending to be live."""
+    from app.rag.ingestion.tree_sitter import _block_comment_spans
+
+    out: list[Observation] = []
+    for start, end in _block_comment_spans(source):
+        text = source[start:end]
+        if "/*" not in text or len(text) < 30:
+            continue
+        if _CODE_IN_COMMENT.search(text) and re.search(r"\bfn\s+\w+", text):
+            line = source[:start].count("\n") + 1
+            out.append(
+                Observation(file_path, line, "commented_code",
+                            f"dead code in /* */ block: {text.strip()[:150]}")
+            )
     return out
 
 

@@ -305,7 +305,10 @@ def _build_import_map(use_statements: list[str]) -> dict[str, str]:
     return import_map
 
 
-GRAPH_SKIP_KINDS = frozenset({"file_summary", "module_exports"})
+# Mod chunks are containers, not callable units — their content duplicates
+# every inner symbol's code, so edges from a mod node are pure phantoms (a
+# mod re-export once showed 25 callers and a CRITICAL risk score).
+GRAPH_SKIP_KINDS = frozenset({"file_summary", "module_exports", "mod"})
 
 
 def _should_skip_for_graph(chunk: CodeChunk) -> bool:

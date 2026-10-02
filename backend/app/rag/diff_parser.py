@@ -159,10 +159,12 @@ def extract_symbols_from_diff(diff_text: str) -> dict[str, object]:
     added_symbols: set[str] = set()
     deleted_symbols: set[str] = set()
     modified_symbols: set[str] = set()
+    body_modified: set[str] = set()
 
     lines = diff_text.split("\n")
     current_file = None
     in_hunk = False
+    hunk_context_fn: str | None = None
 
     added_lines_by_file: dict[str, list[str]] = {}
     deleted_lines_by_file: dict[str, list[str]] = {}
@@ -174,11 +176,23 @@ def extract_symbols_from_diff(diff_text: str) -> dict[str, object]:
             continue
         if line.startswith("@@"):
             in_hunk = True
+            # git puts the enclosing fn in the hunk header: '@@ -12,7 +12,8 @@ fn process_x'
+            m = _DIFF_HUNK_PATTERN.match(line)
+            ctx = (m.group(1).strip().split("(")[0].split("<")[0].strip() if m and m.group(1) else "")
+            if ctx.startswith("fn "):
+                ctx = ctx[3:].strip()
+            hunk_context_fn = ctx if re.match(r"^[a-z_][a-z0-9_]*$", ctx or "") else None
             continue
         if not in_hunk:
             continue
         if current_file and not current_file.endswith(".rs"):
             continue
+
+        # In-body modification: +/- lines inside a fn whose signature didn't
+        # change — attribute to the enclosing fn from the hunk header.
+        if hunk_context_fn and (_ADDED_LINE.match(line) or _DELETED_LINE.match(line)):
+            if not re.search(rf"\bfn\s+{re.escape(hunk_context_fn)}\b", line):
+                body_modified.add(hunk_context_fn)
 
         if _ADDED_LINE.match(line):
             content = line[1:]
@@ -199,6 +213,8 @@ def extract_symbols_from_diff(diff_text: str) -> dict[str, object]:
     modified_symbols = added_symbols & deleted_symbols
     added_symbols -= modified_symbols
     deleted_symbols -= modified_symbols
+    # in-body changes (signature untouched) — detected via hunk headers
+    modified_symbols |= body_modified
 
     all_added = added_symbols | modified_symbols
     all_added_lines: list[str] = []
