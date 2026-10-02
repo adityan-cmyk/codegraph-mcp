@@ -168,8 +168,14 @@ class GraphIndexProxy:
             return backend.get_neighbors(symbol_id, depth=depth)
         return backend.get_blast_radius(symbol_id)
 
-    def traverse(self, symbol_id: str, depth: int = 2) -> list[GraphNeighborhood]:
-        return self._active().traverse(symbol_id, depth=depth)
+    def traverse(self, symbol_id: str, depth: int = 2, max_neighborhoods: int = 100) -> list[GraphNeighborhood]:
+        backend = self._active()
+        if hasattr(backend, "traverse"):
+            try:
+                return backend.traverse(symbol_id, depth=depth, max_neighborhoods=max_neighborhoods)
+            except TypeError:
+                return backend.traverse(symbol_id, depth=depth)
+        return backend.get_blast_radius(symbol_id)
 
     def get_stats(self) -> dict[str, int]:
         return self._active().get_stats()

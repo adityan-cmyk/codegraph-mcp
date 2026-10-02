@@ -216,12 +216,12 @@ class Neo4jGraphIndex:
     def get_blast_radius(self, symbol_id: str) -> GraphNeighborhood:
         return self.get_neighbors(symbol_id, depth=2)
 
-    def traverse(self, symbol_id: str, depth: int = 2) -> list[GraphNeighborhood]:
+    def traverse(self, symbol_id: str, depth: int = 2, max_neighborhoods: int = 100) -> list[GraphNeighborhood]:
         neighborhoods: list[GraphNeighborhood] = []
         visited: set[str] = set()
         queue: list[tuple[str, int]] = [(symbol_id, 0)]
 
-        while queue and len(neighborhoods) < 100:
+        while queue and len(neighborhoods) < max_neighborhoods:
             current, current_depth = queue.pop(0)
             if current in visited:
                 continue
