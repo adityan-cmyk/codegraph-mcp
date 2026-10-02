@@ -416,3 +416,93 @@ class FeedbackClassificationTestCase(unittest.TestCase):
 
         self.assertEqual(boosted, ["a::b"], "tool_bug feedback must not produce boosts")
         self.assertEqual(sorted(marked[0]), ["fb-bug", "fb-rank"], "both entries still marked processed")
+
+
+class ObservationsTestCase(unittest.TestCase):
+    """Metal-detector extraction: TODOs, swallowed errors, stubs, dead code."""
+
+    def _chunk(self, symbol_id, content, start, end, kind="fn"):
+        from app.schemas.codebase import CodeChunk
+        return CodeChunk(symbol_id=symbol_id, file_path="t.rs", kind=kind,
+                         content=content, start_line=start, end_line=end)
+
+    def test_todo_extraction(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "\n".join([
+            "fn a() {}",
+            "// TODO fix duplicate entries before settlement",
+            "// normal comment",
+            "fn b() {}",
+        ])
+        obs = extract_observations(src, "t.rs", [])
+        todos = [o for o in obs if o.kind == "todo"]
+        self.assertEqual(len(todos), 1)
+        self.assertEqual(todos[0].line, 2)
+        self.assertIn("duplicate entries", todos[0].detail)
+
+    def test_error_swallow(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "fn a() {\n    let _ = credit_wallet(&mut w, amt);\n    let x = 5;\n}\n"
+        obs = extract_observations(src, "t.rs", [])
+        kinds = [o.kind for o in obs]
+        self.assertIn("error_swallow", kinds)
+        sw = next(o for o in obs if o.kind == "error_swallow")
+        self.assertIn("credit_wallet", sw.detail)
+
+    def test_fail_open_on_auth(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "let token = headers.get(\"Authorization\").unwrap_or_default();\n"
+        obs = extract_observations(src, "t.rs", [])
+        self.assertTrue(any(o.kind == "fail_open" for o in obs))
+
+    def test_fail_open_not_flagged_off_auth(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "let count = list.iter().count().unwrap_or_default();\n"
+        obs = extract_observations(src, "t.rs", [])
+        self.assertFalse(any(o.kind == "fail_open" for o in obs))
+
+    def test_stub_function(self):
+        from app.rag.ingestion.observations import extract_observations
+        content = "\n".join([
+            "fn settle_dispute(code: u32) {",
+            "    println!(\"settling {}\", code);",
+            "    info!(\"done\");",
+            "}",
+        ])
+        chunk = self._chunk("m::settle_dispute", content, 1, 4)
+        obs = extract_observations(content, "t.rs", [chunk])
+        stubs = [o for o in obs if o.kind == "stub_fn"]
+        self.assertEqual(len(stubs), 1)
+        self.assertEqual(stubs[0].symbol_id, "m::settle_dispute")
+
+    def test_real_function_not_stub(self):
+        from app.rag.ingestion.observations import extract_observations
+        content = "\n".join([
+            "fn settle(code: u32) -> Result<()> {",
+            "    let tx = db.begin()?;",
+            "    info!(\"settling\");",
+            "    Ok(())",
+            "}",
+        ])
+        chunk = self._chunk("m::settle", content, 1, 5)
+        obs = extract_observations(content, "t.rs", [chunk])
+        self.assertFalse(any(o.kind == "stub_fn" for o in obs))
+
+    def test_commented_out_code(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "\n".join([
+            "// if check_if_txn_exists(tx, id) {",
+            "//     return Err(Duplicate);",
+            "// }",
+        ])
+        obs = extract_observations(src, "t.rs", [])
+        self.assertTrue(any(o.kind == "commented_code" for o in obs))
+
+    def test_symbol_attachment(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "fn outer() {\n    // FIXME: this drifts\n    let _ = do_thing();\n}\n"
+        chunk = self._chunk("m::outer", src, 1, 4)
+        obs = extract_observations(src, "t.rs", [chunk])
+        for o in obs:
+            if o.kind in ("fixme", "error_swallow"):
+                self.assertEqual(o.symbol_id, "m::outer")
