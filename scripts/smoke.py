@@ -125,7 +125,10 @@ def main() -> int:
     # 7. Traverse summary_only returns a summary
     probe = _probe_symbol()
     tv = mcp_call("traverse_graph", {"symbol_id": probe, "depth": 2, "summary_only": True})
-    check("traverse summary_only works", "error" not in tv and ("levels" in tv or "total_symbols" in tv or "summary" in str(tv)[:200]),
+    summary = tv.get("summary", [])
+    check("traverse summary_only works",
+          "error" not in tv and isinstance(summary, list) and len(summary) >= 1
+          and all("hop" in lvl and "new_symbols" in lvl for lvl in summary),
           str(tv.get("error", ""))[:60])
 
     # 8. Metal detector returns observations
