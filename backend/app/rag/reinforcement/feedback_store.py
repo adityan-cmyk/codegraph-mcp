@@ -165,9 +165,9 @@ def record_feedback(
                     1 if fb > 0 else 0,
                     0 if fb > 0 else 1,
                     0.0,
-                    NEGATIVE_WEIGHT,
-                    NEGATIVE_WEIGHT,
                     datetime.now(UTC),
+                    NEGATIVE_WEIGHT,
+                    NEGATIVE_WEIGHT,
                     datetime.now(UTC),
                 ),
             )
