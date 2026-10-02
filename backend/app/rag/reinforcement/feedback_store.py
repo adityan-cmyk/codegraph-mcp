@@ -94,6 +94,22 @@ def _ensure_schema():
         logger.info("Reinforcement feedback schema ready")
 
 
+# Index artifacts are not rankable symbols — they must never collect boosts.
+# (A module_exports pseudo-symbol once accumulated 19 positives and sat at #4
+# in the top-boosted list; every exposure collected more +1s. Entrenchment.)
+PSEUDO_SYMBOL_NAMES = frozenset({"file_summary", "module_exports", "fn", "let", "match", "if", "_", "Relation"})
+
+# Negative asymmetry: positives compound through exposure (rich-get-richer —
+# a boosted symbol surfaces more, collects more +1s), while negatives are
+# deliberate corrections. A 19:1 positive pileup needs ~19 -1s to neutralize
+# at k=1; k=2 halves the entrenchment without letting one -1 dominate.
+NEGATIVE_WEIGHT = 2
+
+
+def is_pseudo_symbol(symbol_id: str) -> bool:
+    return symbol_id.split("::")[-1] in PSEUDO_SYMBOL_NAMES
+
+
 def record_feedback(
     query_text: str,
     symbol_id: str,
@@ -107,6 +123,12 @@ def record_feedback(
     update_expansion=False skips the query_expansion write — used for internal
     sync paths (pseudo-queries like '_ai_feedback') so they don't pollute the
     expansion table for real queries."""
+    if is_pseudo_symbol(symbol_id):
+        logger.info(
+            "Rejected feedback on pseudo-symbol %s — index artifacts are not rankable",
+            symbol_id,
+        )
+        return
     _ensure_schema()
     fb = 1 if feedback > 0 else -1
     with _connect() as conn:
@@ -131,9 +153,9 @@ def record_feedback(
                                   + symbol_reinforcement.negative_count + EXCLUDED.negative_count) = 0
                             THEN 0.0
                             ELSE (symbol_reinforcement.positive_count + EXCLUDED.positive_count
-                                  - symbol_reinforcement.negative_count - EXCLUDED.negative_count)::FLOAT
+                                  - (symbol_reinforcement.negative_count + EXCLUDED.negative_count)::FLOAT * %s)
                                  / (symbol_reinforcement.positive_count + EXCLUDED.positive_count
-                                    + symbol_reinforcement.negative_count + EXCLUDED.negative_count + 5)
+                                    + (symbol_reinforcement.negative_count + EXCLUDED.negative_count)::FLOAT * %s + 5)
                         END
                     ),
                     last_updated = %s
@@ -143,7 +165,8 @@ def record_feedback(
                     1 if fb > 0 else 0,
                     0 if fb > 0 else 1,
                     0.0,
-                    datetime.now(UTC),
+                    NEGATIVE_WEIGHT,
+                    NEGATIVE_WEIGHT,
                     datetime.now(UTC),
                 ),
             )
@@ -166,16 +189,21 @@ def record_feedback(
 
 
 def compute_boost_weight(positive: int, negative: int) -> float:
-    """Laplace-smoothed signed vote score in [-1, 1].
+    """Laplace-smoothed signed vote score in [-1, 1], negatives weighted 2x.
 
-    (p - n) / (p + n + 5) — zero votes -> 0 (neutral), a single vote moves the
-    weight by only 1/6, and the weight converges toward ±1 as votes pile up.
-    Must stay in sync with the SQL in record_feedback().
+    (p - k*n) / (p + k*n + 5) with k = NEGATIVE_WEIGHT. Zero votes -> 0
+    (neutral); a single vote moves the weight by only 1/6; the weight
+    converges toward ±1 as votes pile up. The negative asymmetry counters
+    rich-get-richer entrenchment: positives compound through exposure (a
+    boosted symbol surfaces more and collects more +1s), while negatives are
+    deliberate corrections. Must stay in sync with the SQL in
+    record_feedback().
     """
-    total = positive + negative
+    neg = NEGATIVE_WEIGHT * negative
+    total = positive + neg
     if total <= 0:
         return 0.0
-    return (positive - negative) / (total + 5)
+    return (positive - neg) / (total + 5)
 
 
 def recompute_all_boost_weights() -> int:
