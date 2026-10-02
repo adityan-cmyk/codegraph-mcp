@@ -1168,7 +1168,7 @@ def diff_modules(module_a: str, module_b: str) -> dict[str, object]:
 
 
 def find_warnings_in_blast_radius(symbol_id: str, radius: int = 2, kinds: list[str] | None = None) -> dict[str, object]:
-    """Find code warnings (TODO/FIXME/HACK comments, swallowed errors, stub functions, commented-out code, fail-open defaults) in a symbol's blast radius. This is the metal detector: bugs live in comments, dead code, and discarded Results — none visible in the dependency graph. Use during PR review or incident triage on hotspots. Provide the full symbol_id. Optional: radius (default 2, max 3 — how many dependency hops to include), kinds=['todo','fixme','hack','xxx','commented_code','error_swallow','fail_open','stub_fn'] to filter."""
+    """Find code warnings (TODO/FIXME/HACK comments, swallowed errors, stub functions, commented-out code, fail-open defaults) in a symbol's blast radius. This is the metal detector: bugs live in comments, dead code, and discarded Results — none visible in the dependency graph. Use during PR review or incident triage on hotspots. Provide the full symbol_id. Optional: radius (default 2, max 3 — how many dependency hops to include), kinds=['todo','fixme','hack','xxx','commented_code','error_swallow','fail_open','stub_fn','unsafe_block','ffi_boundary','panic_path','unwrap_density'] to filter."""
     if not graph_index.has_symbol(symbol_id):
         return {"error": f"Symbol '{symbol_id}' not found in the graph index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
     radius = max(1, min(int(radius), 3))

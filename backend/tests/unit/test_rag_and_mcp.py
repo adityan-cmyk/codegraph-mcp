@@ -744,3 +744,34 @@ class ContractDriftTestCase(unittest.TestCase):
         self.assertEqual(ids, ["crates::wallet::queries::fetch_uam_users_map"],
                          "deleted symbols must resolve only within the diff's modules — "
                          "global resolution invented deletions in files not in the diff")
+
+    def test_risk_markers_unsafe_ffi_panic(self):
+        from app.rag.ingestion.observations import extract_observations
+        src = "\n".join([
+            "fn raw() {",
+            "    unsafe { std::ptr::write(p, 1); }",
+            "}",
+            "extern \"C\" {",
+            "    fn ext_call(x: i32) -> i32;",
+            "}",
+            "fn boom() {",
+            "    panic!(\"unreachable state\");",
+            "}",
+        ])
+        obs = extract_observations(src, "t.rs", [])
+        kinds = {o.kind for o in obs}
+        self.assertIn("unsafe_block", kinds)
+        self.assertIn("ffi_boundary", kinds)
+        self.assertIn("panic_path", kinds)
+
+    def test_unwrap_density_flagged(self):
+        from app.schemas.codebase import CodeChunk
+        from app.rag.ingestion.observations import extract_observations
+        body = ["fn risky() {"] + [f"    let v{x} = opt{x}.unwrap();" for x in range(6)] + ["}"]
+        content = "\n".join(body)
+        chunk = CodeChunk(symbol_id="m::risky", file_path="t.rs", kind="fn",
+                          content=content, start_line=1, end_line=len(body))
+        obs = extract_observations(content, "t.rs", [chunk])
+        dense = [o for o in obs if o.kind == "unwrap_density"]
+        self.assertEqual(len(dense), 1)
+        self.assertIn("6 unwrap", dense[0].detail)

@@ -409,7 +409,7 @@ _TOOLS: dict[str, Any] = {
                 },
                 "kinds": {
                     "type": "array",
-                    "items": {"type": "string", "enum": ["todo", "fixme", "hack", "xxx", "commented_code", "error_swallow", "fail_open", "stub_fn"]},
+                    "items": {"type": "string", "enum": ["todo", "fixme", "hack", "xxx", "commented_code", "error_swallow", "fail_open", "stub_fn", "unsafe_block", "ffi_boundary", "panic_path", "unwrap_density"]},
                     "description": "Filter by warning kind (default: all)",
                 },
             },
