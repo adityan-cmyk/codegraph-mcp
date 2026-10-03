@@ -929,3 +929,32 @@ class ContractDriftTestCase(unittest.TestCase):
         self.assertEqual(h["components"]["commits"], 9)
         self.assertEqual(h["anchor_symbol"]["test_callers"], 0)
         self.assertGreater(h["score"], 9, "untested + connected must amplify beyond raw churn")
+
+    def test_golden_eval_scoring(self):
+        from unittest.mock import patch
+        from app.rag.retrieval.graph import graph_index
+        graph_index.upsert_symbol("crates::x::pay", metadata={"kind": "fn", "file_path": "crates/x.rs"})
+        graph_index.upsert_symbol("crates::x::other", metadata={"kind": "fn", "file_path": "crates/x.rs"})
+        from app.rag.reinforcement import golden_eval as ge
+
+        def fake_pairs():
+            return [
+                {"query": "payment flow", "symbol_id": "crates::x::pay"},
+                {"query": "other thing", "symbol_id": "crates::x::pay"},
+            ]
+
+        def fake_search(query, limit=10):
+            results = [{"symbol_id": "crates::x::pay", "score": 0.9}]
+            if query == "other thing":
+                results = [{"symbol_id": "crates::x::other", "score": 0.8}]  # miss
+            return {"results": results}
+
+        with patch.object(ge, "build_golden_set", fake_pairs), \
+             patch("app.mcp.tools.graph_read_tools.semantic_search", fake_search):
+            out = ge.run_eval()
+        self.assertEqual(out["golden_pairs"], 2)
+        self.assertEqual(out["hit_at_5"], 0.5)
+        self.assertEqual(out["hit_at_10"], 0.5)
+        self.assertAlmostEqual(out["mrr"], 0.5)  # rank-1 hit + one miss
+        self.assertEqual(out["miss_count"], 1)
+        self.assertEqual(out["misses"][0]["query"], "other thing")

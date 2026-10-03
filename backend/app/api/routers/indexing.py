@@ -62,6 +62,22 @@ def get_index_stats() -> IndexStats:
     )
 
 
+@router.get("/eval/golden")
+def run_golden_eval(limit: int = 200) -> dict:
+    """Search-quality eval against verified feedback pairs; records the
+    score on the active build in the registry."""
+    from app.rag.reinforcement.golden_eval import run_eval
+
+    return run_eval(limit=limit)
+
+
+@router.get("/eval/golden/stats")
+def golden_eval_stats() -> dict:
+    from app.rag.reinforcement.golden_eval import get_golden_stats
+
+    return get_golden_stats()
+
+
 @router.post("/query", response_model=list[SemanticMatch])
 def query_semantic_index(payload: SemanticQueryRequest) -> list[SemanticMatch]:
     return semantic_index.query_chunks(payload.query, limit=payload.limit)
