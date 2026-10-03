@@ -547,7 +547,7 @@
       "title": "Errors & warnings (all services)",
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "loki"
       },
       "gridPos": {
         "h": 8,
@@ -559,7 +559,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "loki"
           },
           "expr": "{container=~\"oncall-.*\", level=~\"ERROR|WARNING\"}",
           "refId": "A"
@@ -578,7 +578,7 @@
       "title": "Recent logs (all oncall containers)",
       "datasource": {
         "type": "loki",
-        "uid": "P8E80F9AEF21F6940"
+        "uid": "loki"
       },
       "gridPos": {
         "h": 8,
@@ -590,7 +590,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "P8E80F9AEF21F6940"
+            "uid": "loki"
           },
           "expr": "{container=~\"oncall-.*\"}",
           "refId": "A"
