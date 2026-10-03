@@ -812,3 +812,72 @@ class ContractDriftTestCase(unittest.TestCase):
         extraction = extract_symbols_from_diff(diff)
         self.assertIn("settle_transaction", extraction["modified_symbols"],
                       "in-body changes must attribute to the enclosing fn from the hunk header")
+
+    def test_is_test_detection(self):
+        from app.rag.ingestion.tree_sitter import extract_rust_chunks
+        src = "\n".join([
+            "#[cfg(test)]",
+            "mod tests {",
+            "    use super::*;",
+            "    #[test]",
+            "    fn settles_ok() { assert!(true); }",
+            "    #[tokio::test]",
+            "    async fn async_path() { assert!(true); }",
+            "}",
+            "fn production_fn() -> u32 { 1 }",
+        ])
+        chunks = {c.symbol_id.split("::")[-1]: c for c in extract_rust_chunks("crates/wallet.rs", src)}
+        self.assertTrue(chunks["settles_ok"].is_test, "#[test] inside cfg(test) mod must be marked")
+        self.assertTrue(chunks["async_path"].is_test, "#[tokio::test] must be marked")
+        self.assertTrue(chunks["production_fn"] is not None and not chunks["production_fn"].is_test,
+                        "production fn must NOT be marked")
+
+    def test_is_test_standalone_attr(self):
+        from app.rag.ingestion.tree_sitter import extract_rust_chunks
+        src = "\n".join([
+            "/// doc for real fn",
+            "fn process_payment() {}",
+            "#[test]",
+            "fn direct_test() { assert_eq!(1, 1); }",
+        ])
+        chunks = {c.symbol_id.split("::")[-1]: c for c in extract_rust_chunks("crates/pay.rs", src)}
+        self.assertTrue(chunks["direct_test"].is_test, "standalone #[test] fn must be marked")
+        self.assertFalse(chunks["process_payment"].is_test, "preceding fn must not inherit the flag")
+
+    def test_get_tests_for_symbol(self):
+        from app.rag.retrieval.graph import graph_index
+        graph_index.upsert_symbol("crates::x::pay", metadata={"kind": "fn", "file_path": "crates/x.rs"})
+        graph_index.upsert_symbol(
+            "crates::x::tests::t1", calls=["crates::x::pay"],
+            metadata={"kind": "fn", "file_path": "crates/x.rs", "is_test": True, "start_line": 5, "end_line": 7},
+        )
+        graph_index.upsert_symbol(
+            "crates::x::tests::t2", uses=["crates::x::pay"],
+            metadata={"kind": "fn", "file_path": "crates/x.rs", "is_test": True, "start_line": 9, "end_line": 11},
+        )
+        graph_index.upsert_symbol(
+            "crates::x::prod_caller", calls=["crates::x::pay"],
+            metadata={"kind": "fn", "file_path": "crates/x.rs"},
+        )
+        from app.mcp.tools import graph_read_tools as grt
+        out = grt.get_tests_for_symbol("crates::x::pay")
+        self.assertEqual(out["test_count"], 2)
+        self.assertEqual(out["tests_calling"][0]["symbol_id"], "crates::x::tests::t1")
+        self.assertEqual(out["tests_referencing_type"][0]["relation"], "type_reference")
+        self.assertTrue(out["test_files"])
+        # production caller must not appear in test results
+        self.assertNotIn("crates::x::prod_caller", str(out["tests_calling"]))
+
+    def test_risk_score_excludes_tests(self):
+        from app.rag.retrieval.graph import graph_index
+        graph_index.upsert_symbol("crates::x::pay", metadata={"kind": "fn"})
+        for i in range(12):  # 12 test callers would be 'medium' alone
+            graph_index.upsert_symbol(
+                f"crates::x::tests::t{i}", calls=["crates::x::pay"],
+                metadata={"kind": "fn", "is_test": True},
+            )
+        from app.mcp.tools import graph_read_tools as grt
+        grt._TEST_SYMBOLS_CACHE = (0.0, set())
+        out = grt.get_blast_radius("crates::x::pay")
+        self.assertEqual(out["test_caller_count"], 12)
+        self.assertEqual(out["risk_score"], "low", "12 test-only callers must not inflate production risk")

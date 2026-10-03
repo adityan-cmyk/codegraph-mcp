@@ -6,6 +6,7 @@ No write, index, file, cargo, or mutation operations are accessible.
 
 import logging
 import threading
+import time
 import uuid
 
 from app.rag.retrieval.graph import graph_index
@@ -188,6 +189,47 @@ def _god_type_blocklist() -> set[str]:
 _GOD_TYPES_CACHE: tuple[float, set[str]] | None = None
 
 
+_TEST_SYMBOLS_CACHE: tuple[float, set[str]] = (0.0, set())
+
+
+def _test_symbol_ids() -> set[str]:
+    """Symbol ids flagged is_test (5-min cache) — test callers must not
+    inflate production risk scores."""
+    global _TEST_SYMBOLS_CACHE
+    now = time.monotonic()
+    if now - _TEST_SYMBOLS_CACHE[0] > 300:
+        try:
+            _TEST_SYMBOLS_CACHE = (now, graph_index.get_test_symbol_ids())
+        except Exception:
+            _TEST_SYMBOLS_CACHE = (now, set())
+    return _TEST_SYMBOLS_CACHE[1]
+
+
+def get_tests_for_symbol(symbol_id: str) -> dict[str, object]:
+    """Find the tests that cover a symbol — test fns that CALL it or reference its type (USES), from symbols flagged is_test (#[test]/#[tokio::test]/#[cfg(test)] modules). Use this before changing a symbol to see if existing tests will catch regressions. Provide the full symbol_id (e.g. 'crates::wallet::settle::process_payment'). Read-only, safe to call anytime."""
+    symbol_id = symbol_id.strip()
+    if not symbol_id:
+        return {"error": "symbol_id is required"}
+
+    test_rows = graph_index.get_tests_for(symbol_id)
+    direct = [t for t in test_rows if t["relation"] == "calls"]
+    mention_only = [t for t in test_rows if t["relation"] == "type_reference"]
+
+    files = sorted({t["file_path"] for t in direct + mention_only if t["file_path"]})
+    return {
+        "symbol_id": symbol_id,
+        "tests_calling": direct,
+        "tests_referencing_type": mention_only,
+        "test_count": len(direct) + len(mention_only),
+        "test_files": files,
+        "coverage_note": (
+            "direct test callers exist — regressions here are likely caught"
+            if direct
+            else "no test directly calls this symbol — changes are unverified by the suite"
+        ),
+    }
+
+
 def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None, summary_only: bool = False, exclude_shared_state_types: bool = True) -> dict[str, object]:
     """Get the immediate blast radius of a symbol — direct callers (CALLS edges), callees, type-references (USES edges), and used types. Callers are functions that CALL this symbol; type-references are symbols that merely mention the type (fields, params) — they are reported separately and never conflated. Use this during PR review to understand the impact of changing a symbol. Provide the full symbol_id (e.g. 'crates::inventory::client::InventoryClient'). Optional: usage_modes_filter=['pattern_match', 'construction'] to return only callers that pattern-match or construct this type; summary_only=true for counts grouped by module + risk score; exclude_shared_state_types=true (default) filters god-types (GlobalState-like, >50 type-references) from the type expansion — set false to see them."""
     if not graph_index.has_symbol(symbol_id):
@@ -227,8 +269,14 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
     result["total_used_by"] = len(used_by)
     result["total_uses"] = len(uses)
     result["total_connections"] = len(upstream) + len(downstream) + len(used_by) + len(uses)
-    result["risk_score"] = _compute_risk_score(upstream, downstream, used_by, uses)
-    result["risk_factors"] = _compute_risk_factors(upstream, downstream, used_by, uses)
+    # Risk is a PRODUCTION-blast-radius measure: test callers break loudly and
+    # on purpose — they must not inflate the risk of the code under test.
+    tests = _test_symbol_ids()
+    result["test_caller_count"] = sum(1 for u in upstream if u in tests)
+    prod_upstream = [u for u in upstream if u not in tests]
+    prod_used_by = [u for u in used_by if u not in tests]
+    result["risk_score"] = _compute_risk_score(prod_upstream, downstream, prod_used_by, uses)
+    result["risk_factors"] = _compute_risk_factors(prod_upstream, downstream, prod_used_by, uses)
 
     meta = _get_symbol_metadata(symbol_id)
     if meta:

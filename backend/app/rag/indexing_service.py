@@ -489,6 +489,7 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
             "start_line": chunk.start_line,
             "end_line": chunk.end_line,
             "module": chunk.file_path.removesuffix(".rs").replace("/", "::"),
+            "is_test": chunk.is_test,
         }
 
     for chunk in snapshot.chunks:
@@ -891,6 +892,7 @@ def incremental_update_symbols(
                 "start_line": chunk.start_line,
                 "end_line": chunk.end_line,
                 "module": chunk.file_path.removesuffix(".rs").replace("/", "::"),
+                "is_test": chunk.is_test,
             },
         )
 

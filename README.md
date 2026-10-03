@@ -119,7 +119,7 @@ Add this to your `opencode.json`:
 }
 ```
 
-### Available Tools (19)
+### Available Tools (22)
 
 | Tool | Description |
 |---|---|
@@ -137,6 +137,9 @@ Add this to your `opencode.json`:
 | `get_index_meta` | Get graph build metadata — gen number, commit hash, commits_behind (drift), per-file coverage stats, classifier version, timestamp, embedding model. Use to verify graph freshness. |
 | `get_symbols_in_file` | List all symbols defined in a file. Use to resolve a diff's file path to exact symbols without guessing. |
 | `find_warnings_in_blast_radius` | **Metal detector**: TODO/FIXME/HACK comments, swallowed errors (`let _ = fn()`), logging-only stub functions, commented-out code, and auth fail-open defaults (`unwrap_or_default()`) within a symbol's dependency blast radius. The bug classes that live in comments and dead code — invisible to the dependency graph. |
+| `resolve_stacktrace` | Resolve a raw Rust panic backtrace to graph symbols with source context. |
+| `find_dead_code` | Find symbols with no callers, no type-references, and no uses — candidates for deletion. |
+| `get_tests_for_symbol` | Find test fns that call a symbol or reference its type (`#[test]`, `#[tokio::test]`, `#[cfg(test)]` modules). Use before changes to gauge regression coverage; test callers are excluded from risk scores. |
 | `diff_modules` | Symbol-set drift between counterpart modules (sync vs async report generators, handler mirrors). Catches implementations that have drifted apart. |
 | `submit_search_feedback` | Rate semantic_search results (+1 helpful, -1 not helpful, or query-level with no symbol). |
 | `submit_ai_feedback` | Submit full post-analysis feedback summary after PR review. PRIMARY feedback mechanism. |

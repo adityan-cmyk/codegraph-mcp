@@ -9,6 +9,7 @@ def build_code_chunk(
     content: str,
     start_line: int,
     end_line: int,
+    is_test: bool = False,
 ) -> CodeChunk:
     return CodeChunk(
         symbol_id=symbol_id,
@@ -17,4 +18,5 @@ def build_code_chunk(
         content=content.strip(),
         start_line=start_line,
         end_line=end_line,
+        is_test=is_test,
     )

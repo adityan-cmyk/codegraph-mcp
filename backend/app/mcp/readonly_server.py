@@ -25,6 +25,7 @@ from starlette.routing import Route
 from uvicorn import Config, Server
 
 from app.mcp.tools.graph_read_tools import (
+    get_tests_for_symbol,
     get_blast_radius,
     traverse_graph,
     get_graph_stats,
@@ -436,6 +437,20 @@ _TOOLS: dict[str, Any] = {
             "required": ["stacktrace"],
         },
     },
+    "get_tests_for_symbol": {
+        "handler": get_tests_for_symbol,
+        "description": inspect.getdoc(get_tests_for_symbol) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "symbol_id": {
+                    "type": "string",
+                    "description": "Full symbol id, e.g. 'crates::wallet::settle::process_payment'",
+                },
+            },
+            "required": ["symbol_id"],
+        },
+    },
     "find_dead_code": {
         "handler": find_dead_code,
         "description": inspect.getdoc(find_dead_code) or "",
@@ -631,6 +646,23 @@ _DIRECTORY = {
                 "query_text": "string",
                 "symbol_id": "string",
                 "feedback": "int",
+            },
+        },
+        {
+            "name": "get_tests_for_symbol",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Find tests covering a symbol — test fns that call it or reference its type. Use before changing a symbol to see regression coverage.",
+            "arguments": {
+                "symbol_id": "string (required) — full symbol id, e.g. 'crates::wallet::settle::process_payment'",
+            },
+            "response_shape": {
+                "symbol_id": "string",
+                "tests_calling": "array[object] — symbol_id, file_path, start_line, end_line, relation=calls",
+                "tests_referencing_type": "array[object] — same shape, relation=type_reference",
+                "test_count": "int",
+                "test_files": "array[string]",
+                "coverage_note": "string",
             },
         },
         {
