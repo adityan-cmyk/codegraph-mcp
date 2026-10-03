@@ -327,7 +327,7 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
         for key in ("upstream", "downstream", "used_by", "uses", "used_by_modes", "uses_modes"):
             result.pop(key, None)
         summary = _attach_stale_warning(result)
-        cache_set("blast_radius", cache_args, summary, ttl=300)
+        cache_set("blast_radius", cache_args, summary, ttl=3600, tags=["graph"])
         return summary
 
     # Dedup preserving order — parallel edges (same target, different usage
@@ -372,7 +372,7 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
     result["usage_mode_summary"] = usage_modes
 
     final = _attach_stale_warning(result)
-    cache_set("blast_radius", cache_args, final, ttl=300)
+    cache_set("blast_radius", cache_args, final, ttl=3600, tags=["graph"])
     return final
 
 
@@ -982,7 +982,7 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
         "hotspots": hotspots[:limit],
         "method": "score = commits x min(top-symbol connections,100)/10 x test penalty (1.5 untested anchor / 1.25 mostly untested / 1.0 covered)",
     }
-    cache_set("hotspots", cache_args, payload, ttl=300)
+    cache_set("hotspots", cache_args, payload, ttl=4*3600, tags=["graph", "git", "tests"])
     return payload
 
 

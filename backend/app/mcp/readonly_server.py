@@ -1214,13 +1214,32 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
     _LOCKOUT_SEC = 300
     _TOOL_CAPACITY = 60
     _TOOL_REFILL_PER_SEC = 1.0
+    _settings_cache: tuple[float, tuple[int, float]] = (0.0, (60, 1.0))
+
+    def _current_bucket_shape(self) -> tuple[int, float]:
+        """Runtime-tunable via /api/admin/rate-limit (Postgres admin_settings),
+        cached 30s in-process — no per-request store hit."""
+        import time as _time
+
+        now = _time.monotonic()
+        if now - self._settings_cache[0] < 30:
+            return self._settings_cache[1]
+        capacity, refill = self._TOOL_CAPACITY, self._TOOL_REFILL_PER_SEC
+        try:
+            from app.api.routers.admin import get_setting
+
+            capacity = int(get_setting("mcp_capacity", self._TOOL_CAPACITY))
+            refill = float(get_setting("mcp_refill", self._TOOL_REFILL_PER_SEC))
+        except Exception:
+            pass
+        BearerTokenAuthMiddleware._settings_cache = (now, (capacity, refill))
+        return capacity, refill
 
     def _tool_rate_limited(self, identity: str) -> tuple[bool, float]:
         from app.core.token_bucket import take_tokens
 
-        return take_tokens(
-            f"mcp:{identity}", self._TOOL_CAPACITY, self._TOOL_REFILL_PER_SEC
-        )
+        capacity, refill = self._current_bucket_shape()
+        return take_tokens(f"mcp:{identity}", capacity, refill)
 
     def _is_rate_limited(self, client_ip: str) -> bool:
         import time

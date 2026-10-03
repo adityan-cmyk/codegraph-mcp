@@ -508,6 +508,16 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
 
     old_graph = graph_index.swap(new_graph, build_id=build_id)
 
+    # New generation active — gen-keyed entries miss anyway, but tagged
+    # graph answers (blast radius etc.) from the PREVIOUS gen still occupy
+    # memory; drop them explicitly.
+    try:
+        from app.core.query_cache import invalidate_tags
+
+        invalidate_tags("graph")
+    except Exception:
+        pass
+
     def _cleanup_old_gen():
         try:
             # Call on the NEW graph: it holds the surviving gen and deletes

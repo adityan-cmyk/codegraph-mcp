@@ -75,14 +75,22 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 ### Operations and reliability
 - [x] **Postgres backups** — nightly pg_dump to another disk/object storage + tested restore (most important item here; Postgres is the source of truth)
 - [ ] Run tests before deploying (deployer already gates `last-good` on health; add the test gate)
-- [ ] Grafana alerting on tool latency / error rates / nightly sync failures (replace some cron+email)
-- [ ] Docker secrets instead of plain .env for SMTP password + auth tokens
+- [x] Grafana alerting — provisioned rules: backend down (2m), p95 latency >10s (5m), error rate >5% (5m); SMTP contact point + policies; nightly-sync stays cron+email (log-based rule would double-alert)
+- [ ] Docker secrets — deferred: UAM keys are hashed in Postgres, tokens are separate scoped secrets in a 600-mode gitignored .env; compose-secrets migration is a deploy-path risk
 - [ ] Neo4j indexes + constraints on symbol IDs and generation tags (traversal speed as graph grows)
-- [ ] Redis cache for hot queries, keyed by generation number (invalidates on rebuild)
-- [ ] Load-test MCP with realistic agent traffic; per-tool latency targets
-- [ ] Pin the ollama model by digest instead of mutable tag
+- [x] Redis cache — tagged (graph/git/tests), zlib-compressed, TTL hard-capped at 4h, gen-keyed + tag invalidation hooks on git sync and graph swap, Prometheus hit/miss/error metrics, admin flush endpoint
+- [x] Load-test — scripts/loadtest.py (concurrent workers, per-tool p50/p95/p99); baseline 2.5 req/s, 0 errors, semantic_search p99 3.9s
+- [x] Ollama model pinned — nimble copied to nimble-pinned-24e550a1 (digest-encoded name, blob-shared, immune to re-pulls)
 
 ### Adoption
-- [ ] Blast-radius summaries as PR comments (GitHub Action / webhook) for non-agent reviewers
-- [ ] Lite mode: compose profiles making observability + ollama optional for quick trials
+- [ ] Blast-radius summaries as PR comments (GitHub Action / webhook) — needs repo webhooks, deferred
+- [x] Lite mode — compose profiles: default = core (backend+postgres+redis+weaviate+neo4j+t2v); --profile ollama; --profile observability; all scripts use explicit service names so profiles are safe
 - [ ] Index progress endpoint (the 1-2h first index shouldn't be a black box)
+
+
+## Session additions (2026-10-03/04)
+- [x] UAM (user action model) — IAM-style roles + tool policies + paid-service tiers (free/pro/enterprise), hashed API keys, per-call policy+quota+audit, admin REST, legacy-token bootstrap fallback
+- [x] Token-bucket rate limiting (capacity 60, refill 1/s, per-user, runtime-tunable from the admin panel)
+- [x] Grafana admin dashboard (codegraph-admin): usage tables from uam_audit, Loki logs, cache panels, control card (rate limit, cache flush, user creation) — admin token lives in browser localStorage only, never in repo or Grafana DB
+- [x] Security hardening: separate scoped tokens per surface, constant-time compares, login buckets, grafana_ro restricted to uam_audit (no key hashes), security headers + CSP, CORS scoped to Grafana origin
+- [ ] Remaining from Phase 2: SCIP/rust-analyzer parsing (needs their build), crate-level Cargo.toml graph, cross-encoder reranker (CPU-bound), embedding model trial, semver-checks, GitHub Action PR comments

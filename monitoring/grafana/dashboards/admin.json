@@ -1,0 +1,135 @@
+{
+  "title": "codegraph-admin",
+  "uid": "cg-admin",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "type": "row", "title": "Overview", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2, "type": "stat", "title": "backend up",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "max(up{job=\"backend\"})" }],
+      "gridPos": { "h": 4, "w": 5, "x": 0, "y": 1 }
+    },
+    {
+      "id": 3, "type": "stat", "title": "tool calls / min",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(mcp_tool_calls_total[5m])) * 60" }],
+      "gridPos": { "h": 4, "w": 5, "x": 5, "y": 1 }
+    },
+    {
+      "id": 4, "type": "stat", "title": "p95 latency (ms)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(mcp_tool_latency_ms_bucket[5m])))" }],
+      "fieldConfig": { "defaults": { "unit": "ms", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 5000 }, { "color": "red", "value": 10000 } ] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 5, "x": 10, "y": 1 }
+    },
+    {
+      "id": 5, "type": "stat", "title": "error rate",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(mcp_tool_calls_total{status=\"error\"}[5m])) / clamp_min(sum(rate(mcp_tool_calls_total[5m])), 0.001)" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 0.02 }, { "color": "red", "value": 0.05 } ] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 4, "x": 15, "y": 1 }
+    },
+    {
+      "id": 6, "type": "stat", "title": "cache hit rate",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(rate(query_cache_hits_total[10m])) / clamp_min(sum(rate(query_cache_hits_total[10m])) + sum(rate(query_cache_misses_total[10m])), 0.001)" }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.3 }, { "color": "green", "value": 0.6 } ] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 1 }
+    },
+    {
+      "id": 10, "type": "row", "title": "Tool usage (uam_audit)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "calls over time by tool",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum by (tool) (rate(mcp_tool_calls_total[5m])) * 60", "legendFormat": "{{tool}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 }
+    },
+    {
+      "id": 12, "type": "table", "title": "calls by user (allowed / denied)",
+      "datasource": { "type": "postgres", "uid": "pg-oncall" },
+      "targets": [{
+        "refId": "A", "format": "table",
+        "rawSql": "SELECT user_name AS \"user\", count(*) FILTER (WHERE allowed) AS allowed, count(*) FILTER (WHERE NOT allowed) AS denied FROM uam_audit WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 2 DESC LIMIT 50"
+      }],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 }
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "audited calls over time",
+      "datasource": { "type": "postgres", "uid": "pg-oncall" },
+      "targets": [{
+        "refId": "A", "format": "time_series",
+        "rawSql": "SELECT $__timeGroupAlias(created_at, '5m'), count(*) AS calls, count(*) FILTER (WHERE NOT allowed) AS denied FROM uam_audit WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 1"
+      }],
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 14 }
+    },
+    {
+      "id": 14, "type": "table", "title": "top tools",
+      "datasource": { "type": "postgres", "uid": "pg-oncall" },
+      "targets": [{
+        "refId": "A", "format": "table",
+        "rawSql": "SELECT action AS tool, count(*) AS calls, count(*) FILTER (WHERE NOT allowed) AS denied FROM uam_audit WHERE $__timeFilter(created_at) GROUP BY 1 ORDER BY 2 DESC LIMIT 50"
+      }],
+      "gridPos": { "h": 7, "w": 7, "x": 12, "y": 14 }
+    },
+    {
+      "id": 15, "type": "table", "title": "recent denials",
+      "datasource": { "type": "postgres", "uid": "pg-oncall" },
+      "targets": [{
+        "refId": "A", "format": "table",
+        "rawSql": "SELECT created_at AS \"at\", user_name AS \"user\", action AS tool, reason FROM uam_audit WHERE NOT allowed AND $__timeFilter(created_at) ORDER BY created_at DESC LIMIT 25"
+      }],
+      "gridPos": { "h": 7, "w": 5, "x": 19, "y": 14 }
+    },
+    {
+      "id": 20, "type": "row", "title": "Cache", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 }
+    },
+    {
+      "id": 21, "type": "timeseries", "title": "cache stored bytes / errors",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "query_cache_bytes_stored", "legendFormat": "bytes" },
+        { "refId": "B", "expr": "rate(query_cache_errors_total[5m])", "legendFormat": "errors/s" }
+      ],
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 22 }
+    },
+    {
+      "id": 22, "type": "timeseries", "title": "hits vs misses",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "rate(query_cache_hits_total[5m])", "legendFormat": "hits/s" },
+        { "refId": "B", "expr": "rate(query_cache_misses_total[5m])", "legendFormat": "misses/s" }
+      ],
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 22 }
+    },
+    {
+      "id": 23, "type": "timeseries", "title": "index freshness (hours behind HEAD)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "index_stale_hours", "legendFormat": "hours" }],
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 22 }
+    },
+    {
+      "id": 30, "type": "row", "title": "Logs", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 }
+    },
+    {
+      "id": 31, "type": "logs", "title": "oncall-backend",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [{ "refId": "A", "expr": "{container=\"oncall-backend\"}", "queryType": "range" }],
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 30 }
+    },
+    {
+      "id": 40, "type": "row", "title": "Controls (admin token required — stored in your browser only)", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 }
+    },
+    {
+      "id": 41, "type": "text", "title": "control card",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 41 },
+      "options": { "mode": "html", "content": "<div id=\"cg-admin-card\" style=\"font-family: monospace; font-size: 13px;\">\n<style>\n#cg-admin-card button { margin: 4px; padding: 4px 10px; cursor: pointer; }\n#cg-admin-card input { margin: 2px; padding: 3px; }\n#cg-admin-card .ok { color: #33a; }\n#cg-admin-card .err { color: #c33; }\n#cg-admin-card pre { background: #f5f5f5; padding: 8px; overflow-x: auto; max-height: 300px; }\n#cg-admin-card fieldset { margin: 8px 0; border: 1px solid #ccc; }\n</style>\n<fieldset><legend>connection</legend>\nAPI base <input id=\"cg-api\" size=\"28\" placeholder=\"http://tharun-pc:8000\">\nadmin token <input id=\"cg-token\" type=\"password\" size=\"40\">\n<button onclick=\"cgSaveConn()\">save</button> <span id=\"cg-conn-state\"></span>\n</fieldset>\n<fieldset><legend>rate limit (token bucket)</legend>\ncapacity <input id=\"cg-cap\" size=\"4\" value=\"60\"> refill/sec <input id=\"cg-refill\" size=\"4\" value=\"1\">\n<button onclick=\"cgGetRate()\">show</button> <button onclick=\"cgSetRate()\">save</button>\n</fieldset>\n<fieldset><legend>cache</legend>\n<button onclick=\"cgCacheStats()\">stats</button>\n<button onclick=\"cgFlush('')\">flush all</button>\n<button onclick=\"cgFlush('graph')\">invalidate graph</button>\n<button onclick=\"cgFlush('git')\">invalidate git</button>\n<button onclick=\"cgFlush('tests')\">invalidate tests</button>\n</fieldset>\n<fieldset><legend>users</legend>\nname <input id=\"cg-uname\" size=\"14\"> tier <select id=\"cg-utier\"><option>free</option><option>pro</option><option>enterprise</option></select>\nroles <input id=\"cg-uroles\" size=\"24\" value=\"viewer\" title=\"comma-separated: viewer,reviewer,operator,admin\">\n<button onclick=\"cgCreateUser()\">create</button> <button onclick=\"cgListUsers()\">list</button>\n<div>revoke/patch: PATCH /api/uam/users/&lt;name&gt; via curl with the same token</div>\n</fieldset>\n<fieldset><legend>usage</legend>\n<button onclick=\"cgUsage()\">last 7 days</button>\n</fieldset>\n<pre id=\"cg-out\">—</pre>\n</div>\n<script>\n(function() {\n  var $ = function(id) { return document.getElementById(id); };\n  $('cg-api').value = localStorage.getItem('cg_api') || 'http://tharun-pc:8000';\n  $('cg-token').value = localStorage.getItem('cg_token') || '';\n  window.cgSaveConn = function() {\n    localStorage.setItem('cg_api', $('cg-api').value.replace(/\\/$/, ''));\n    localStorage.setItem('cg_token', $('cg-token').value);\n    $('cg-conn-state').textContent = 'saved in this browser only';\n  };\n  function api(method, path, body) {\n    var base = localStorage.getItem('cg_api') || 'http://tharun-pc:8000';\n    var tok = localStorage.getItem('cg_token') || '';\n    if (!tok) { $('cg-out').textContent = 'enter the admin token first (connection box)'; return; }\n    fetch(base + path, {\n      method: method,\n      headers: { 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },\n      body: body ? JSON.stringify(body) : undefined\n    }).then(function(r) { return r.json().then(function(j) { return { ok: r.ok, j: j }; }); })\n      .then(function(x) {\n        $('cg-out').textContent = JSON.stringify(x.j, null, 2);\n        $('cg-out').className = x.ok ? 'ok' : 'err';\n        if (x.j && x.j.api_key) alert('NEW API KEY (shown once): ' + x.j.api_key);\n      })\n      .catch(function(e) { $('cg-out').textContent = 'request failed: ' + e; $('cg-out').className = 'err'; });\n  }\n  window.cgGetRate = function() { api('GET', '/api/admin/rate-limit'); };\n  window.cgSetRate = function() {\n    api('PUT', '/api/admin/rate-limit?capacity=' + encodeURIComponent($('cg-cap').value) + '&refill_per_sec=' + encodeURIComponent($('cg-refill').value));\n  };\n  window.cgCacheStats = function() { api('GET', '/api/admin/cache'); };\n  window.cgFlush = function(tag) { api('POST', '/api/admin/cache/flush' + (tag ? '?tag=' + tag : '')); };\n  window.cgCreateUser = function() {\n    api('POST', '/api/uam/users?name=' + encodeURIComponent($('cg-uname').value) + '&tier=' + $('cg-utier').value + '&roles=' + encodeURIComponent($('cg-uroles').value));\n  };\n  window.cgListUsers = function() { api('GET', '/api/uam/users'); };\n  window.cgUsage = function() { api('GET', '/api/admin/usage?days=7'); };\n})();\n</script>" }
+    }
+  ]
+}

@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     # Auth
     api_auth_token: str | None = None
     mcp_auth_token: str | None = None
+    admin_panel_token: str | None = None
 
     # SMTP notifications
     smtp_host: str | None = None

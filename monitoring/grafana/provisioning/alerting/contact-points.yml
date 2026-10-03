@@ -1,0 +1,12 @@
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: email-oncall
+    receivers:
+      - uid: email-oncall-1
+        type: email
+        settings:
+          addresses: ${SMTP_TO_JSON_INLINE}
+          singleEmail: false
+        disableResolveMessage: false

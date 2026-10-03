@@ -10,13 +10,20 @@ router = APIRouter(prefix="/api/uam", tags=["uam"])
 
 
 def _require_admin(request: Request) -> None:
+    import hmac
+
     from app.core.config import settings
 
-    token = settings.api_auth_token
-    if not token:
-        raise HTTPException(status_code=503, detail="API auth not configured")
-    auth = request.headers.get("authorization", "")
-    if not auth.startswith("Bearer ") or auth[7:] != token:
+    # Either server-side admin credential works: the REST API token
+    # (programmatic) or the panel token (Grafana control card). They are
+    # separate secrets on purpose — one leak never unlocks both surfaces.
+    tokens = [t for t in (settings.api_auth_token, settings.admin_panel_token) if t]
+    if not tokens:
+        raise HTTPException(status_code=503, detail="admin auth not configured")
+    provided = request.headers.get("authorization", "")
+    if not provided.startswith("Bearer ") or not any(
+        hmac.compare_digest(provided[7:], t) for t in tokens
+    ):
         raise HTTPException(status_code=401, detail="admin token required")
 
 

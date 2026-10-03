@@ -1,0 +1,72 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: mcp-health
+    folder: codegraph
+    interval: 1m
+    rules:
+      - uid: mcp-backend-down
+        title: MCP backend down
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 120, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: max(up{job="backend"})
+              intervalMs: 60000
+              maxDataPoints: 1
+              conditions:
+                - evaluator: { type: lt, params: [1] }
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        for: 2m
+        noDataState: Alerting
+        annotations:
+          summary: "backend up == 0 for 2m — container down or scrape target unreachable"
+        labels:
+          severity: critical
+      - uid: mcp-p95-latency
+        title: MCP tool p95 latency high
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: histogram_quantile(0.95, sum by (le) (rate(mcp_tool_latency_ms_bucket[5m])))
+              intervalMs: 60000
+              maxDataPoints: 1
+              conditions:
+                - evaluator: { type: gt, params: [10000] }
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        for: 5m
+        annotations:
+          summary: "p95 tool latency > 10s for 5m — check embedding/ollama load"
+        labels:
+          severity: warning
+      - uid: mcp-error-rate
+        title: MCP tool error rate high
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(mcp_tool_calls_total{status="error"}[5m])) / clamp_min(sum(rate(mcp_tool_calls_total[5m])), 0.001)
+              intervalMs: 60000
+              maxDataPoints: 1
+              conditions:
+                - evaluator: { type: gt, params: [0.05] }
+                  query: { params: [A] }
+                  reducer: { type: last, params: [] }
+                  type: query
+        for: 5m
+        annotations:
+          summary: ">5% of tool calls erroring for 5m"
+        labels:
+          severity: warning
