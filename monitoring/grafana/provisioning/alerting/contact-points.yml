@@ -7,6 +7,9 @@ contactPoints:
       - uid: email-oncall-1
         type: email
         settings:
-          addresses: ${SMTP_TO_JSON_INLINE}
+          # recipient is not a secret (present in every alert email) —
+          # env interpolation is unreliable in alerting provisioning and
+          # an empty addresses field is FATAL for grafana startup
+          addresses: adityanelli@gmail.com
           singleEmail: false
         disableResolveMessage: false
