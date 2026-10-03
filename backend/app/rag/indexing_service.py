@@ -453,6 +453,11 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
     current_gen = _get_current_gen()
     new_gen = current_gen + 1
     logger.info("Building new graph (gen %d) alongside existing (gen %d) — zero-downtime", new_gen, current_gen)
+    try:
+        from app.core.prom_metrics import INDEX_REBUILD_IN_PROGRESS
+        INDEX_REBUILD_IN_PROGRESS.set(1)
+    except Exception:
+        pass
 
     if hasattr(semantic_index, 'get_active_collection_name'):
         weaviate_col = semantic_index.get_active_collection_name()
@@ -507,6 +512,11 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
     logger.info("New graph (gen %d) built: %d nodes, %d edges — swapping", new_gen, new_stats["graph_nodes"], new_stats["graph_edges"])
 
     old_graph = graph_index.swap(new_graph, build_id=build_id)
+    try:
+        from app.core.prom_metrics import INDEX_REBUILD_IN_PROGRESS
+        INDEX_REBUILD_IN_PROGRESS.set(0)
+    except Exception:
+        pass
 
     # New generation active — gen-keyed entries miss anyway, but tagged
     # graph answers (blast radius etc.) from the PREVIOUS gen still occupy
@@ -574,6 +584,11 @@ def _rebuild_semantic_index(snapshot: IndexSnapshot, *, force: bool = False) -> 
     import time as _time
     _start = _time.time()
     try:
+        from app.core.prom_metrics import INDEX_REBUILD_IN_PROGRESS
+        INDEX_REBUILD_IN_PROGRESS.set(1)
+    except Exception:
+        pass
+    try:
         _wait_for_weaviate_ready()
         if not force:
             existing_stats = semantic_index.get_stats()
@@ -611,6 +626,11 @@ def _rebuild_semantic_index(snapshot: IndexSnapshot, *, force: bool = False) -> 
         with _semantic_rebuild_lock:
             _semantic_rebuild_in_progress = False
             logger.info("Semantic rebuild complete")
+        try:
+            from app.core.prom_metrics import INDEX_REBUILD_IN_PROGRESS
+            INDEX_REBUILD_IN_PROGRESS.set(0)
+        except Exception:
+            pass
 
 
 def _start_semantic_rebuild_background(snapshot: IndexSnapshot, *, force: bool = False) -> None:
