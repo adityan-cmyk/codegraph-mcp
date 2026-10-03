@@ -15,6 +15,9 @@ class CodeChunk(BaseModel):
     # symbols stay in the index (get_tests_for_symbol needs them) but are
     # excluded from risk scoring.
     is_test: bool = False
+    # "pub" | "pub_crate" | "private" — a private fn's blast radius is
+    # contained by its module; a pub one's is not. Weighted into risk.
+    visibility: str = "private"
 
 
 class SemanticMatch(BaseModel):

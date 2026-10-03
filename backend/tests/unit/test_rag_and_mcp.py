@@ -1029,3 +1029,34 @@ class ContractDriftTestCase(unittest.TestCase):
         prompt = readonly_server._PROMPTS["pr_review"]
         self.assertTrue(any("{diff}" in m["content"].get("text", "") for m in prompt["messages"]),
                         "pr_review prompt must accept the diff argument")
+
+    def test_visibility_detection_and_risk(self):
+        from app.rag.ingestion.tree_sitter import extract_rust_chunks
+        src = "\n".join([
+            "pub fn public_api() {}",
+            "pub(crate) fn crate_wide() {}",
+            "fn internal_helper() {}",
+        ])
+        chunks = {c.symbol_id.split("::")[-1]: c for c in extract_rust_chunks("crates/v.rs", src)}
+        self.assertEqual(chunks["public_api"].visibility, "pub")
+        self.assertEqual(chunks["crate_wide"].visibility, "pub_crate")
+        self.assertEqual(chunks["internal_helper"].visibility, "private")
+
+    def test_private_symbol_risk_relief(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        from app.rag.retrieval.graph import graph_index
+        graph_index.upsert_symbol("crates::x::private_fn", metadata={"kind": "fn"})
+        for i in range(15):  # 15 callers would be 'high' for a pub symbol
+            graph_index.upsert_symbol(f"crates::x::c{i}", calls=["crates::x::private_fn"], metadata={"kind": "fn"})
+        from app.mcp.tools import graph_read_tools as grt
+        snap = SimpleNamespace(chunks=[
+            SimpleNamespace(symbol_id="crates::x::private_fn", file_path="crates/x.rs",
+                            start_line=1, end_line=5, is_test=False, kind="fn", visibility="private"),
+        ])
+        with patch("app.core.index_store.index_metadata_store.load_snapshot", return_value=snap):
+            out = grt.get_blast_radius("crates::x::private_fn")
+        self.assertEqual(out["visibility"], "private")
+        self.assertIn("visibility_relief", out["risk_factors"])
+        # 15 callers * 0.4 = 6 effective -> below the >10 'high' threshold
+        self.assertEqual(out["risk_score"], "medium")

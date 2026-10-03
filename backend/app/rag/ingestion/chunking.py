@@ -10,6 +10,7 @@ def build_code_chunk(
     start_line: int,
     end_line: int,
     is_test: bool = False,
+    visibility: str = "private",
 ) -> CodeChunk:
     return CodeChunk(
         symbol_id=symbol_id,
@@ -19,4 +20,5 @@ def build_code_chunk(
         start_line=start_line,
         end_line=end_line,
         is_test=is_test,
+        visibility=visibility,
     )

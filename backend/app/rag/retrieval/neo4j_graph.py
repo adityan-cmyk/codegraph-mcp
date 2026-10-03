@@ -73,7 +73,8 @@ class Neo4jGraphIndex:
                         s.start_line = $start_line,
                         s.end_line = $end_line,
                         s.module = $module,
-                        s.is_test = $is_test
+                        s.is_test = $is_test,
+                        s.visibility = $visibility
                     """,
                     symbol_id=symbol_id,
                     gen=gen,
@@ -83,6 +84,7 @@ class Neo4jGraphIndex:
                     end_line=metadata.get("end_line", 0),
                     module=metadata.get("module", ""),
                     is_test=metadata.get("is_test", False),
+                    visibility=metadata.get("visibility", "private"),
                 )
             else:
                 session.run(
