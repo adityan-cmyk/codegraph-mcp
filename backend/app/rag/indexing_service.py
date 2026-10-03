@@ -509,7 +509,9 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
 
     def _cleanup_old_gen():
         try:
-            old_graph.cleanup_other_gens()
+            # Call on the NEW graph: it holds the surviving gen and deletes
+            # every other. The old instance may be dead or mid-kill.
+            new_graph.cleanup_other_gens()
             logger.info("Cleaned up graph generations older than current (gen %d)", new_gen)
         except Exception:
             logger.warning("Failed to clean up old graph generation", exc_info=True)
