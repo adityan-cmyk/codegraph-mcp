@@ -881,3 +881,51 @@ class ContractDriftTestCase(unittest.TestCase):
         out = grt.get_blast_radius("crates::x::pay")
         self.assertEqual(out["test_caller_count"], 12)
         self.assertEqual(out["risk_score"], "low", "12 test-only callers must not inflate production risk")
+
+    def test_recent_changes_near(self):
+        from unittest.mock import patch
+        from app.rag.retrieval.graph import graph_index
+        from types import SimpleNamespace
+        graph_index.upsert_symbol("crates::x::pay", metadata={"kind": "fn", "file_path": "crates/x/pay.rs"})
+        graph_index.upsert_symbol("crates::x::caller", calls=["crates::x::pay"], metadata={"kind": "fn", "file_path": "crates/x/caller.rs"})
+        snap = SimpleNamespace(chunks=[
+            SimpleNamespace(symbol_id="crates::x::pay", file_path="crates/x/pay.rs", start_line=1, end_line=10, is_test=False, kind="fn"),
+            SimpleNamespace(symbol_id="crates::x::caller", file_path="crates/x/caller.rs", start_line=1, end_line=5, is_test=False, kind="fn"),
+        ])
+        fake_history = [
+            {"hash": "a" * 40, "date": "2026-10-01T10:00:00 +0000", "author": "dev1", "subject": "fix pay", "files": ["crates/x/pay.rs"]},
+            {"hash": "b" * 40, "date": "2026-09-28T10:00:00 +0000", "author": "dev2", "subject": "tune caller", "files": ["crates/x/caller.rs"]},
+            {"hash": "c" * 40, "date": "2026-09-20T10:00:00 +0000", "author": "dev3", "subject": "unrelated", "files": ["crates/other.rs"]},
+        ]
+        from app.mcp.tools import graph_read_tools as grt
+        with patch("app.rag.ingestion.git_ingestor.get_recent_history", return_value=fake_history), \
+             patch("app.core.index_store.index_metadata_store.load_snapshot", return_value=snap):
+            out = grt.recent_changes_near("crates::x::pay", days=30)
+        self.assertEqual(out["direct_commit_count"], 1)
+        self.assertEqual(out["direct_commits"][0]["subject"], "fix pay")
+        self.assertEqual(out["blast_radius_commit_count"], 1, "caller file commit must surface via blast radius")
+        self.assertEqual(out["blast_radius_commits"][0]["subject"], "tune caller")
+
+    def test_find_hotspots(self):
+        from unittest.mock import patch
+        from app.rag.retrieval.graph import graph_index
+        from types import SimpleNamespace
+        # churny, connected, untested -> hotspot
+        graph_index.upsert_symbol("crates::x::hot", metadata={"kind": "fn", "file_path": "crates/x/hot.rs"})
+        for i in range(8):
+            graph_index.upsert_symbol(f"crates::x::c{i}", calls=["crates::x::hot"], metadata={"kind": "fn", "file_path": "crates/x/other.rs"})
+        # churny but trivial, no symbols
+        snap = SimpleNamespace(chunks=[
+            SimpleNamespace(symbol_id="crates::x::hot", file_path="crates/x/hot.rs", start_line=1, end_line=20, is_test=False, kind="fn"),
+        ])
+        fake_churn = {"crates/x/hot.rs": 9, "crates/x/empty.rs": 50}
+        from app.mcp.tools import graph_read_tools as grt
+        with patch("app.rag.ingestion.git_ingestor.get_file_churn", return_value=fake_churn), \
+             patch("app.core.index_store.index_metadata_store.load_snapshot", return_value=snap):
+            out = grt.find_hotspots(days=30)
+        self.assertEqual(out["hotspot_count"], 1, "empty.rs has churn but no indexed symbols")
+        h = out["hotspots"][0]
+        self.assertEqual(h["file_path"], "crates/x/hot.rs")
+        self.assertEqual(h["components"]["commits"], 9)
+        self.assertEqual(h["anchor_symbol"]["test_callers"], 0)
+        self.assertGreater(h["score"], 9, "untested + connected must amplify beyond raw churn")

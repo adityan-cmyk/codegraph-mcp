@@ -78,6 +78,29 @@ class InMemoryGraphIndex:
     def get_test_symbol_ids(self) -> set[str]:
         return {sid for sid, meta in self._metadata.items() if meta.get("is_test")}
 
+    def get_symbol_degrees(self) -> dict[str, int]:
+        """Total edge degree per symbol — one bulk query for hotspot ranking."""
+        degrees: dict[str, int] = {}
+        for source, targets in self._downstream.items():
+            degrees[source] = degrees.get(source, 0) + len(targets)
+        for source, targets in self._uses.items():
+            degrees[source] = degrees.get(source, 0) + len(targets)
+        for source, targets in self._upstream.items():
+            degrees[source] = degrees.get(source, 0) + len(targets)
+        for source, targets in self._used_by.items():
+            degrees[source] = degrees.get(source, 0) + len(targets)
+        return degrees
+
+    def get_test_caller_counts(self) -> dict[str, int]:
+        """Test-caller count per production symbol — bulk coverage map."""
+        tests = self.get_test_symbol_ids()
+        counts: dict[str, int] = {}
+        for target, sources in self._upstream.items():
+            n = len(sources & tests)
+            if n:
+                counts[target] = n
+        return counts
+
     def get_stats(self) -> dict[str, int]:
         node_ids = set(self._upstream) | set(self._downstream) | set(self._used_by) | set(self._uses)
         edge_count = (
@@ -217,6 +240,18 @@ class GraphIndexProxy:
         if hasattr(backend, "get_test_symbol_ids"):
             return backend.get_test_symbol_ids()
         return set()
+
+    def get_symbol_degrees(self) -> dict[str, int]:
+        backend = self._active()
+        if hasattr(backend, "get_symbol_degrees"):
+            return backend.get_symbol_degrees()
+        return {}
+
+    def get_test_caller_counts(self) -> dict[str, int]:
+        backend = self._active()
+        if hasattr(backend, "get_test_caller_counts"):
+            return backend.get_test_caller_counts()
+        return {}
 
     def get_stats(self) -> dict[str, int]:
         return self._active().get_stats()

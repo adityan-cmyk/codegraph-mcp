@@ -319,6 +319,29 @@ class Neo4jGraphIndex:
             )
             return {row["id"] for row in result}
 
+    def get_symbol_degrees(self) -> dict[str, int]:
+        with self._get_driver().session() as session:
+            result = session.run(
+                """
+                MATCH (n:Symbol {gen: $gen})
+                OPTIONAL MATCH (n)-[r]-()
+                RETURN n.id AS id, count(r) AS degree
+                """,
+                gen=self._gen,
+            )
+            return {row["id"]: row["degree"] for row in result}
+
+    def get_test_caller_counts(self) -> dict[str, int]:
+        with self._get_driver().session() as session:
+            result = session.run(
+                """
+                MATCH (t:Symbol {is_test: true, gen: $gen})-[:CALLS]->(x:Symbol {gen: $gen})
+                RETURN x.id AS id, count(t) AS n
+                """,
+                gen=self._gen,
+            )
+            return {row["id"]: row["n"] for row in result}
+
     def get_stats(self) -> dict[str, int]:
         with self._get_driver().session() as session:
             node_result = session.run(

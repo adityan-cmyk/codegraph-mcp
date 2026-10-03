@@ -12,7 +12,7 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [x] MCP timeout ~30s/question — batch or parallelize questions; document the hard limit
 
 ### P1 — Data quality (the graph must not lie)
-- [ ] Strip generic-param mangling from symbol ids (`_S`, `_C_`, `_F_`, `_T_` monomorphization artifacts)
+- [x] Strip generic-param mangling from symbol ids (`_S`, `_C_`, `_F_`, `_T_` monomorphization artifacts) (`92728a4`, reinforcement rebuilt from raw events)
 - [x] Phantom high-confidence edges — calibrate confidence on resolved targets, not edge count; deweight hub names
 - [x] Separate `called_by` from `referenced_by` in blast radius output (TtumStatus "208 callers" is mostly field refs)
 - [x] Index `src/scripts/*` and bins; surface per-file coverage stats (generators/mod.rs was 13/23)
@@ -50,8 +50,8 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 ### New tools
 - [x] `get_tests_for_symbol` — which tests reach a symbol ("12 callers, 0 tests") — shipped with risk-score test exclusion + is_test extraction
 - [x] `resolve_stacktrace` — map panic backtraces / file:line logs to symbols + neighborhoods
-- [ ] `recent_changes_near` — commits from last N days touching a symbol or its blast radius
-- [ ] `find_hotspots` — high-churn + highly-connected + poorly-tested, ranked
+- [x] `recent_changes_near` — commits from last N days touching a symbol or its blast radius
+- [x] `find_hotspots` — high-churn + highly-connected + poorly-tested, ranked
 - [ ] `find_cycles` — dependency cycles between modules/crates
 - [x] `find_dead_code` — no callers outside tests; false positives double as parser-accuracy checks
 
