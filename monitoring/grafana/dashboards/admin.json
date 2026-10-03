@@ -472,7 +472,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "{container=\"oncall-backend\"} |= `\"level\":\"ERROR\"` or \"level\":\"WARNING\"",
+          "expr": "{container=\"oncall-backend\"} |~ \"\\\"level\\\":\\\"(ERROR|WARNING)\\\"\"",
           "queryType": "range"
         }
       ],
