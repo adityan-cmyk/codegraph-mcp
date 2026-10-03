@@ -53,18 +53,28 @@ send_email(subject='''$1''', body_html='<div>$2</div>')
 
 host_notify() {
     set -a; . ./.env; set +a
-    python3 - "$1" "$2" <<'PYEOF'
-import json, os, smtplib, sys
+    python3 - "$1" "$2" <<'PYEOF' || log "ALERT EMAIL FAILED for: $1"
+import json, os, smtplib, sys, time
 from email.mime.text import MIMEText
 subject, body = sys.argv[1], sys.argv[2]
 m = MIMEText(body, "html")
 m["Subject"] = subject
 m["From"] = os.environ["SMTP_FROM"]
 m["To"] = ", ".join(json.loads(os.environ["SMTP_TO"]))
-with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"])) as s:
-    s.starttls()
-    s.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
-    s.send_message(m)
+last_exc = None
+for attempt in range(3):
+    try:
+        with smtplib.SMTP(os.environ["SMTP_HOST"], int(os.environ["SMTP_PORT"]), timeout=30) as s:
+            s.starttls()
+            s.login(os.environ["SMTP_USER"], os.environ["SMTP_PASSWORD"])
+            s.send_message(m)
+        sys.exit(0)
+    except Exception as exc:
+        last_exc = exc
+        print(f"host_notify attempt {attempt + 1}/3 failed: {exc}", file=sys.stderr)
+        time.sleep(20)
+print(f"host_notify gave up after 3 attempts: {last_exc}", file=sys.stderr)
+sys.exit(1)
 PYEOF
 }
 
