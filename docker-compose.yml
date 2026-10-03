@@ -294,6 +294,7 @@ services:
       GF_SMTP_PASSWORD: "${SMTP_PASSWORD}"
       GF_SMTP_FROM: "${SMTP_FROM}"
       GF_SMTP_SKIP_VERIFY: "false"
+      SMTP_TO_CSV: "${SMTP_TO_CSV}"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/overview.json
     volumes:
