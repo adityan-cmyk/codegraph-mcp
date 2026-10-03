@@ -85,6 +85,8 @@ class WeaviateSemanticIndex:
         self._shadow_collection: str | None = None
         self._lock = threading.Lock()
         self._collection_history: list[str] = []
+        self._progress_total = 0
+        self._progress_done = 0
 
     def _detect_active_collection(self) -> str:
         try:
@@ -312,6 +314,8 @@ class WeaviateSemanticIndex:
         batch_size = 20
         embed_batch_size = 64
 
+        self._progress_total = len(chunks)
+        self._progress_done = 0
         for i in range(0, len(chunks), embed_batch_size):
             batch_chunks = chunks[i:i + embed_batch_size]
             enriched = [_enrich_text(c.symbol_id, c.content) for c in batch_chunks]
@@ -342,6 +346,19 @@ class WeaviateSemanticIndex:
             except Exception:
                 pass
             logger.info("Embedded and inserted %d/%d chunks (collection: %s)", min(i + embed_batch_size, len(chunks)), len(chunks), write_name)
+            self._progress_done = min(i + embed_batch_size, len(chunks))
+
+    def get_rebuild_progress(self) -> dict | None:
+        """Embedding progress for an in-flight rebuild, else None."""
+        total = getattr(self, "_progress_total", 0)
+        done = getattr(self, "_progress_done", 0)
+        if not total or done >= total:
+            return None
+        return {
+            "chunks_done": done,
+            "chunks_total": total,
+            "percent": round(100.0 * done / total, 1),
+        }
 
     # ---- reads (always hit active collection) ----
 

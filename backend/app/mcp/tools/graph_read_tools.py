@@ -1113,8 +1113,17 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
 
     try:
         from app.rag.reinforcement import feedback_store
-        boost_weights = feedback_store.get_boost_weights()
+        global_boosts = feedback_store.get_boost_weights()
         expansions = feedback_store.get_query_expansions(query)
+        # Query-conditioned boosts: symbols helpful for SIMILAR past queries
+        # replace the global weights — a payment-helpful symbol must not be
+        # boosted for a dormancy query. Global weights are the cold-start
+        # fallback for query shapes never seen before.
+        similar_boosts = feedback_store.get_similar_query_boosts(query, limit=5)
+        if similar_boosts:
+            boost_weights = similar_boosts
+        else:
+            boost_weights = global_boosts
     except Exception:
         boost_weights = {}
         expansions = []
