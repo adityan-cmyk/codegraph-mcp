@@ -40,9 +40,14 @@ class Neo4jGraphIndex:
             )
 
     def cleanup_other_gens(self) -> None:
+        """Delete every generation EXCEPT this backend's own. Called on the
+        new graph after a swap — previous gens are also leaked by container
+        restarts mid-build (deploy kills the active backend before its
+        cleanup), so cleaning only the retired gen left stale nodes behind
+        (gens 2/3/5 lingered with 22k nodes)."""
         with self._get_driver().session() as session:
             session.run(
-                "MATCH (n:Symbol {gen: $gen}) DETACH DELETE n",
+                "MATCH (n:Symbol) WHERE n.gen <> $gen DETACH DELETE n",
                 gen=self._gen,
             )
 
