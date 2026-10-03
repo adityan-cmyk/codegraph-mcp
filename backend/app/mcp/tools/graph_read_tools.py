@@ -919,6 +919,87 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
     }
 
 
+def find_cycles(min_size: int = 2, limit: int = 10) -> dict[str, object]:
+    """Find dependency cycles between modules — strongly connected components in the module-level call/type graph. Circular dependencies make changes ripple unpredictably and block clean testing; use this to find refactoring targets. Read-only, safe to call anytime."""
+    limit = max(1, min(limit, 30))
+
+    edges = graph_index.get_module_edges()
+    if not edges:
+        return {"cycles": [], "cycle_count": 0, "note": "no cross-module edges in the graph"}
+
+    # Tarjan strongly connected components, iterative (no recursion limits)
+    graph: dict[str, list[str]] = {}
+    for src, dst in edges:
+        graph.setdefault(src, []).append(dst)
+
+    index_counter = [0]
+    index: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    on_stack: set[str] = set()
+    stack: list[str] = []
+    sccs: list[list[str]] = []
+
+    for root in graph:
+        if root in index:
+            continue
+        work = [(root, iter(graph[root]))]
+        while work:
+            node, it = work[-1]
+            if node not in index:
+                index[node] = lowlink[node] = index_counter[0]
+                index_counter[0] += 1
+                stack.append(node)
+                on_stack.add(node)
+            advanced = False
+            for succ in it:
+                if succ not in graph:
+                    continue
+                if succ not in index:
+                    work.append((succ, iter(graph[succ])))
+                    advanced = True
+                    break
+                if succ in on_stack:
+                    lowlink[node] = min(lowlink[node], index[succ])
+            if advanced:
+                continue
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                lowlink[parent] = min(lowlink[parent], lowlink[node])
+            if lowlink[node] == index[node]:
+                component: list[str] = []
+                while True:
+                    w = stack.pop()
+                    on_stack.discard(w)
+                    component.append(w)
+                    if w == node:
+                        break
+                if len(component) >= max(min_size, 2):
+                    sccs.append(sorted(component))
+
+    def cycle_score(comp: list[str]) -> int:
+        comp_set = set(comp)
+        return sum(1 for s, d in edges if s in comp_set and d in comp_set)
+
+    sccs.sort(key=lambda c: (-cycle_score(c), c))
+    cycles = [
+        {
+            "modules": comp,
+            "module_count": len(comp),
+            "internal_edges": cycle_score(comp),
+        }
+        for comp in sccs[:limit]
+    ]
+    return {
+        "cycle_count": len(sccs),
+        "cycles": cycles,
+        "note": (
+            f"{len(sccs)} strongly connected module group(s); largest has "
+            f"{max((len(c) for c in sccs), default=0)} modules"
+        ) if sccs else "no module-level cycles found — the dependency graph is acyclic at module level",
+    }
+
+
 # ============================================================================
 # Idea 2: Enhanced search_symbols with alias map + file path + fuzzy matching
 # ============================================================================

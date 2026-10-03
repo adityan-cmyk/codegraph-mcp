@@ -958,3 +958,15 @@ class ContractDriftTestCase(unittest.TestCase):
         self.assertAlmostEqual(out["mrr"], 0.5)  # rank-1 hit + one miss
         self.assertEqual(out["miss_count"], 1)
         self.assertEqual(out["misses"][0]["query"], "other thing")
+
+    def test_find_cycles(self):
+        from app.rag.retrieval.graph import graph_index
+        from app.mcp.tools import graph_read_tools as grt
+        # a::x <-> b::y cycle, c::z independent
+        graph_index.upsert_symbol("a::x", calls=["b::y"], metadata={"kind": "fn"})
+        graph_index.upsert_symbol("b::y", calls=["a::x"], metadata={"kind": "fn"})
+        graph_index.upsert_symbol("c::z", calls=["a::x"], metadata={"kind": "fn"})
+        out = grt.find_cycles()
+        self.assertEqual(out["cycle_count"], 1)
+        self.assertEqual(out["cycles"][0]["modules"], ["a", "b"])
+        self.assertEqual(out["cycles"][0]["internal_edges"], 2)
