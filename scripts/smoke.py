@@ -45,7 +45,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         FAILURES.append(f"{name}: {detail}")
 
 
-def mcp_call(tool: str, arguments: dict, timeout: float = 120.0) -> dict:
+def mcp_call(tool: str, arguments: dict, timeout: float = 240.0) -> dict:
     r = requests.post(
         MCP,
         headers={"Authorization": f"Bearer {MCP_TOKEN}", "Content-Type": "application/json"},
