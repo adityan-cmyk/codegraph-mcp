@@ -1090,3 +1090,71 @@ class ContractDriftTestCase(unittest.TestCase):
                 self.assertIsNone(qc.cache_get("blast_radius", {"symbol_id": "x"}))
         finally:
             qc._CLIENT = None
+
+class TokenBucketTestCase(unittest.TestCase):
+    def test_no_boundary_burst(self):
+        """The fixed-window exploit: 60 calls at second 59 + 59 more at
+        second 61 must NOT all pass — the bucket refills continuously."""
+        from app.core.token_bucket import TokenBucket
+        b = TokenBucket(capacity=60, refill_per_sec=1.0)
+        # first burst of 60 drains the bucket
+        allowed_first = [b.take()[0] for _ in range(60)]
+        self.assertTrue(all(allowed_first))
+        # 2 seconds later only ~2 tokens have refilled
+        b.updated -= 2.0  # simulate elapsed time
+        allowed, retry = b.take()
+        self.assertTrue(allowed)          # 1st refilled token
+        allowed, retry = b.take()
+        self.assertTrue(allowed)          # 2nd refilled token
+        denied, retry = b.take()
+        self.assertFalse(denied)          # 3rd within ~2s -> denied
+        self.assertGreaterEqual(retry, 1.0)
+
+    def test_sustained_rate(self):
+        from app.core.token_bucket import TokenBucket
+        b = TokenBucket(capacity=5, refill_per_sec=10.0)
+        # instant burst = capacity only
+        results = [b.take()[0] for _ in range(10)]
+        self.assertEqual(sum(results), 5)
+        # consuming slower than refill always passes: 10 calls, 0.5s apart
+        passed = 0
+        for _ in range(10):
+            b.updated -= 0.5  # 5 tokens refill between calls
+            passed += b.take()[0]
+        self.assertEqual(passed, 10)
+
+    def test_registry_creates_and_reuses(self):
+        from app.core import token_bucket as tb
+        ok1, _ = tb.take_tokens("k", 10, 1.0, n=10)
+        ok2, _ = tb.take_tokens("k", 10, 1.0, n=1)
+        self.assertTrue(ok1)
+        self.assertFalse(ok2, "bucket must persist across take_tokens calls")
+
+
+class UAMTestCase(unittest.TestCase):
+    def test_policy_matching(self):
+        from app.core import uam
+        user = uam.UAMUser("alice", "h", ["viewer"], "free", True)
+        self.assertTrue(uam.check_access(user, "search_symbols")[0])
+        self.assertTrue(uam.check_access(user, "get_blast_radius")[0])
+        ok, reason = uam.check_access(user, "make_decision")
+        self.assertFalse(ok)
+        self.assertIn("no policy", reason)
+        # reviewer+operator roles unlock more
+        user2 = uam.UAMUser("bob", "h", ["viewer", "reviewer", "operator"], "pro", True)
+        self.assertTrue(uam.check_access(user2, "analyze_pr_diff")[0])
+        self.assertTrue(uam.check_access(user2, "make_decision")[0])
+        # tier gates roles: free tier cannot hold operator even if listed
+        user3 = uam.UAMUser("eve", "h", ["operator"], "free", True)
+        self.assertFalse(uam.check_access(user3, "make_decision")[0])
+
+    def test_protocol_methods_always_allowed(self):
+        from app.core import uam
+        user = uam.UAMUser("alice", "h", [], "free", True)
+        for m in ("tools/list", "ping", "prompts/list"):
+            self.assertTrue(uam.check_access(user, m)[0])
+
+    def test_tier_definitions(self):
+        from app.core import uam
+        self.assertEqual(uam.TIERS["free"]["daily_calls"], 200)
+        self.assertIsNone(uam.TIERS["enterprise"]["daily_calls"])

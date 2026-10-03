@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request, Response
 from app.api.routers.feedback import router as feedback_router
 from app.api.routers.graph import router as graph_router
 from app.api.routers.indexing import router as indexing_router
+from app.api.routers.uam import router as uam_router
 from app.core.config import settings
 from app.core.health import check_all_backends, check_readiness
 from app.core.metrics import metrics_collector
@@ -126,6 +127,7 @@ app.add_middleware(
 app.include_router(indexing_router)
 app.include_router(graph_router)
 app.include_router(feedback_router)
+app.include_router(uam_router)
 
 
 @app.get("/health")
