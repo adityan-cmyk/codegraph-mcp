@@ -275,8 +275,25 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
     result["test_caller_count"] = sum(1 for u in upstream if u in tests)
     prod_upstream = [u for u in upstream if u not in tests]
     prod_used_by = [u for u in used_by if u not in tests]
-    result["risk_score"] = _compute_risk_score(prod_upstream, downstream, prod_used_by, uses)
-    result["risk_factors"] = _compute_risk_factors(prod_upstream, downstream, prod_used_by, uses)
+    # Visibility weighting: a private symbol's blast radius is contained by
+    # its module; a pub symbol's is not. Scale effective callers accordingly.
+    chunk = _symbol_chunk(symbol_id)
+    visibility = getattr(chunk, "visibility", "pub") if chunk else "pub"
+    result["visibility"] = visibility
+    vis_factor = {"private": 0.4, "pub_crate": 0.7, "pub": 1.0}.get(visibility, 1.0)
+    eff_upstream = round(len(prod_upstream) * vis_factor)
+    eff_used_by = round(len(prod_used_by) * vis_factor)
+    result["risk_score"] = _compute_risk_score(
+        ["x"] * eff_upstream, downstream, ["x"] * eff_used_by, uses
+    )
+    result["risk_factors"] = _compute_risk_factors(
+        ["x"] * eff_upstream, downstream, ["x"] * eff_used_by, uses
+    )
+    if vis_factor < 1.0:
+        result["risk_factors"]["visibility_relief"] = (
+            f"{visibility} symbol — blast radius contained by its module "
+            f"(effective callers {eff_upstream + eff_used_by} of {len(prod_upstream) + len(prod_used_by)})"
+        )
 
     meta = _get_symbol_metadata(symbol_id)
     if meta:

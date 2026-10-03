@@ -8,7 +8,7 @@ from app.schemas.codebase import CodeChunk
 RUST_SYMBOL_PATTERN = re.compile(
     r"^(?P<doc>(?:///[^\n]*\n)*)"
     r"\s*(?P<attrs>(?:#\[[^\]]+\]\s*)*)"
-    r"\s*(?:pub\s+)?(?:(?:async\s+|unsafe\s+|extern\s+\"[^\"]+\"\s+)*)?(?P<kind>fn|struct|enum|trait|impl|type|const|static|mod)\s+"
+    r"\s*(?:pub(?:\s*\([^)]*\))?\s+)?(?:(?:async\s+|unsafe\s+|extern\s+\"[^\"]+\"\s+)*)?(?P<kind>fn|struct|enum|trait|impl|type|const|static|mod)\s+"
     r"(?P<name>[A-Za-z0-9_<>]+)"
     r"(?P<signature>[^{;]*)?",
     re.MULTILINE,
@@ -220,6 +220,15 @@ def _cfg_test_spans(source: str) -> list[tuple[int, int]]:
     return spans
 
 
+def _detect_visibility(match_text: str) -> str:
+    """pub / pub(crate) / private from the item's signature text."""
+    if re.search(r"\bpub\s*\(\s*crate\s*\)", match_text):
+        return "pub_crate"
+    if re.search(r"\bpub\s+(?:fn|struct|enum|trait|type|const|static|mod)\b", match_text) or re.match(r"\s*pub\b", match_text):
+        return "pub"
+    return "private"
+
+
 def _is_test_offset(offset: int, source: str, match_text: str, cfg_spans: list[tuple[int, int]]) -> bool:
     """#[test]/#[tokio::test] attribute on the item, or any position inside a #[cfg(test)] module."""
     if _TEST_ATTR_PATTERN.search(match_text):
@@ -393,6 +402,7 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
 
         symbol_id = generate_symbol_id(module_id, symbol_name)
         is_test = kind == "fn" and _is_test_offset(match.start(), source, match.group(0), cfg_test)
+        visibility = _detect_visibility(match.group(0))
         chunks.append(
             build_code_chunk(
                 symbol_id=symbol_id,
@@ -402,6 +412,7 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
                 start_line=start_line,
                 end_line=end_line,
                 is_test=is_test,
+                visibility=visibility,
             )
         )
 
