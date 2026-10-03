@@ -62,6 +62,19 @@ def get_index_stats() -> IndexStats:
     )
 
 
+@router.get("/progress")
+def get_index_progress() -> dict:
+    """Human-readable progress for any in-flight index build — the 1-2h
+    first index shouldn't be a black box."""
+    progress: dict[str, object] = {
+        "semantic_rebuild_in_progress": semantic_rebuild_is_in_progress(),
+    }
+    getter = getattr(semantic_index, "get_rebuild_progress", None)
+    if getter:
+        progress["semantic_rebuild"] = getter()
+    return progress
+
+
 @router.get("/eval/golden")
 def run_golden_eval(limit: int = 200) -> dict:
     """Search-quality eval against verified feedback pairs; records the

@@ -32,6 +32,16 @@ if docker logs oncall-backend --since 10m 2>&1 | grep -qE "Embedded and inserted
 fi
 
 SHA=$(git rev-parse --short=8 HEAD)
+
+# Full test gate BEFORE deploying — the suite runs in a network-none
+# container against the freshly built image + checked-out tree, so it
+# validates exactly what is about to ship. Tests fail -> no deploy.
+if ! ./scripts/run-tests.sh tests/unit -q >> "$LOG" 2>&1; then
+    log "TESTS FAILED for $SHA — NOT deploying; image remains built but unused"
+    notify "[codegraph ALERT] Tests failed, deploy blocked: $SHA" "Unit suite failed against the new image. <code>$IMAGE:latest</code> was NOT deployed — the running container is unchanged. See auto-deploy.log for failures."
+    exit 1
+fi
+
 log "deploying $SHA"
 docker tag "$RUNNING_ID" "$IMAGE:last-good"
 docker tag "$IMAGE:latest" "$IMAGE:$SHA"

@@ -29,7 +29,18 @@ blocked() {
     exit 0
 }
 
-git fetch origin --quiet || { log "git fetch failed"; exit 0; }
+# Host DNS flaps several times a day — retry the fetch before giving up
+# so a transient outage doesn't stall deploys for hours.
+FETCH_OK=0
+for attempt in 1 2 3; do
+    if git fetch origin --quiet; then
+        FETCH_OK=1
+        break
+    fi
+    log "git fetch failed (attempt $attempt/3) — retrying in 20s"
+    sleep 20
+done
+[ "$FETCH_OK" = 1 ] || { log "git fetch failed after 3 attempts — giving up this cycle"; exit 0; }
 REMOTE=$(git rev-parse origin/main)
 SHORT=${REMOTE:0:8}
 

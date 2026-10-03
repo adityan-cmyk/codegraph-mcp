@@ -29,6 +29,15 @@ class Neo4jGraphIndex:
             session.run(
                 "CREATE INDEX IF NOT EXISTS FOR (s:Symbol) ON (s.gen)"
             )
+            # Composite uniqueness on (id, gen): correctness for MERGE and an
+            # index for every id-scoped lookup (blast radius, tests, degrees).
+            session.run(
+                "CREATE CONSTRAINT IF NOT EXISTS symbol_id_gen "
+                "FOR (s:Symbol) REQUIRE (s.id, s.gen) IS UNIQUE"
+            )
+            session.run(
+                "CREATE INDEX IF NOT EXISTS FOR (s:Symbol) ON (s.is_test)"
+            )
 
     def reset(self) -> None:
         from app.core.test_guard import refuse_reset_under_pytest
