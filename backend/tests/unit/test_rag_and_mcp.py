@@ -970,3 +970,31 @@ class ContractDriftTestCase(unittest.TestCase):
         self.assertEqual(out["cycle_count"], 1)
         self.assertEqual(out["cycles"][0]["modules"], ["a", "b"])
         self.assertEqual(out["cycles"][0]["internal_edges"], 2)
+
+    def test_click_through_mining(self):
+        from unittest.mock import patch
+        from app.rag.retrieval.graph import graph_index
+        graph_index.upsert_symbol("crates::x::pay", metadata={"kind": "fn", "file_path": "crates/x.rs"})
+        from app.mcp.tools import graph_read_tools as grt
+        grt._RECENT_SEARCHES.clear()
+        recorded = []
+        with patch("app.rag.reinforcement.feedback_store.record_feedback",
+                   side_effect=lambda **kw: recorded.append(kw)):
+            grt._RECENT_SEARCHES["q1"] = {"query": "payment flow", "at": grt.time.monotonic() - 5,
+                                          "results": ["crates::x::pay", "crates::x::other"]}
+            grt._record_click_through("crates::x::pay")
+            grt._record_click_through("crates::x::unrelated")  # not in results — no signal
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["query_text"], "payment flow")
+        self.assertIn("implicit", recorded[0]["reason"])
+        self.assertNotIn("q1", grt._RECENT_SEARCHES, "consumed click-through must not double-count")
+
+    def test_feedback_rejects_fabricated_symbols(self):
+        from app.rag.reinforcement import ai_feedback_store
+        out = ai_feedback_store.submit_feedback(
+            client_id="test", pr_context=None, tools_called=[],
+            results_used=[{"symbol_id": "totally::made::up", "helpful": True}],
+            results_expected=None, quality_rating=3, improvement_suggestions=None,
+        )
+        self.assertEqual(out["status"], "rejected")
+        self.assertIn("fabricated", out["reason"])

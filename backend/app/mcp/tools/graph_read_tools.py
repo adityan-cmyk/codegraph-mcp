@@ -405,11 +405,39 @@ def batch_blast_radius(symbol_ids: list[str]) -> dict[str, object]:
     }
 
 
+_RECENT_SEARCHES: dict[str, dict] = {}
+
+
+def _record_click_through(symbol_id: str) -> None:
+    """A get_symbol_content call on a recently-served search result is an
+    implicit positive signal — mine it into the feedback store."""
+    now = time.monotonic()
+    for entry in list(_RECENT_SEARCHES.values()):
+        if now - entry["at"] > 600:
+            continue
+        if symbol_id in entry["results"][:10]:
+            try:
+                from app.rag.reinforcement.feedback_store import record_feedback
+                record_feedback(
+                    query_text=entry["query"],
+                    symbol_id=symbol_id,
+                    feedback=1,
+                    reason="implicit: content lookup on search result (click-through)",
+                    original_score=0.5,
+                )
+            except Exception:
+                pass
+            _RECENT_SEARCHES.pop(next((k for k, v in _RECENT_SEARCHES.items() if v is entry), None), None)
+            return
+
+
 def get_symbol_content(symbol_id: str, start_line: int | None = None, end_line: int | None = None) -> dict[str, object]:
     """Get the source code content of a symbol — its full implementation, file path, and line range. Use this after get_blast_radius to understand what a symbol actually does. For 500+ line symbols the content is truncated — the response tells you the total line span, so re-call with start_line/end_line (absolute file line numbers within the symbol's range) to page through the rest."""
     meta = _get_symbol_metadata(symbol_id)
     if not meta:
         return {"error": f"Symbol '{symbol_id}' not found in the index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
+
+    _record_click_through(symbol_id)
 
     from app.core.index_store import index_metadata_store
     snapshot = index_metadata_store.load_snapshot()
@@ -1178,6 +1206,23 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
     reranked = reranked[:limit]
 
     query_id = uuid.uuid4().hex[:12]
+
+    # Implicit-feedback mining: remember which symbols this search served.
+    # A later get_symbol_content on one of them is a click-through — the
+    # agent voted with its attention, no explicit feedback needed.
+    try:
+        _RECENT_SEARCHES[query_id] = {
+            "query": query,
+            "at": time.monotonic(),
+            "results": [m.symbol_id for m, _, _ in reranked],
+        }
+        if len(_RECENT_SEARCHES) > 200:
+            cutoff = time.monotonic() - 600
+            stale = [k for k, v in _RECENT_SEARCHES.items() if v["at"] < cutoff]
+            for k in stale:
+                _RECENT_SEARCHES.pop(k, None)
+    except Exception:
+        pass
 
     try:
         from app.rag.reinforcement.feedback_store import record_query_pattern
