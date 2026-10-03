@@ -102,6 +102,11 @@ QUERY_CACHE_MISSES = Counter("query_cache_misses_total", "Redis query cache miss
 QUERY_CACHE_ERRORS = Counter("query_cache_errors_total", "Redis query cache failures (degraded to compute)")
 QUERY_CACHE_BYTES = Gauge("query_cache_bytes_stored", "Bytes currently tracked as stored in the query cache")
 
+INDEX_REBUILD_IN_PROGRESS = Gauge(
+    "index_rebuild_in_progress",
+    "1 while a graph or semantic index build is running (maintenance — tool latency alerts are gated on this)",
+)
+
 
 def exposition() -> tuple[bytes, str]:
     """Return (body, content_type) for the /api/metrics endpoint."""
