@@ -28,6 +28,7 @@ from app.mcp.tools.graph_read_tools import (
     get_tests_for_symbol,
     recent_changes_near,
     find_hotspots,
+    find_cycles,
     get_blast_radius,
     traverse_graph,
     get_graph_stats,
@@ -461,6 +462,24 @@ _TOOLS: dict[str, Any] = {
             "required": ["symbol_id"],
         },
     },
+    "find_cycles": {
+        "handler": find_cycles,
+        "description": inspect.getdoc(find_cycles) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "min_size": {
+                    "type": "integer",
+                    "description": "Minimum modules per cycle (default 2)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max cycles to return (default 10, max 30)",
+                },
+            },
+            "required": [],
+        },
+    },
     "find_hotspots": {
         "handler": find_hotspots,
         "description": inspect.getdoc(find_hotspots) or "",
@@ -713,6 +732,20 @@ _DIRECTORY = {
                 "blast_radius_commits": "array[object]",
                 "direct_commit_count": "int",
                 "blast_radius_commit_count": "int",
+            },
+        },
+        {
+            "name": "find_cycles",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Strongly connected components in the module-level dependency graph — circular dependencies.",
+            "arguments": {
+                "min_size": "int (default 2)",
+                "limit": "int (default 10)",
+            },
+            "response_shape": {
+                "cycle_count": "int",
+                "cycles": "array[object] — modules, module_count, internal_edges",
             },
         },
         {

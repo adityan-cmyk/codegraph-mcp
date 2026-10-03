@@ -101,6 +101,20 @@ class InMemoryGraphIndex:
                 counts[target] = n
         return counts
 
+    def get_module_edges(self) -> list[tuple[str, str]]:
+        pairs: set[tuple[str, str]] = set()
+        for source, targets in self._downstream.items():
+            for t in targets:
+                s, d = "::".join(source.split("::")[:-1]), "::".join(t.split("::")[:-1])
+                if s and d and s != d:
+                    pairs.add((s, d))
+        for source, targets in self._uses.items():
+            for t in targets:
+                s, d = "::".join(source.split("::")[:-1]), "::".join(t.split("::")[:-1])
+                if s and d and s != d:
+                    pairs.add((s, d))
+        return sorted(pairs)
+
     def get_stats(self) -> dict[str, int]:
         node_ids = set(self._upstream) | set(self._downstream) | set(self._used_by) | set(self._uses)
         edge_count = (
@@ -252,6 +266,12 @@ class GraphIndexProxy:
         if hasattr(backend, "get_test_caller_counts"):
             return backend.get_test_caller_counts()
         return {}
+
+    def get_module_edges(self) -> list[tuple[str, str]]:
+        backend = self._active()
+        if hasattr(backend, "get_module_edges"):
+            return backend.get_module_edges()
+        return []
 
     def get_stats(self) -> dict[str, int]:
         return self._active().get_stats()

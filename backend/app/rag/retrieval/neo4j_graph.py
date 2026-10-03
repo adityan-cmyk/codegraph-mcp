@@ -331,6 +331,25 @@ class Neo4jGraphIndex:
             )
             return {row["id"]: row["degree"] for row in result}
 
+    def get_module_edges(self) -> list[tuple[str, str]]:
+        """All directed (source_module -> target_module) pairs from CALLS+USES
+        edges, deduped — the input for cycle detection."""
+        with self._get_driver().session() as session:
+            result = session.run(
+                """
+                MATCH (a:Symbol {gen: $gen})-[r:CALLS|USES]->(b:Symbol {gen: $gen})
+                RETURN a.id AS src, b.id AS dst
+                """,
+                gen=self._gen,
+            )
+            pairs: set[tuple[str, str]] = set()
+            for row in result:
+                src_mod = "::".join(row["src"].split("::")[:-1])
+                dst_mod = "::".join(row["dst"].split("::")[:-1])
+                if src_mod and dst_mod and src_mod != dst_mod:
+                    pairs.add((src_mod, dst_mod))
+            return sorted(pairs)
+
     def get_test_caller_counts(self) -> dict[str, int]:
         with self._get_driver().session() as session:
             result = session.run(
