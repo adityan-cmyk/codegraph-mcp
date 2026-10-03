@@ -62,7 +62,7 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [ ] Query-conditioned boosts instead of global (payment-helpful ≠ boosted everywhere)
 
 ### Learning loop
-- [ ] Golden eval set — rollback signal + CI gate
+- [x] Golden eval set — built from +1 search feedback (no hand-labeling), hit@5/hit@10/MRR via GET /api/index/eval/golden, quality recorded per build in the registry (rollback signal ready; auto-rollback deliberately off until baselines stabilize)
 - [ ] Mine implicit feedback from logs (search → get_symbol_content on result #4 = relevance signal)
 - [ ] Deterministic feedback validation (cited symbols exist, claimed tool calls appear in logs)
 
