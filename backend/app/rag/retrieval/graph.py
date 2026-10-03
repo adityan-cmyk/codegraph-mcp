@@ -24,6 +24,10 @@ class InMemoryGraphIndex:
 
     def upsert_symbol(self, symbol_id: str, *, calls: list[str] | None = None, called_by: list[str] | None = None, uses: list[str] | None = None, used_by: list[str] | None = None, uses_with_modes: list[tuple[str, list[str]]] | None = None, metadata: dict | None = None) -> None:
         self._downstream.setdefault(symbol_id, set()).update(calls or [])
+        # Mirror CALLS into the callee's upstream, same as USES below —
+        # Neo4j derives both directions from the stored edge.
+        for target in calls or []:
+            self._upstream.setdefault(target, set()).add(symbol_id)
         self._upstream.setdefault(symbol_id, set()).update(called_by or [])
         if uses_with_modes:
             for target, _modes in uses_with_modes:
@@ -48,6 +52,31 @@ class InMemoryGraphIndex:
 
     def get_neighbors(self, symbol_id: str, depth: int = 1) -> GraphNeighborhood:
         return self.get_blast_radius(symbol_id)
+
+    def get_tests_for(self, symbol_id: str) -> list[dict[str, object]]:
+        """Upstream callers + type-referencers flagged is_test in metadata."""
+        out: list[dict[str, object]] = []
+        seen: set[str] = set()
+        for relation, sources in (("calls", self._upstream.get(symbol_id, set())),
+                                   ("type_reference", self._used_by.get(symbol_id, set()))):
+            for sid in sorted(sources):
+                if sid in seen:
+                    continue
+                meta = self._metadata.get(sid, {})
+                if not meta.get("is_test"):
+                    continue
+                seen.add(sid)
+                out.append({
+                    "symbol_id": sid,
+                    "relation": relation,
+                    "file_path": meta.get("file_path", ""),
+                    "start_line": meta.get("start_line", 0),
+                    "end_line": meta.get("end_line", 0),
+                })
+        return out
+
+    def get_test_symbol_ids(self) -> set[str]:
+        return {sid for sid, meta in self._metadata.items() if meta.get("is_test")}
 
     def get_stats(self) -> dict[str, int]:
         node_ids = set(self._upstream) | set(self._downstream) | set(self._used_by) | set(self._uses)
@@ -176,6 +205,18 @@ class GraphIndexProxy:
             except TypeError:
                 return backend.traverse(symbol_id, depth=depth)
         return backend.get_blast_radius(symbol_id)
+
+    def get_tests_for(self, symbol_id: str) -> list[dict[str, object]]:
+        backend = self._active()
+        if hasattr(backend, "get_tests_for"):
+            return backend.get_tests_for(symbol_id)
+        return []
+
+    def get_test_symbol_ids(self) -> set[str]:
+        backend = self._active()
+        if hasattr(backend, "get_test_symbol_ids"):
+            return backend.get_test_symbol_ids()
+        return set()
 
     def get_stats(self) -> dict[str, int]:
         return self._active().get_stats()

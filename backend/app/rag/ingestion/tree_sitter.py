@@ -194,7 +194,47 @@ def generate_module_exports_chunk(file_path: str, source: str) -> CodeChunk | No
     )
 
 
-def _extract_impl_methods(impl_match: re.Match, source: str, module_id: str, all_matches: list[re.Match], match_index: int) -> list[CodeChunk]:
+_TEST_ATTR_PATTERN = re.compile(r"#\[[^\]]*\btest\]")
+_CFG_TEST_MOD_PATTERN = re.compile(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+")
+
+
+def _cfg_test_spans(source: str) -> list[tuple[int, int]]:
+    """Brace-counted spans of #[cfg(test)] modules — everything inside is a test."""
+    spans: list[tuple[int, int]] = []
+    for m in _CFG_TEST_MOD_PATTERN.finditer(source):
+        brace = source.find("{", m.end())
+        if brace < 0:
+            continue
+        depth = 0
+        i = brace
+        while i < len(source):
+            c = source[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        spans.append((m.start(), min(i + 1, len(source))))
+    return spans
+
+
+def _is_test_offset(offset: int, source: str, match_text: str, cfg_spans: list[tuple[int, int]]) -> bool:
+    """#[test]/#[tokio::test] attribute on the item, or any position inside a #[cfg(test)] module."""
+    if _TEST_ATTR_PATTERN.search(match_text):
+        return True
+    preceding = source[max(0, offset - 150):offset]
+    # don't let attrs from the previous item bleed across its closing brace
+    cut = preceding.rfind("}")
+    if cut >= 0:
+        preceding = preceding[cut + 1:]
+    if _TEST_ATTR_PATTERN.search(preceding):
+        return True
+    return any(start <= offset < end for start, end in cfg_spans)
+
+
+def _extract_impl_methods(impl_match: re.Match, source: str, module_id: str, all_matches: list[re.Match], match_index: int, cfg_test_spans: list[tuple[int, int]] = None) -> list[CodeChunk]:
     """Extract individual methods from an impl block as separate chunks."""
     impl_name_raw = impl_match.group("name").strip()
     impl_symbol = impl_name_raw.split("<")[0].strip().split(" for ")[0].strip()
@@ -213,6 +253,8 @@ def _extract_impl_methods(impl_match: re.Match, source: str, module_id: str, all
         fn_end = fn_matches[fi + 1].start() if fi + 1 < len(fn_matches) else len(impl_body)
         fn_content = impl_body[fn_start:fn_end]
         fn_name = fn_match.group("name")
+        abs_fn_start = start_offset + fn_start
+        fn_is_test = _is_test_offset(abs_fn_start, source, fn_content, cfg_test_spans or [])
 
         if len(fn_content.strip()) < MIN_CHUNK_LINES:
             continue
@@ -236,6 +278,7 @@ def _extract_impl_methods(impl_match: re.Match, source: str, module_id: str, all
                 content=method_content,
                 start_line=abs_start_line,
                 end_line=abs_end_line,
+                is_test=fn_is_test,
             )
         )
     return method_chunks
@@ -293,6 +336,7 @@ def _block_comment_spans(source: str) -> list[tuple[int, int]]:
 def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
     lines = source.splitlines()
     comment_spans = _block_comment_spans(source)
+    cfg_test = _cfg_test_spans(source)
     matches = [
         m for m in RUST_SYMBOL_PATTERN.finditer(source)
         if not any(s <= m.start() < e for s, e in comment_spans)
@@ -348,6 +392,7 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
             chunk_content = prefix + chunk_content
 
         symbol_id = generate_symbol_id(module_id, symbol_name)
+        is_test = kind == "fn" and _is_test_offset(match.start(), source, match.group(0), cfg_test)
         chunks.append(
             build_code_chunk(
                 symbol_id=symbol_id,
@@ -356,11 +401,12 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
                 content=chunk_content,
                 start_line=start_line,
                 end_line=end_line,
+                is_test=is_test,
             )
         )
 
         if kind == "impl":
-            method_chunks = _extract_impl_methods(match, source, module_id, matches, index)
+            method_chunks = _extract_impl_methods(match, source, module_id, matches, index, cfg_test_spans=cfg_test)
             for mc in method_chunks:
                 mc.file_path = file_path
             chunks.extend(method_chunks)

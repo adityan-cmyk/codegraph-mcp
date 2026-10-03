@@ -58,7 +58,8 @@ class Neo4jGraphIndex:
                         s.file_path = $file_path,
                         s.start_line = $start_line,
                         s.end_line = $end_line,
-                        s.module = $module
+                        s.module = $module,
+                        s.is_test = $is_test
                     """,
                     symbol_id=symbol_id,
                     gen=gen,
@@ -67,6 +68,7 @@ class Neo4jGraphIndex:
                     start_line=metadata.get("start_line", 0),
                     end_line=metadata.get("end_line", 0),
                     module=metadata.get("module", ""),
+                    is_test=metadata.get("is_test", False),
                 )
             else:
                 session.run(
@@ -278,6 +280,39 @@ class Neo4jGraphIndex:
                     "has_users": len(record["has_users"]) > 0,
                 })
             return results
+
+    def get_tests_for(self, symbol_id: str) -> list[dict[str, object]]:
+        with self._get_driver().session() as session:
+            result = session.run(
+                """
+                MATCH (t:Symbol)-[r]->(s:Symbol {id: $symbol_id, gen: $gen})
+                WHERE t.gen = $gen AND t.is_test = true AND type(r) IN ['CALLS', 'USES']
+                RETURN t.id AS id, t.file_path AS file_path,
+                       t.start_line AS start_line, t.end_line AS end_line,
+                       type(r) AS rel
+                ORDER BY t.id
+                """,
+                symbol_id=symbol_id,
+                gen=self._gen,
+            )
+            return [
+                {
+                    "symbol_id": row["id"],
+                    "relation": "calls" if row["rel"] == "CALLS" else "type_reference",
+                    "file_path": row["file_path"] or "",
+                    "start_line": row["start_line"] or 0,
+                    "end_line": row["end_line"] or 0,
+                }
+                for row in result
+            ]
+
+    def get_test_symbol_ids(self) -> set[str]:
+        with self._get_driver().session() as session:
+            result = session.run(
+                "MATCH (t:Symbol {is_test: true}) WHERE t.gen = $gen RETURN t.id AS id",
+                gen=self._gen,
+            )
+            return {row["id"] for row in result}
 
     def get_stats(self) -> dict[str, int]:
         with self._get_driver().session() as session:

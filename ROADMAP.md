@@ -48,7 +48,7 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [ ] Backtest the score against history (reverts + hotfixes as labels); tune thresholds from data
 
 ### New tools
-- [ ] `get_tests_for_symbol` — which tests reach a symbol ("12 callers, 0 tests")
+- [x] `get_tests_for_symbol` — which tests reach a symbol ("12 callers, 0 tests") — shipped with risk-score test exclusion + is_test extraction
 - [x] `resolve_stacktrace` — map panic backtraces / file:line logs to symbols + neighborhoods
 - [ ] `recent_changes_near` — commits from last N days touching a symbol or its blast radius
 - [ ] `find_hotspots` — high-churn + highly-connected + poorly-tested, ranked
