@@ -98,6 +98,24 @@ def _ensure_schema():
         logger.info("AI feedback schema ready")
 
 
+def _validate_results_used(results_used: list[dict]) -> list[str]:
+    """Deterministic validation — cited symbols must exist in the index.
+    Hallucinated symbol ids in feedback poison the reinforcement loop;
+    returns the list of fabricated ids (empty = all valid)."""
+    fabricated: list[str] = []
+    for item in results_used or []:
+        sid = (item or {}).get("symbol_id")
+        if not sid:
+            continue
+        try:
+            from app.rag.retrieval.graph import graph_index
+            if not graph_index.has_symbol(sid):
+                fabricated.append(sid)
+        except Exception:
+            continue  # index unavailable — let the gate judge, don't hard-fail
+    return fabricated
+
+
 def submit_feedback(
     client_id: str | None,
     pr_context: str | None,
@@ -108,6 +126,18 @@ def submit_feedback(
     improvement_suggestions: str | None,
 ) -> dict[str, object]:
     """Store a new AI feedback entry with status='pending'."""
+    fabricated = _validate_results_used(results_used)
+    if fabricated:
+        return {
+            "status": "rejected",
+            "reason": (
+                "results_used cites symbol ids that do not exist in the index "
+                f"({len(fabricated)} fabricated): {', '.join(fabricated[:5])}. "
+                "Only cite symbol ids returned by search/blast-radius tools."
+            ),
+            "fabricated_symbols": fabricated[:20],
+        }
+
     _ensure_schema()
     feedback_id = uuid.uuid4().hex[:16]
 
