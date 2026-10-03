@@ -146,6 +146,12 @@ def _ensure_schema() -> None:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS uam_audit_day ON uam_audit (key_hash, created_at)"
             )
+            # Grafana's read-only datasource may read the audit trail (usage
+            # panels) but NEVER uam_users — key hashes are server-side secrets.
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'grafana_ro'")
+            if cur.fetchone():
+                cur.execute("GRANT SELECT ON uam_audit TO grafana_ro")
+                cur.execute("REVOKE ALL ON uam_users FROM grafana_ro")
 
 
 def bootstrap() -> None:

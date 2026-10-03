@@ -1158,3 +1158,83 @@ class UAMTestCase(unittest.TestCase):
         from app.core import uam
         self.assertEqual(uam.TIERS["free"]["daily_calls"], 200)
         self.assertIsNone(uam.TIERS["enterprise"]["daily_calls"])
+
+class AdminControlPlaneTestCase(unittest.TestCase):
+    def test_cache_compression_roundtrip(self):
+        from app.core import query_cache as qc
+
+        class FakeRedis:
+            def __init__(self):
+                self.store = {}
+            def set(self, k, v, ex=None):
+                self.store[k] = v
+            def get(self, k):
+                return self.store.get(k)
+            def ping(self):
+                return True
+            def sadd(self, k, m):
+                pass
+            def expire(self, k, t):
+                pass
+            def smembers(self, k):
+                return set()
+            def delete(self, *k):
+                return 0
+            def scan_iter(self, match=None, count=None):
+                return iter([])
+            def dbsize(self):
+                return len(self.store)
+
+        fake = FakeRedis()
+        qc._CLIENT = fake
+        try:
+            payload = {"result": "x" * 2000}
+            qc.cache_set("t", {"a": 1}, payload, ttl=100, tags=["graph"])
+            raw = list(fake.store.values())[0]
+            self.assertTrue(raw.startswith(b"Z1:"), "large payloads must compress")
+            self.assertLess(len(raw), 2000, "compression must actually shrink")
+            got = qc.cache_get("t", {"a": 1})
+            self.assertEqual(got["result"], "x" * 2000, "decompression must round-trip")
+        finally:
+            qc._CLIENT = None
+            qc._STATS.update({"hits": 0, "misses": 0, "errors": 0, "sets": 0, "tag_invalidations": 0, "bytes_stored": 0})
+
+    def test_ttl_capped(self):
+        from app.core import query_cache as qc
+
+        captured = {}
+        class FakeRedis:
+            def set(self, k, v, ex=None):
+                captured["ex"] = ex
+            def ping(self):
+                return True
+            def sadd(self, *a):
+                pass
+            def expire(self, *a):
+                pass
+        qc._CLIENT = FakeRedis()
+        try:
+            qc.cache_set("t", {}, {}, ttl=999999)
+            self.assertLessEqual(captured["ex"], qc.MAX_TTL, "TTL must be hard-capped")
+        finally:
+            qc._CLIENT = None
+
+    def test_admin_token_required(self):
+        from fastapi.testclient import TestClient
+        from app.api.routers.admin import router
+        from fastapi import FastAPI
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+        r = client.get("/api/admin/cache")
+        self.assertIn(r.status_code, (401, 503))
+
+    def test_uam_admin_requires_token(self):
+        from fastapi.testclient import TestClient
+        from app.api.routers.uam import router
+        from fastapi import FastAPI
+        app = FastAPI()
+        app.include_router(router)
+        client = TestClient(app)
+        r = client.get("/api/uam/users")
+        self.assertIn(r.status_code, (401, 503))

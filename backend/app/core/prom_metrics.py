@@ -97,6 +97,11 @@ INDEX_STALE_HOURS = Gauge(
 GRAPH_NODES = Gauge("graph_nodes_total", "Symbols in the active graph generation")
 GRAPH_EDGES = Gauge("graph_edges_total", "Edges in the active graph generation")
 
+QUERY_CACHE_HITS = Counter("query_cache_hits_total", "Redis query cache hits")
+QUERY_CACHE_MISSES = Counter("query_cache_misses_total", "Redis query cache misses")
+QUERY_CACHE_ERRORS = Counter("query_cache_errors_total", "Redis query cache failures (degraded to compute)")
+QUERY_CACHE_BYTES = Gauge("query_cache_bytes_stored", "Bytes currently tracked as stored in the query cache")
+
 
 def exposition() -> tuple[bytes, str]:
     """Return (body, content_type) for the /api/metrics endpoint."""

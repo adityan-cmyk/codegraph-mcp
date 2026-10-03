@@ -228,6 +228,14 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
 
     _update_last_commit(head_commit)
 
+    # git data changed — cached churn-dependent answers are stale now
+    try:
+        from app.core.query_cache import invalidate_tags
+
+        invalidate_tags("git")
+    except Exception:
+        pass
+
     return {
         "status": "incremental_update",
         "from_commit": last_commit,

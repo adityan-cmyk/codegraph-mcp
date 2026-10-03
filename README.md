@@ -862,3 +862,27 @@ The unit suite includes tests that pin cross-component contracts so they cannot 
 ## License
 
 MIT
+
+## Access control (UAM)
+
+Tool calls are governed by a user-action model: every API key maps to a user with roles and a tier.
+
+| Tier | Daily quota | Roles allowed |
+|---|---|---|
+| free | 200 calls | viewer |
+| pro | 5,000 calls | viewer, reviewer, operator |
+| enterprise | unlimited | all + admin |
+
+Roles grant tool policies (`viewer` = read/search tools, `reviewer` = diff analysis + feedback, `operator` = + `make_decision`, `admin` = everything). Every `tools/call` is policy-checked, quota-counted, and audited (`uam_audit`). Manage via REST (`/api/uam/users`, admin token) or the Grafana **codegraph-admin** dashboard's control card. Keys are stored hashed; the legacy `MCP_AUTH_TOKEN` bootstraps as an enterprise admin and still works if Postgres is down.
+
+## Rate limiting
+
+Token buckets (capacity 60, refill 1/s per user) — no fixed-window boundary bursts, exact `Retry-After`. Tunable at runtime: `PUT /api/admin/rate-limit?capacity=&refill_per_sec=` or the control card.
+
+## Query cache
+
+Redis, tagged (`graph`, `git`, `tests`), zlib-compressed, TTL hard-capped at 4h. Graph rebuilds and git syncs invalidate exactly the affected tags. Metrics: `query_cache_*` in Prometheus.
+
+## Admin dashboard
+
+Grafana `codegraph-admin` (needs `--profile observability`): tool usage from the audit trail, backend logs (Loki), cache health, alert rules, and a control card for rate limits / cache flush / user creation. The admin token is entered once per browser (localStorage) — never stored in the repo or Grafana.
