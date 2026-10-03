@@ -63,7 +63,48 @@ _INSTRUCTIONS = "Read-only code graph: blast-radius, traversal, semantic search,
 
 _PROTOCOL_VERSION = "2024-11-05"
 
-_CAPABILITIES = {"tools": {"listChanged": True}}
+_CAPABILITIES = {"tools": {"listChanged": True}, "prompts": {"listChanged": False}}
+
+# Bump on ANY breaking response-shape change (field removed/renamed, type
+# changed). Additive changes bump the minor. Agents can pin against this.
+TOOL_SCHEMA_VERSION = "1.1.0"
+
+_PR_REVIEW_PROMPT = """You are reviewing a pull request against a Rust codebase using the oncall-graph MCP tools. Work through this sequence and report findings with file:line references:
+
+1. VERIFY THE INDEX — call get_index_meta. If the commit is more than ~50 commits behind HEAD, say so and weigh your confidence accordingly.
+2. PARSE THE DIFF — call analyze_pr_diff with the full git diff text. It classifies changes (new/signature_change/body_only/deleted) and resolves them to symbol ids.
+3. RESOLVE AMBIGUITIES — for unresolved symbols in the diff, call search_symbols (partial name) then search_symbols_enhanced (file paths, fuzzy, multi-word) if the first returns 0.
+4. BLAST RADIUS — for each modified/deleted symbol with callers, call get_blast_radius. Filter with usage_modes_filter=['pattern_match', 'construction'] when you only need structural dependents. Note risk_score and risk_factors. Test callers are excluded from risk — call get_tests_for_symbol to see regression coverage.
+5. WARNINGS — call find_warnings_in_blast_radius for the top-risk symbols: TODO/FIXME comments, swallowed errors, stub functions, dead code, panic paths.
+6. RECENT ACTIVITY — call recent_changes_near for symbols others touched recently (merge-conflict and coordination risk).
+7. READ THE CODE — get_symbol_content for the highest-risk symbols (page with start_line/end_line on long ones).
+8. VERDICT — group findings by severity: breakage risks (signature changes with many production callers), behavior risks (body-only changes in hotspots), and hygiene (dead code, stubs, missing tests). For each: symbol, file:line, why it matters, what to verify.
+9. FEEDBACK — submit_ai_feedback with tools you called, which results helped, what you expected but didn't find, rating 1-5. This is how the index improves.
+
+Rules: never fabricate symbol ids — only cite what tools returned. get_blast_radius conflates nothing: callers (CALLS) and type references (USES) are separate numbers. If a tool errors, say so; do not guess."""
+
+_PROMPTS: dict[str, Any] = {
+    "pr_review": {
+        "name": "pr_review",
+        "description": "Structured PR-review workflow over the dependency graph: verify index freshness, analyze the diff, expand blast radius, check warnings, tests, and recent activity, then report severity-grouped findings and submit feedback.",
+        "arguments": [
+            {
+                "name": "diff",
+                "description": "The full git diff text of the pull request",
+                "required": True,
+            },
+        ],
+        "messages": [
+            {
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": _PR_REVIEW_PROMPT + "\n\nThe PR diff to review:\n\n```diff\n{diff}\n```",
+                },
+            },
+        ],
+    },
+}
 
 _TOOLS: dict[str, Any] = {
     "get_blast_radius": {
@@ -1019,7 +1060,7 @@ async def _handle_mcp(request: Request) -> Response:
                 "description": spec["description"],
                 "inputSchema": spec["schema"],
             })
-        return _respond(req_id, {"tools": tools})
+        return _respond(req_id, {"tools": tools, "schemaVersion": TOOL_SCHEMA_VERSION})
 
     if method == "tools/call":
         params = body.get("params", {})
@@ -1060,6 +1101,36 @@ async def _handle_mcp(request: Request) -> Response:
                 "content": [{"type": "text", "text": json.dumps({"error": str(exc), "traceback": traceback.format_exc()[:2000]})}],
                 "isError": True,
             })
+
+    if method == "prompts/list":
+        return _respond(req_id, {
+            "prompts": [
+                {
+                    "name": p["name"],
+                    "description": p["description"],
+                    "arguments": p["arguments"],
+                }
+                for p in _PROMPTS.values()
+            ]
+        })
+
+    if method == "prompts/get":
+        params = body.get("params", {})
+        prompt_name = params.get("name", "")
+        if prompt_name not in _PROMPTS:
+            return _jsonrpc_error(req_id, -32602, f"Unknown prompt: {prompt_name}")
+        prompt = _PROMPTS[prompt_name]
+        args = params.get("arguments", {}) or {}
+        messages = []
+        for msg in prompt["messages"]:
+            content = dict(msg["content"])
+            if content.get("type") == "text":
+                try:
+                    content["text"] = content["text"].format(**{k: str(v) for k, v in args.items()})
+                except (KeyError, IndexError):
+                    pass  # argument placeholders absent — deliver as-is
+            messages.append({"role": msg["role"], "content": content})
+        return _respond(req_id, {"description": prompt["description"], "messages": messages})
 
     if method == "ping":
         return _respond(req_id, {})
