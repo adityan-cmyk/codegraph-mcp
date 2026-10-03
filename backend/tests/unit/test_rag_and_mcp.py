@@ -1060,3 +1060,33 @@ class ContractDriftTestCase(unittest.TestCase):
         self.assertIn("visibility_relief", out["risk_factors"])
         # 15 callers * 0.4 = 6 effective -> below the >10 'high' threshold
         self.assertEqual(out["risk_score"], "medium")
+
+    def test_query_cache_roundtrip_and_gen_invalidation(self):
+        from app.core import query_cache as qc
+        from unittest.mock import patch
+        from types import SimpleNamespace
+
+        class FakeRedis:
+            def __init__(self):
+                self.store = {}
+            def set(self, k, v, ex=None):
+                self.store[k] = v
+            def get(self, k):
+                return self.store.get(k)
+            def ping(self):
+                return True
+
+        fake = FakeRedis()
+        qc._CLIENT = fake
+        try:
+            qc.cache_set("blast_radius", {"symbol_id": "x"}, {"result": 1})
+            self.assertEqual(qc.cache_get("blast_radius", {"symbol_id": "x"}), {"result": 1})
+            # different args -> different key
+            self.assertIsNone(qc.cache_get("blast_radius", {"symbol_id": "y"}))
+            # gen change invalidates (key embeds gen)
+            with patch("app.rag.retrieval.graph.graph_index",
+                       SimpleNamespace(_active=lambda: SimpleNamespace(_gen=99))):
+                qc._CLIENT = fake
+                self.assertIsNone(qc.cache_get("blast_radius", {"symbol_id": "x"}))
+        finally:
+            qc._CLIENT = None

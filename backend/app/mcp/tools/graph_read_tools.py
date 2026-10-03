@@ -235,6 +235,15 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
     if not graph_index.has_symbol(symbol_id):
         return {"error": f"Symbol '{symbol_id}' not found in the graph index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
 
+    from app.core.query_cache import cache_get, cache_set
+
+    cache_args = {"symbol_id": symbol_id, "usage_modes_filter": usage_modes_filter,
+                  "summary_only": summary_only, "exclude_shared_state_types": exclude_shared_state_types}
+    cached = cache_get("blast_radius", cache_args)
+    if cached is not None:
+        cached["cache"] = "hit"
+        return cached
+
     neighborhood = (
         graph_index.get_blast_radius(symbol_id)
         if hasattr(graph_index, "get_blast_radius")
@@ -317,7 +326,9 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
         result["uses_by_module"] = _by_module(uses)
         for key in ("upstream", "downstream", "used_by", "uses", "used_by_modes", "uses_modes"):
             result.pop(key, None)
-        return _attach_stale_warning(result)
+        summary = _attach_stale_warning(result)
+        cache_set("blast_radius", cache_args, summary, ttl=300)
+        return summary
 
     # Dedup preserving order — parallel edges (same target, different usage
     # modes) must not produce duplicate entries in the flat lists
@@ -360,7 +371,9 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
             usage_modes[mode] = usage_modes.get(mode, 0) + 1
     result["usage_mode_summary"] = usage_modes
 
-    return _attach_stale_warning(result)
+    final = _attach_stale_warning(result)
+    cache_set("blast_radius", cache_args, final, ttl=300)
+    return final
 
 
 def batch_blast_radius(symbol_ids: list[str]) -> dict[str, object]:
@@ -896,6 +909,13 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
     limit = max(1, min(limit, 50))
     days = max(1, min(days, 365))
 
+    from app.core.query_cache import cache_get, cache_set
+
+    cache_args = {"days": days, "limit": limit, "min_churn": min_churn, "module_prefix": module_prefix}
+    cached = cache_get("hotspots", cache_args)
+    if cached is not None:
+        return cached
+
     try:
         from app.rag.ingestion.git_ingestor import get_file_churn
         churn = get_file_churn(days)
@@ -955,13 +975,15 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
         })
 
     hotspots.sort(key=lambda h: h["score"], reverse=True)
-    return {
+    payload = {
         "window_days": days,
         "min_churn": min_churn,
         "hotspot_count": len(hotspots),
         "hotspots": hotspots[:limit],
         "method": "score = commits x min(top-symbol connections,100)/10 x test penalty (1.5 untested anchor / 1.25 mostly untested / 1.0 covered)",
     }
+    cache_set("hotspots", cache_args, payload, ttl=300)
+    return payload
 
 
 def find_cycles(min_size: int = 2, limit: int = 10) -> dict[str, object]:
