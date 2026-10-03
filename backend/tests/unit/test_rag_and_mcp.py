@@ -998,3 +998,34 @@ class ContractDriftTestCase(unittest.TestCase):
         )
         self.assertEqual(out["status"], "rejected")
         self.assertIn("fabricated", out["reason"])
+
+    def test_tool_registry_pinned(self):
+        """The tool set is a public contract — additions/removals must be
+        deliberate (bump TOOL_SCHEMA_VERSION), never accidental."""
+        from app.mcp import readonly_server
+        expected = {
+            "search_symbols", "search_symbols_enhanced", "get_blast_radius",
+            "get_blast_radius_detailed", "batch_blast_radius", "get_symbol_content",
+            "get_symbols_in_file", "semantic_search", "analyze_pr_diff",
+            "find_dependency_path", "traverse_graph", "get_graph_stats",
+            "get_index_meta", "submit_search_feedback", "submit_ai_feedback",
+            "get_reinforcement_stats",
+            "find_warnings_in_blast_radius", "diff_modules", "make_decision",
+            "resolve_stacktrace", "find_dead_code", "get_tests_for_symbol",
+            "recent_changes_near", "find_hotspots", "find_cycles",
+        }
+        actual = set(readonly_server._TOOLS.keys())
+        self.assertEqual(actual, expected,
+                         f"tool registry drifted: added={actual - expected}, removed={expected - actual} — "
+                         "update this pin AND bump TOOL_SCHEMA_VERSION")
+        for name, spec in readonly_server._TOOLS.items():
+            self.assertIn("handler", spec, f"{name} missing handler")
+            self.assertIn("schema", spec, f"{name} missing schema")
+
+    def test_prompts_capability(self):
+        from app.mcp import readonly_server
+        self.assertIn("prompts", readonly_server._CAPABILITIES)
+        self.assertIn("pr_review", readonly_server._PROMPTS)
+        prompt = readonly_server._PROMPTS["pr_review"]
+        self.assertTrue(any("{diff}" in m["content"].get("text", "") for m in prompt["messages"]),
+                        "pr_review prompt must accept the diff argument")
