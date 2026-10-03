@@ -26,6 +26,8 @@ from uvicorn import Config, Server
 
 from app.mcp.tools.graph_read_tools import (
     get_tests_for_symbol,
+    recent_changes_near,
+    find_hotspots,
     get_blast_radius,
     traverse_graph,
     get_graph_stats,
@@ -437,6 +439,54 @@ _TOOLS: dict[str, Any] = {
             "required": ["stacktrace"],
         },
     },
+    "recent_changes_near": {
+        "handler": recent_changes_near,
+        "description": inspect.getdoc(recent_changes_near) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "symbol_id": {
+                    "type": "string",
+                    "description": "Full symbol id, e.g. 'crates::wallet::settle::process_payment'",
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Lookback window in days (default 14, max 180)",
+                },
+                "include_blast_radius": {
+                    "type": "boolean",
+                    "description": "Also check files of 1-hop callers/callees/type-referencers (default true)",
+                },
+            },
+            "required": ["symbol_id"],
+        },
+    },
+    "find_hotspots": {
+        "handler": find_hotspots,
+        "description": inspect.getdoc(find_hotspots) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "Churn window in days (default 30)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max hotspots to return (default 15, max 50)",
+                },
+                "min_churn": {
+                    "type": "integer",
+                    "description": "Minimum commits in window for a file to qualify (default 3)",
+                },
+                "module_prefix": {
+                    "type": "string",
+                    "description": "Scope to a module prefix, e.g. 'crates::wallet'",
+                },
+            },
+            "required": [],
+        },
+    },
     "get_tests_for_symbol": {
         "handler": get_tests_for_symbol,
         "description": inspect.getdoc(get_tests_for_symbol) or "",
@@ -646,6 +696,39 @@ _DIRECTORY = {
                 "query_text": "string",
                 "symbol_id": "string",
                 "feedback": "int",
+            },
+        },
+        {
+            "name": "recent_changes_near",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Commits from the last N days touching a symbol directly or through its blast radius.",
+            "arguments": {
+                "symbol_id": "string (required)",
+                "days": "int (default 14)",
+                "include_blast_radius": "bool (default true)",
+            },
+            "response_shape": {
+                "direct_commits": "array[object] — hash, date, author, subject, touched",
+                "blast_radius_commits": "array[object]",
+                "direct_commit_count": "int",
+                "blast_radius_commit_count": "int",
+            },
+        },
+        {
+            "name": "find_hotspots",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Rank files by churn x connectivity x missing test coverage — where regressions are most likely.",
+            "arguments": {
+                "days": "int (default 30)",
+                "limit": "int (default 15)",
+                "min_churn": "int (default 3)",
+                "module_prefix": "string (optional)",
+            },
+            "response_shape": {
+                "hotspots": "array[object] — file_path, score, components, anchor_symbol",
+                "method": "string",
             },
         },
         {

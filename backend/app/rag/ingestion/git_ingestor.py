@@ -261,3 +261,53 @@ def _remove_file_chunks(file_path: str) -> None:
         "files_indexed": max(0, snapshot.files_indexed - 1),
     })
     index_metadata_store.replace_snapshot(updated)
+
+
+_HISTORY_CACHE: dict[str, tuple[float, list[dict[str, object]]]] = {}
+
+
+def get_recent_history(days: int = 30, repository_path: str | None = None) -> list[dict[str, object]]:
+    """All commits in the last N days, each with the files it touched.
+    Cached for 5 minutes — find_hotspots and recent_changes_near share it,
+    and agent sessions hit both within minutes of each other."""
+    import time as _time
+
+    repo_path = resolve_repository_path(repository_path)
+    key = f"{repo_path}:{days}"
+    now = _time.monotonic()
+    cached = _HISTORY_CACHE.get(key)
+    if cached and now - cached[0] < 300:
+        return cached[1]
+
+    result = subprocess.run(
+        ["git", "log", f"--since={days} days ago", "--format=%H%x1f%ci%x1f%an%x1f%s", "--name-only"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    commits: list[dict[str, object]] = []
+    if result.returncode == 0:
+        current: dict[str, object] | None = None
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            if "\x1f" in line:
+                hash_, date, author, subject = line.split("\x1f", 3)
+                current = {"hash": hash_, "date": date, "author": author, "subject": subject, "files": []}
+                commits.append(current)
+            elif current is not None:
+                current["files"].append(line.strip())
+    _HISTORY_CACHE[key] = (now, commits)
+    return commits
+
+
+def get_file_churn(days: int = 30, repository_path: str | None = None) -> dict[str, int]:
+    """Commit count per file over the last N days."""
+    churn: dict[str, int] = {}
+    for commit in get_recent_history(days, repository_path):
+        for f in commit["files"]:
+            if f.endswith(".rs"):
+                churn[f] = churn.get(f, 0) + 1
+    return churn

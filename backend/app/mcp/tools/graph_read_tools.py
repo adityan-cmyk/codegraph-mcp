@@ -763,6 +763,163 @@ def get_graph_stats() -> dict[str, object]:
 
 
 # ============================================================================
+# Phase 2: git-history-aware tools
+# ============================================================================
+
+def _symbol_chunk(symbol_id: str):
+    from app.core.index_store import index_metadata_store
+    snapshot = index_metadata_store.load_snapshot()
+    if not snapshot:
+        return None
+    for chunk in snapshot.chunks:
+        if chunk.symbol_id == symbol_id:
+            return chunk
+    return None
+
+
+def recent_changes_near(symbol_id: str, days: int = 14, include_blast_radius: bool = True) -> dict[str, object]:
+    """Commits from the last N days touching a symbol — directly (same file) or through its blast radius (files of 1-hop callers/callees/type-referencers). Use this before changing a symbol to see recent activity and who else has been working nearby. Provide the full symbol_id. Default window: 14 days. Read-only, safe to call anytime."""
+    symbol_id = symbol_id.strip()
+    if not symbol_id:
+        return {"error": "symbol_id is required"}
+    days = max(1, min(days, 180))
+
+    chunk = _symbol_chunk(symbol_id)
+    if chunk is None:
+        return {"error": f"unknown symbol_id: {symbol_id} — call search_symbols first for the exact id"}
+
+    direct_files = {chunk.file_path}
+    neighbor_files: set[str] = set()
+    if include_blast_radius:
+        neighborhood = graph_index.get_blast_radius(symbol_id)
+        for nid in list(neighborhood.upstream) + list(neighborhood.downstream) + list(neighborhood.used_by) + list(neighborhood.uses):
+            nchunk = _symbol_chunk(nid)
+            if nchunk and nchunk.file_path not in direct_files:
+                neighbor_files.add(nchunk.file_path)
+
+    try:
+        from app.rag.ingestion.git_ingestor import get_recent_history
+        history = get_recent_history(days)
+    except Exception as exc:
+        return {"error": f"git history unavailable: {exc}"}
+
+    direct_commits: list[dict[str, object]] = []
+    nearby_commits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for commit in history:
+        files = set(commit.get("files") or [])
+        hit_direct = files & direct_files
+        hit_nearby = files & neighbor_files
+        if not (hit_direct or hit_nearby) or commit["hash"] in seen:
+            continue
+        seen.add(commit["hash"])
+        entry = {
+            "hash": commit["hash"][:12],
+            "date": str(commit["date"])[:10],
+            "author": commit["author"],
+            "subject": commit["subject"],
+        }
+        if hit_direct:
+            entry["touched"] = sorted(hit_direct)
+            direct_commits.append(entry)
+        else:
+            entry["touched"] = sorted(hit_nearby)
+            nearby_commits.append(entry)
+
+    direct_commits.sort(key=lambda c: c["date"], reverse=True)
+    nearby_commits.sort(key=lambda c: c["date"], reverse=True)
+    return {
+        "symbol_id": symbol_id,
+        "file_path": chunk.file_path,
+        "line_range": [chunk.start_line, chunk.end_line],
+        "window_days": days,
+        "direct_commits": direct_commits[:25],
+        "direct_commit_count": len(direct_commits),
+        "blast_radius_commits": nearby_commits[:25],
+        "blast_radius_commit_count": len(nearby_commits),
+        "blast_radius_files_checked": len(neighbor_files),
+        "note": (
+            "recent activity on this symbol's file — coordinate before changing"
+            if direct_commits
+            else "no direct commits in window; blast-radius activity only"
+        ),
+    }
+
+
+def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_prefix: str = "") -> dict[str, object]:
+    """Rank files by combined risk: git churn (commits in last N days) x graph connectivity x missing test coverage. High churn + highly connected + untested = change hotspot — where regressions are most likely and review effort is best spent. Use this to prioritize review and test-writing. Read-only, safe to call anytime."""
+    limit = max(1, min(limit, 50))
+    days = max(1, min(days, 365))
+
+    try:
+        from app.rag.ingestion.git_ingestor import get_file_churn
+        churn = get_file_churn(days)
+    except Exception as exc:
+        return {"error": f"git history unavailable: {exc}"}
+
+    from app.core.index_store import index_metadata_store
+    snapshot = index_metadata_store.load_snapshot()
+    if not snapshot:
+        return {"error": "index snapshot unavailable — trigger a reindex"}
+
+    file_symbols: dict[str, list] = {}
+    for c in snapshot.chunks:
+        if not c.file_path or c.is_test or _is_noise_symbol(c.symbol_id):
+            continue
+        if c.kind not in ("fn", "impl"):
+            continue
+        if module_prefix and not c.symbol_id.startswith(module_prefix):
+            continue
+        file_symbols.setdefault(c.file_path, []).append(c)
+
+    degrees = graph_index.get_symbol_degrees()
+    test_counts = graph_index.get_test_caller_counts()
+
+    hotspots: list[dict[str, object]] = []
+    for file_path, commit_count in churn.items():
+        if commit_count < min_churn:
+            continue
+        symbols = file_symbols.get(file_path)
+        if not symbols:
+            continue
+        max_sym = max(symbols, key=lambda c: degrees.get(c.symbol_id, 0))
+        max_degree = degrees.get(max_sym.symbol_id, 0)
+        file_degree = sum(degrees.get(c.symbol_id, 0) for c in symbols)
+        anchor_tests = test_counts.get(max_sym.symbol_id, 0)
+        untested_syms = sum(1 for c in symbols if test_counts.get(c.symbol_id, 0) == 0)
+        untested_ratio = untested_syms / len(symbols)
+        degree_factor = min(max_degree, 100) / 10
+        test_factor = 1.5 if anchor_tests == 0 else (1.25 if untested_ratio > 0.8 else 1.0)
+        score = commit_count * max(degree_factor, 1.0) * test_factor
+        hotspots.append({
+            "file_path": file_path,
+            "score": round(score, 1),
+            "components": {
+                "commits": commit_count,
+                "top_symbol_connections": max_degree,
+                "file_total_connections": file_degree,
+                "untested_symbol_ratio": round(untested_ratio, 2),
+            },
+            "anchor_symbol": {
+                "symbol_id": max_sym.symbol_id,
+                "connections": max_degree,
+                "test_callers": anchor_tests,
+                "line_range": [max_sym.start_line, max_sym.end_line],
+            },
+            "symbol_count": len(symbols),
+        })
+
+    hotspots.sort(key=lambda h: h["score"], reverse=True)
+    return {
+        "window_days": days,
+        "min_churn": min_churn,
+        "hotspot_count": len(hotspots),
+        "hotspots": hotspots[:limit],
+        "method": "score = commits x min(top-symbol connections,100)/10 x test penalty (1.5 untested anchor / 1.25 mostly untested / 1.0 covered)",
+    }
+
+
+# ============================================================================
 # Idea 2: Enhanced search_symbols with alias map + file path + fuzzy matching
 # ============================================================================
 
