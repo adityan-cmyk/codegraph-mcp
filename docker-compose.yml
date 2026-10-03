@@ -169,6 +169,7 @@ services:
           memory: 3G
 
   ollama:
+    profiles: ["ollama"]
     image: ollama/ollama:latest
     container_name: oncall-ollama
     restart: unless-stopped
@@ -188,6 +189,7 @@ services:
       retries: 3
 
   prometheus:
+    profiles: ["observability"]
     image: prom/prometheus:latest
     container_name: oncall-prometheus
     restart: unless-stopped
@@ -209,6 +211,7 @@ services:
           memory: 1G
 
   loki:
+    profiles: ["observability"]
     image: grafana/loki:latest
     container_name: oncall-loki
     restart: unless-stopped
@@ -223,6 +226,7 @@ services:
           memory: 1G
 
   promtail:
+    profiles: ["observability"]
     image: grafana/promtail:latest
     container_name: oncall-promtail
     restart: unless-stopped
@@ -238,6 +242,7 @@ services:
           memory: 512M
 
   cadvisor:
+    profiles: ["observability"]
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: oncall-cadvisor
     restart: unless-stopped
@@ -254,6 +259,7 @@ services:
           memory: 512M
 
   blackbox:
+    profiles: ["observability"]
     image: prom/blackbox-exporter:latest
     container_name: oncall-blackbox
     restart: unless-stopped
@@ -268,6 +274,7 @@ services:
           memory: 128M
 
   grafana:
+    profiles: ["observability"]
     image: grafana/grafana:latest
     container_name: oncall-grafana
     restart: unless-stopped

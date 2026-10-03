@@ -1075,6 +1075,34 @@ async def _handle_mcp(request: Request) -> Response:
                 "isError": True,
             })
 
+        # UAM: per-user policy + daily tier quota + audit. Legacy token
+        # (no UAM user attached) bypasses — it is the bootstrap admin.
+        uam_user = getattr(request.state, "uam_user", None)
+        if uam_user is not None:
+            from app.core import uam
+
+            allowed, reason = uam.check_access(uam_user, tool_name)
+            if allowed:
+                quota = uam.quota_state(uam_user)
+                if not quota.get("unlimited") and quota.get("remaining", 1) <= 0:
+                    allowed = False
+                    reason = (
+                        f"daily quota exhausted for tier '{uam_user.tier}' "
+                        f"({quota.get('used')}/{quota.get('limit')} calls today, resets UTC midnight)"
+                    )
+            uam.audit(uam_user, tool_name, allowed, reason)
+            if not allowed:
+                return _respond(req_id, {
+                    "content": [{"type": "text", "text": json.dumps({
+                        "error": f"UAM: access denied — {reason}",
+                        "user": uam_user.name,
+                        "tier": uam_user.tier,
+                        "roles": uam_user.effective_roles,
+                        "upgrade_hint": "ask an admin to raise your tier or roles" if "quota" in reason else None,
+                    })}],
+                    "isError": True,
+                })
+
         handler = _TOOLS[tool_name]["handler"]
         import time as _t
 
@@ -1168,34 +1196,31 @@ def _client_key(request: Request) -> str:
 
 
 class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
-    """Constant-time bearer token auth with IP-based rate limiting.
+    """Bearer token auth with UAM identity + token-bucket rate limiting.
 
     Security measures:
-    - hmac.compare_digest for constant-time comparison (prevents timing attacks)
+    - UAM key resolution (hashed keys in Postgres) with legacy-token fallback
+      if the store is unreachable — a Postgres blip must never lock everyone out
+    - Token-bucket tool-call limiting per authenticated user (capacity 60,
+      refill 1/s — no fixed-window boundary bursts, no mass quota re-grant)
     - Per-IP rate limiting on failed attempts (max 5 per 60s, then 5min lockout)
     - All denied attempts logged with client IP and timestamp
     - /health endpoint is exempt (so monitoring works without a token)
     """
 
     _failed_attempts: dict[str, list[float]] = {}
-    _tool_calls: dict[str, list[float]] = {}
     _MAX_ATTEMPTS = 5
     _WINDOW_SEC = 60
     _LOCKOUT_SEC = 300
-    _TOOL_RATE_PER_MIN = 60
+    _TOOL_CAPACITY = 60
+    _TOOL_REFILL_PER_SEC = 1.0
 
-    def _tool_rate_limited(self, client_ip: str) -> bool:
-        import time
+    def _tool_rate_limited(self, identity: str) -> tuple[bool, float]:
+        from app.core.token_bucket import take_tokens
 
-        now = time.time()
-        calls = self._tool_calls.get(client_ip, [])
-        calls = [t for t in calls if now - t < 60]
-        if len(calls) >= self._TOOL_RATE_PER_MIN:
-            self._tool_calls[client_ip] = calls
-            return True
-        calls.append(now)
-        self._tool_calls[client_ip] = calls
-        return False
+        return take_tokens(
+            f"mcp:{identity}", self._TOOL_CAPACITY, self._TOOL_REFILL_PER_SEC
+        )
 
     def _is_rate_limited(self, client_ip: str) -> bool:
         import time
@@ -1261,27 +1286,41 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
         if auth.startswith("Bearer "):
             provided = auth[7:]
 
-        if hmac.compare_digest(provided, token):
-            # Authenticated tool-call rate limiting (sliding 60s window per IP).
+        # UAM resolution first; legacy exact-match fallback keeps the server
+        # usable when Postgres is unreachable.
+        uam_user = None
+        try:
+            from app.core import uam
+
+            uam_user = uam.lookup_user(provided)
+        except Exception:
+            uam_user = None
+
+        if uam_user is not None or hmac.compare_digest(provided, token):
+            request.state.uam_user = uam_user
+            identity = uam_user.name if uam_user else "legacy-admin"
+            # Authenticated tool-call rate limiting — token bucket per user.
             # Protects the process (and in-flight builds) from agent load tests
             # and runaway loops — the GIL means unbounded concurrent tool calls
             # starve embedding and indexing threads.
             if request.method == "POST" and request.url.path.endswith("/mcp"):
-                if self._tool_rate_limited(client_ip):
-                    logger.warning("Tool-call rate limit hit for IP %s", client_ip)
+                allowed, retry_after = self._tool_rate_limited(identity)
+                if not allowed:
+                    logger.warning("Tool-call rate limit hit for %s", identity)
                     return JSONResponse(
                         {
                             "jsonrpc": "2.0", "id": None,
                             "error": {
                                 "code": -32002,
                                 "message": (
-                                    f"Rate limit: max {self._TOOL_RATE_PER_MIN} MCP requests/min per client. "
-                                    "Back off and retry."
+                                    f"Rate limit: burst capacity {self._TOOL_CAPACITY} calls, "
+                                    f"sustained {int(self._TOOL_REFILL_PER_SEC * 60)}/min "
+                                    f"(token bucket, retry in {int(retry_after)}s)"
                                 ),
                             },
                         },
                         status_code=429,
-                        headers={"Retry-After": "60"},
+                        headers={"Retry-After": str(int(retry_after))},
                     )
             self._notify_new_client_if_needed(client_ip, request)
             return await call_next(request)
