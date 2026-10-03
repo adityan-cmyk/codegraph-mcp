@@ -1,128 +1,119 @@
 apiVersion: 1
-
 groups:
-  - orgId: 1
-    name: mcp-health
-    folder: codegraph
-    interval: 1m
-    rules:
-      - uid: mcp-backend-down
-        title: MCP backend down
-        condition: B
-        data:
-          - refId: A
-            relativeTimeRange: { from: 120, to: 0 }
-            datasourceUid: prometheus
-            model:
-              datasource: { type: prometheus, uid: prometheus }
-              editorMode: code
-              expr: max(up{job="backend"})
-              instant: true
-              intervalMs: 60000
-              legendFormat: __auto
-              maxDataPoints: 43200
-              range: false
-              refId: A
-          - refId: B
-            datasourceUid: __expr__
-            model:
-              conditions:
-                - evaluator: { params: [1], type: lt }
-                  operator: { type: and }
-                  query: { params: [B] }
-                  reducer: { params: [], type: last }
-                  type: query
-              datasource: { type: __expr__, uid: __expr__ }
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              reducer: last
-              refId: B
-              settings: { mode: dropNN }
-              type: threshold
-        for: 5m
-        noDataState: OK
-        annotations:
-          summary: "backend down for 5m+ — watchdog should be healing it; if this persists it is a real outage"
-        labels:
-          severity: critical
-      - uid: mcp-p95-latency
-        title: MCP tool p95 latency high
-        condition: B
-        data:
-          - refId: A
-            relativeTimeRange: { from: 300, to: 0 }
-            datasourceUid: prometheus
-            model:
-              datasource: { type: prometheus, uid: prometheus }
-              editorMode: code
-              expr: histogram_quantile(0.95, sum by (le) (rate(mcp_tool_latency_ms_bucket[5m]))) * (1 - clamp_max(max(index_rebuild_in_progress) or vector(0), 1))
-              instant: true
-              intervalMs: 60000
-              legendFormat: __auto
-              maxDataPoints: 43200
-              range: false
-              refId: A
-          - refId: B
-            datasourceUid: __expr__
-            model:
-              conditions:
-                - evaluator: { params: [10000], type: gt }
-                  operator: { type: and }
-                  query: { params: [B] }
-                  reducer: { params: [], type: last }
-                  type: query
-              datasource: { type: __expr__, uid: __expr__ }
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              reducer: last
-              refId: B
-              settings: { mode: dropNN }
-              type: threshold
-        for: 5m
-        noDataState: OK
-        annotations:
-          summary: "p95 tool latency > 10s for 5m outside index rebuilds — check embedding/ollama load"
-        labels:
-          severity: warning
-      - uid: mcp-error-rate
-        title: MCP tool error rate high
-        condition: B
-        data:
-          - refId: A
-            relativeTimeRange: { from: 300, to: 0 }
-            datasourceUid: prometheus
-            model:
-              datasource: { type: prometheus, uid: prometheus }
-              editorMode: code
-              expr: (sum(rate(mcp_tool_calls_total{status="error"}[5m])) / clamp_min(sum(rate(mcp_tool_calls_total[5m])), 0.001)) * (1 - clamp_max(max(index_rebuild_in_progress) or vector(0), 1))
-              instant: true
-              intervalMs: 60000
-              legendFormat: __auto
-              maxDataPoints: 43200
-              range: false
-              refId: A
-          - refId: B
-            datasourceUid: __expr__
-            model:
-              conditions:
-                - evaluator: { params: [0.05], type: gt }
-                  operator: { type: and }
-                  query: { params: [B] }
-                  reducer: { params: [], type: last }
-                  type: query
-              datasource: { type: __expr__, uid: __expr__ }
-              expression: A
-              intervalMs: 1000
-              maxDataPoints: 43200
-              reducer: last
-              refId: B
-              settings: { mode: dropNN }
-              type: threshold
-        for: 5m
-        noDataState: OK
-        annotations:
-          summary: ">5% of tool calls erroring for 5m outside index rebuilds"
-        labels:
-          severity: warning
+- orgId: 1
+  name: mcp-health
+  folder: codegraph
+  interval: 1m
+  rules:
+  - uid: mcp-backend-down
+    title: MCP backend down
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 120
+        to: 0
+      datasourceUid: prometheus
+      model:
+        datasource:
+          type: prometheus
+          uid: prometheus
+        editorMode: code
+        expr: max(up{job="backend"})
+        instant: true
+        intervalMs: 60000
+        legendFormat: __auto
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        conditions:
+        - evaluator:
+            params:
+            - 1
+            type: lt
+          operator:
+            type: and
+          query:
+            params:
+            - B
+          reducer:
+            params: []
+            type: last
+          type: query
+        datasource:
+          type: __expr__
+          uid: __expr__
+        expression: A
+        intervalMs: 1000
+        maxDataPoints: 43200
+        reducer: last
+        refId: B
+        settings:
+          mode: dropNN
+        type: threshold
+    for: 5m
+    noDataState: OK
+    annotations:
+      summary: "backend down for 5m+ \u2014 watchdog should be healing it; if this\
+        \ persists it is a real outage"
+    labels:
+      severity: critical
+  - uid: mcp-error-rate
+    title: MCP tool error rate high
+    condition: B
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 300
+        to: 0
+      datasourceUid: prometheus
+      model:
+        datasource:
+          type: prometheus
+          uid: prometheus
+        editorMode: code
+        expr: (sum(rate(mcp_tool_calls_total{status="error"}[5m])) / clamp_min(sum(rate(mcp_tool_calls_total[5m])),
+          0.001)) * (1 - clamp_max(max(index_rebuild_in_progress) or vector(0), 1))
+        instant: true
+        intervalMs: 60000
+        legendFormat: __auto
+        maxDataPoints: 43200
+        range: false
+        refId: A
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        conditions:
+        - evaluator:
+            params:
+            - 0.05
+            type: gt
+          operator:
+            type: and
+          query:
+            params:
+            - B
+          reducer:
+            params: []
+            type: last
+          type: query
+        datasource:
+          type: __expr__
+          uid: __expr__
+        expression: A
+        intervalMs: 1000
+        maxDataPoints: 43200
+        reducer: last
+        refId: B
+        settings:
+          mode: dropNN
+        type: threshold
+    for: 5m
+    noDataState: OK
+    annotations:
+      summary: '>5% of tool calls erroring for 5m outside index rebuilds'
+    labels:
+      severity: warning
