@@ -10,11 +10,13 @@ A stateless **MCP server** for code dependency graph analysis of Rust codebases 
 
 ```
 ┌──────────────────┐     ┌──────────────────┐     ┌────────────────────┐
-│  opencode Agent  │────▶│  Stateless MCP   │────▶│  Neo4j             │  dependency graph (gen-tagged, usage-mode edges)
-│  (any machine)   │     │  Server :8002    │────▶│  Weaviate          │  semantic vector search (shadow collections)
-│                  │     │  (19 tools)      │────▶│  PostgreSQL        │  snapshots, feedback, build registry
-│                  │────▶│  Feedback API    │     │  t2v-transformers  │  embedding model (BAAI/bge-base-en-v1.5)
-└──────────────────┘     │  :8000           │     │  ollama            │  decision model (nimble 9B, feedback gate)
+│  opencode Agent  │────▶│  MCP Server      │────▶│  Neo4j             │  dependency graph (gen-tagged, SCIP-refined edges)
+│  (any machine)   │     │  :8002           │────▶│  Weaviate          │  semantic vector search (shadow collections)
+│                  │     │  UAM: roles +    │────▶│  PostgreSQL        │  snapshots, feedback, build registry, uam_audit
+│                  │     │  tier quotas,    │     │  t2v-transformers  │  embedding model (MiniLM-L6-v2)
+│                  │     │  token buckets   │     │  ollama            │  decision model (nimble, digest-pinned)
+│                  │────▶│  REST API :8000  │     │  reranker          │  cross-encoder rerank sidecar (~150ms)
+└──────────────────┘     │  (26 tools)      │     │  Redis             │  query cache (tagged, compressed)
                          └──────────────────┘     └────────────────────┘
                                  │
                          ┌──────────────────┐
@@ -48,20 +50,23 @@ An interactive version of this diagram with full explanations lives in [docs/arc
 
 ### Services
 
-| Service | Purpose | Port |
-|---|---|---|
-| `backend` | FastAPI API + stateless MCP server | 8000, 8002 |
-| `postgres` | Snapshots, AI feedback, build registry | 5433 |
-| `redis` | Rate limiting, build stats, known-client tracking | 6380 |
-| `neo4j` | Code dependency graph (generation-tagged, zero-downtime rebuild) | 7474/7687 |
-| `weaviate` | Vector search (shadow collections, zero-downtime rebuild) | 8080 |
-| `t2v-transformers` | sentence-transformers BAAI/bge-base-en-v1.5 | 8081 |
-| `ollama` | Decision model for feedback quality gate (nimble 9B) | — |
-| `prometheus` | Metrics TSDB, 10s scrape, 30d retention | — (internal) |
-| `loki` | Log aggregation, 30d retention | — (internal) |
-| `promtail` | Ships oncall-* container logs to Loki | — |
-| `cadvisor` | Per-container CPU/memory metrics | — (internal) |
-| `grafana` | Dashboards (the only exposed observability port) | 3000 |
+| Service | Purpose | Port | Profile |
+|---|---|---|---|
+| `backend` | FastAPI API + stateless MCP server (UAM auth, token buckets, Redis query cache) | 8000, 8002 | core |
+| `postgres` | Snapshots, AI feedback, build registry, UAM users + audit | 5433 | core |
+| `redis` | Query cache (tagged, compressed), token buckets | 6380 | core |
+| `neo4j` | Code dependency graph (generation-tagged, zero-downtime rebuild) | 7474/7687 | core |
+| `weaviate` | Vector search (shadow collections, zero-downtime rebuild) | 8080 | core |
+| `t2v-transformers` | Embedding model (all-MiniLM-L6-v2 — beat jina-code in the golden-set trial) | 8081 | core |
+| `reranker` | Cross-encoder rerank sidecar (ms-marco-MiniLM, ~150ms on CPU) | — (internal) | core |
+| `ollama` | Decision model for feedback quality gate (digest-pinned copy) | — | ollama |
+| `prometheus` | Metrics TSDB, 10s scrape, 30d retention | — (internal) | observability |
+| `loki` | Log aggregation, 30d retention | — (internal) | observability |
+| `promtail` | Ships oncall-* container logs to Loki | — | observability |
+| `cadvisor` | Per-container CPU/memory metrics | — (internal) | observability |
+| `grafana` | Dashboards + codegraph-admin (usage, logs, cache, controls) | 3000 | observability |
+
+Lite mode: `docker compose up -d` starts core only; add `--profile ollama` / `--profile observability` as needed.
 
 ---
 
@@ -129,7 +134,7 @@ Add this to your `opencode.json`:
 | `get_blast_radius_detailed` | Blast radius with confidence scores AND usage modes on each edge (high/medium/low confidence). |
 | `batch_blast_radius` | Get blast radius for multiple symbols at once. Returns combined impact analysis. |
 | `get_symbol_content` | Get the source code of a symbol. Supports `start_line`/`end_line` paging for 500+ line symbols. |
-| `semantic_search` | Search by meaning (natural language). Hybrid BM25+vector, 30s timeout, auto-fallback to graph search. Chunk enrichment prepends module path for better matching. |
+| `semantic_search` | Search by meaning (natural language). Hybrid BM25+vector, 30s timeout, auto-fallback to graph search, query-conditioned boosts, cross-encoder rerank (~150ms), click-through mining. |
 | `analyze_pr_diff` | Parse a git diff, extract changed symbols, classify change types (new, signature_change, body_only, trait_impl, struct_field, deleted), get blast radius for each — all in one call. Symbol resolution is scoped to the diff's files. |
 | `find_dependency_path` | Find the shortest dependency path between two symbols. Prefers CALLS over USES, filters config types (GlobalState, etc.). |
 | `traverse_graph` | Multi-hop dependency traversal from a symbol (depth 1-5). Supports `summary_only` mode for compact output (counts per hop only, up to 1000 neighborhoods). |
@@ -595,16 +600,17 @@ The system indexes a Rust repository into two stores:
 
 ### Indexing pipeline
 
-1. Regex parser extracts `.rs` file symbols → `CodeChunk` objects (functions, structs, impls, traits, enums)
-2. Call targets extracted via `CALL_PATTERN`, `METHOD_CALL_PATTERN`
+1. Regex parser extracts `.rs` file symbols → `CodeChunk` objects (functions, structs, impls, traits, enums; `is_test` from `#[cfg(test)]`/`#[test]`, visibility from `pub`/`pub(crate)`)
+2. Call targets extracted via `CALL_PATTERN`, `METHOD_CALL_PATTERN` (kind-aware: only fns/methods are call targets)
 3. Type references extracted via `TYPE_REF_PATTERN` (matches `impl X`, `: Type`, `-> Type`, `<Type>`, and `TypeName::Variant`)
 4. Usage modes classified at index time: `pattern_match`, `construction`, `field_declaration`, `trait_impl`, `type_param`, `import`, `type_reference`
 5. Impl block methods extracted as separate symbols
-6. Graph edges built from call/type relationships with usage modes stored on USES edges
+6. **SCIP refinement** (gen-9+): when a rust-analyzer index exists (`scripts/generate-scip.sh`, enabled via `SCIP_REFINE_ENABLED`), its type-resolved edges REPLACE regex edges for covered files — trait dispatch, imports, and cross-module calls the regex extractor cannot see. Ambiguous symbols are skipped, never guessed.
 7. Chunk enrichment: module path prepended to content before embedding
 8. Snapshot stored in Postgres (incremental updates, not full re-insert)
-9. Graph built in Neo4j (zero-downtime, gen-tagged, usage modes on edges)
+9. Graph built in Neo4j (zero-downtime, gen-tagged, usage modes on edges, composite (id,gen) constraint)
 10. Semantic index built in Weaviate (zero-downtime, shadow collection)
+11. Metal-detector pass: TODOs, swallowed errors, stubs, dead code, panic paths, unsafe/FFI markers → `code_observations`
 
 ### Parser limitations (known ceiling)
 

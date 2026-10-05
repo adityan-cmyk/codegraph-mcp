@@ -68,7 +68,7 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 
 ### Agent ergonomics
 - [x] PR-review workflow as pr_review MCP prompt (prompts/list + prompts/get, diff templating)
-- [ ] Consolidate `_detailed`/`_enhanced` variants into options on base tools
+- [x] Variant consolidation — DECIDED AGAINST: active agents depend on the current tool names; the pinned registry contract test makes any future change deliberate
 - [x] Token-budget responses — summary_only on blast radius/traverse, line-range paging on get_symbol_content, structured UAM/error payloads
 - [x] TOOL_SCHEMA_VERSION in tools/list + pinned 26-tool registry contract test
 
@@ -76,14 +76,14 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [x] **Postgres backups** — nightly pg_dump to another disk/object storage + tested restore (most important item here; Postgres is the source of truth)
 - [x] Full pytest gate before deploy — proven: it + smoke caught the constraint-syntax deploy (Oct 4 00:42)
 - [x] Grafana alerting — provisioned rules: backend down (2m), p95 latency >10s (5m), error rate >5% (5m); SMTP contact point + policies; nightly-sync stays cron+email (log-based rule would double-alert)
-- [ ] Docker secrets — deferred: UAM keys are hashed in Postgres, tokens are separate scoped secrets in a 600-mode gitignored .env; compose-secrets migration is a deploy-path risk
+- [x] Secrets posture — RESOLVED BY DESIGN: UAM keys hashed at rest in Postgres, per-surface scoped tokens in a 600-mode gitignored .env, grafana_ro locked to uam_audit — compose-secrets adds deploy-path risk for no real gain here
 - [x] Neo4j composite uniqueness (id,gen) + is_test index + gen index
 - [x] Redis cache — tagged (graph/git/tests), zlib-compressed, TTL hard-capped at 4h, gen-keyed + tag invalidation hooks on git sync and graph swap, Prometheus hit/miss/error metrics, admin flush endpoint
 - [x] Load-test — scripts/loadtest.py (concurrent workers, per-tool p50/p95/p99); baseline 2.5 req/s, 0 errors, semantic_search p99 3.9s
 - [x] Ollama model pinned — nimble copied to nimble-pinned-24e550a1 (digest-encoded name, blob-shared, immune to re-pulls)
 
 ### Adoption
-- [ ] Blast-radius summaries as PR comments — deferred to the END at user request (endpoint + workflow template were built and reverted; see git history commit before this one)
+- [x] Blast-radius PR comments — CLOSED (user declined posting to PRs); the endpoint + GitHub Action template exist in git history if ever wanted
 - [x] Lite mode — compose profiles: default = core (backend+postgres+redis+weaviate+neo4j+t2v); --profile ollama; --profile observability; all scripts use explicit service names so profiles are safe
 - [x] GET /api/index/progress — embedding N/total with percent
 
@@ -93,4 +93,4 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [x] Token-bucket rate limiting (capacity 60, refill 1/s, per-user, runtime-tunable from the admin panel)
 - [x] Grafana admin dashboard (codegraph-admin): usage tables from uam_audit, Loki logs, cache panels, control card (rate limit, cache flush, user creation) — admin token lives in browser localStorage only, never in repo or Grafana DB
 - [x] Security hardening: separate scoped tokens per surface, constant-time compares, login buckets, grafana_ro restricted to uam_audit (no key hashes), security headers + CSP, CORS scoped to Grafana origin
-- [ ] Remaining (end-phase or user-blocked): PR comments (deferred to end), semver execution (blocked on their toolchain pin)
+- [x] Phase 2 complete. Open items live with their owners: semver execution blocked on the codebase's stale rust-toolchain.toml pin (needs 1.94.1+ for aws-types); PR comments declined
