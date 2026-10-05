@@ -1275,10 +1275,10 @@ class AdminControlPlaneTestCase(unittest.TestCase):
         ])
         fake_churn = {"crates/x/hot.rs": 5}
         fake_history = [
-            {"subject": "fix: payment bug", "files": ["crates/x/hot.rs"]},
-            {"subject": "revert previous change", "files": ["crates/x/hot.rs"]},
-            {"subject": "feat: new thing", "files": ["crates/x/hot.rs"]},
-            {"subject": "unrelated", "files": ["other.rs"]},
+            {"author": "alice", "subject": "fix: payment bug", "files": ["crates/x/hot.rs"]},
+            {"author": "bob", "subject": "revert previous change", "files": ["crates/x/hot.rs"]},
+            {"author": "alice", "subject": "feat: new thing", "files": ["crates/x/hot.rs"]},
+            {"author": "carol", "subject": "unrelated", "files": ["other.rs"]},
         ]
         from app.mcp.tools import graph_read_tools as grt
         with patch("app.rag.ingestion.git_ingestor.get_file_churn", return_value=fake_churn), \
@@ -1287,5 +1287,24 @@ class AdminControlPlaneTestCase(unittest.TestCase):
             out = grt.find_hotspots(days=30)
         h = out["hotspots"][0]
         self.assertEqual(h["components"]["fix_or_revert_commits"], 2)
-        # 5 commits x degree floor 1.0 x untested-anchor 1.5 x incident 1.1
+        self.assertFalse(h["components"]["bus_factor"], "mixed authorship must not trigger the bus-factor penalty")
+        # 5 commits x degree floor 1.0 x untested-anchor 1.5 x incident 1.1 x owner 1.0
         self.assertAlmostEqual(h["score"], 8.2, places=1)
+
+    def test_ownership_and_cochange(self):
+        from app.rag.ingestion.git_ingestor import get_ownership, get_co_change_pairs
+        from unittest.mock import patch
+        fake_history = [
+            {"author": "alice", "subject": "s", "files": ["a.rs", "b.rs"]},
+            {"author": "alice", "subject": "s", "files": ["a.rs", "b.rs"]},
+            {"author": "alice", "subject": "s", "files": ["a.rs"]},
+            {"author": "bob", "subject": "s", "files": ["b.rs", "c.rs"]},
+        ]
+        with patch("app.rag.ingestion.git_ingestor.get_recent_history", return_value=fake_history):
+            own = get_ownership(days=30)
+            self.assertEqual(own["a.rs"]["top_author"], "alice")
+            self.assertEqual(own["a.rs"]["top_author_share"], 1.0)
+            self.assertEqual(own["b.rs"]["author_count"], 2)
+            pairs = get_co_change_pairs(days=30, min_count=2)
+            self.assertEqual(pairs.get(("a.rs", "b.rs")), 2)
+            self.assertNotIn(("b.rs", "c.rs"), pairs, "below min_count")

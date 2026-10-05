@@ -311,6 +311,48 @@ def get_recent_history(days: int = 30, repository_path: str | None = None) -> li
     return commits
 
 
+def get_co_change_pairs(days: int = 30, repository_path: str | None = None, min_count: int = 3) -> dict[tuple[str, str], int]:
+    """File pairs that change together (same commit), counted over the window.
+
+    Co-change coupling is a dependency the compiler can't see: files that
+    ship together usually need reviewing together.
+    """
+    pair_counts: dict[tuple[str, str], int] = {}
+    for commit in get_recent_history(days, repository_path):
+        files = sorted({f for f in commit.get("files") or [] if f.endswith(".rs")})
+        for i, a in enumerate(files):
+            for b in files[i + 1:]:
+                pair_counts[(a, b)] = pair_counts.get((a, b), 0) + 1
+    return {pair: n for pair, n in pair_counts.items() if n >= min_count}
+
+
+def get_ownership(days: int = 30, repository_path: str | None = None) -> dict[str, dict]:
+    """Per-file author concentration — top author, their share, total commits.
+
+    A churny file owned by one person is a bus-factor risk: knowledge
+    concentrated, review bottlenecked.
+    """
+    author_counts: dict[str, dict[str, int]] = {}
+    for commit in get_recent_history(days, repository_path):
+        author = commit.get("author") or "unknown"
+        for f in commit.get("files") or []:
+            if not f.endswith(".rs"):
+                continue
+            author_counts.setdefault(f, {})
+            author_counts[f][author] = author_counts[f].get(author, 0) + 1
+    out: dict[str, dict] = {}
+    for f, counts in author_counts.items():
+        total = sum(counts.values())
+        top_author, top_n = max(counts.items(), key=lambda kv: kv[1])
+        out[f] = {
+            "top_author": top_author,
+            "top_author_share": round(top_n / total, 2) if total else 0.0,
+            "total_commits": total,
+            "author_count": len(counts),
+        }
+    return out
+
+
 def get_file_churn(days: int = 30, repository_path: str | None = None) -> dict[str, int]:
     """Commit count per file over the last N days."""
     churn: dict[str, int] = {}

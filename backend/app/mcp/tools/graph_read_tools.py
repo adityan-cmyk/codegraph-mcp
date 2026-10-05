@@ -903,6 +903,29 @@ def recent_changes_near(symbol_id: str, days: int = 14, include_blast_radius: bo
         ),
     }
 
+    # Co-change partners: files that ship with this one — review them together.
+    try:
+        from app.rag.ingestion.git_ingestor import get_co_change_pairs
+        pairs = get_co_change_pairs(days)
+        partners: dict[str, int] = {}
+        for (a, b), n in pairs.items():
+            if a == chunk.file_path:
+                partners[b] = n
+            elif b == chunk.file_path:
+                partners[a] = n
+        if partners:
+            top = sorted(partners.items(), key=lambda kv: -kv[1])[:3]
+            result["co_change_partners"] = [
+                {"file_path": f, "shared_commits": n} for f, n in top
+            ]
+            result["co_change_note"] = (
+                "these files changed together with this one — review them in the same pass"
+            )
+    except Exception:
+        pass
+
+    return result
+
 
 def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_prefix: str = "") -> dict[str, object]:
     """Rank files by combined risk: git churn (commits in last N days) x graph connectivity x missing test coverage. High churn + highly connected + untested = change hotspot — where regressions are most likely and review effort is best spent. Use this to prioritize review and test-writing. Read-only, safe to call anytime."""
@@ -955,6 +978,15 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
     except Exception:
         pass
 
+    # Ownership concentration: churn funneled through one author is a
+    # bus-factor signal on top of raw churn.
+    ownership: dict[str, dict] = {}
+    try:
+        from app.rag.ingestion.git_ingestor import get_ownership
+        ownership = get_ownership(days)
+    except Exception:
+        pass
+
     hotspots: list[dict[str, object]] = []
     for file_path, commit_count in churn.items():
         if commit_count < min_churn:
@@ -969,10 +1001,14 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
         untested_syms = sum(1 for c in symbols if test_counts.get(c.symbol_id, 0) == 0)
         untested_ratio = untested_syms / len(symbols)
         fix_commits = fix_counts.get(file_path, 0)
+        own = ownership.get(file_path, {})
+        top_author = own.get("top_author", "")
+        top_author_share = own.get("top_author_share", 0.0)
         degree_factor = min(max_degree, 100) / 10
         test_factor = 1.5 if anchor_tests == 0 else (1.25 if untested_ratio > 0.8 else 1.0)
         incident_factor = 1.0 + min(fix_commits, 10) * 0.05
-        score = commit_count * max(degree_factor, 1.0) * test_factor * incident_factor
+        owner_factor = 1.1 if (top_author_share >= 0.8 and commit_count >= 5) else 1.0
+        score = commit_count * max(degree_factor, 1.0) * test_factor * incident_factor * owner_factor
         hotspots.append({
             "file_path": file_path,
             "score": round(score, 1),
@@ -982,6 +1018,9 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
                 "top_symbol_connections": max_degree,
                 "file_total_connections": file_degree,
                 "untested_symbol_ratio": round(untested_ratio, 2),
+                "top_author": top_author,
+                "top_author_share": top_author_share,
+                "bus_factor": top_author_share >= 0.8 and commit_count >= 5,
             },
             "anchor_symbol": {
                 "symbol_id": max_sym.symbol_id,

@@ -43,7 +43,7 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [ ] `cargo-semver-checks` on release branch for certain public-API break detection
 
 ### Risk scoring
-- [x] Git history signals (partial): churn + fix/hotfix/revert frequency in find_hotspots (incident factor); co-change coupling + ownership concentration remain open
+- [x] Git history signals: churn + fix/revert frequency + ownership concentration (bus-factor) in find_hotspots, co-change partners in recent_changes_near
 - [x] Code risk markers: unsafe blocks, FFI boundaries, unwrap()/expect() density, panic! paths
 - [x] Backtest — scripts/backtest_risk.py: precision/recall @10/20/50 of hotspot ranks vs incident files; report-only until more history accumulates
 
@@ -83,7 +83,7 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [x] Ollama model pinned — nimble copied to nimble-pinned-24e550a1 (digest-encoded name, blob-shared, immune to re-pulls)
 
 ### Adoption
-- [ ] Blast-radius summaries as PR comments (GitHub Action / webhook) — needs repo webhooks, deferred
+- [ ] Blast-radius summaries as PR comments — deferred to the END at user request (endpoint + workflow template were built and reverted; see git history commit before this one)
 - [x] Lite mode — compose profiles: default = core (backend+postgres+redis+weaviate+neo4j+t2v); --profile ollama; --profile observability; all scripts use explicit service names so profiles are safe
 - [x] GET /api/index/progress — embedding N/total with percent
 
@@ -93,4 +93,4 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [x] Token-bucket rate limiting (capacity 60, refill 1/s, per-user, runtime-tunable from the admin panel)
 - [x] Grafana admin dashboard (codegraph-admin): usage tables from uam_audit, Loki logs, cache panels, control card (rate limit, cache flush, user creation) — admin token lives in browser localStorage only, never in repo or Grafana DB
 - [x] Security hardening: separate scoped tokens per surface, constant-time compares, login buckets, grafana_ro restricted to uam_audit (no key hashes), security headers + CSP, CORS scoped to Grafana origin
-- [ ] Remaining: SCIP/rust-analyzer parsing (needs their build), cross-encoder reranker (CPU-bound box), embedding model trial, semver-checks, GitHub Action PR comments, co-change/ownership signals
+- [ ] Remaining (end-phase or blocked): SCIP parsing (their build), cross-encoder reranker (CPU), embedding model trial, semver-checks, PR comments (user-deferred to end)
