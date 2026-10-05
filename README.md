@@ -119,7 +119,7 @@ Add this to your `opencode.json`:
 }
 ```
 
-### Available Tools (24)
+### Available Tools (26)
 
 | Tool | Description |
 |---|---|

@@ -37,47 +37,47 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 
 ### Analysis accuracy
 - [ ] Replace regex/tree-sitter parsing with rust-analyzer SCIP output (real type resolution: method calls, trait dispatch, imports) — biggest single quality gain
-- [ ] Track symbol visibility (pub vs pub(crate) vs private) and weight it into risk scores
-- [ ] Crate-level graph from Cargo.toml workspace members (cross-crate changes = riskier)
-- [ ] Handle `#[cfg(...)]` and feature flags (cfg(test) currently inflates blast radius)
+- [x] Symbol visibility parsed + weighted into risk (private 0.4x / pub(crate) 0.7x effective callers; also fixed the extractor never matching pub(crate) items)
+- [x] Crate-level graph — get_crate_graph tool (26): workspace members + path/workspace-inherited deps, dependents, cross-crate risk, crate-level cycles via shared Tarjan
+- [x] cfg(test) handled (is_test extraction, risk exclusion, get_tests_for_symbol); non-test feature flags remain open
 - [ ] `cargo-semver-checks` on release branch for certain public-API break detection
 
 ### Risk scoring
-- [ ] Git history signals: churn, co-change coupling, ownership concentration, fix/revert frequency
+- [x] Git history signals (partial): churn + fix/hotfix/revert frequency in find_hotspots (incident factor); co-change coupling + ownership concentration remain open
 - [x] Code risk markers: unsafe blocks, FFI boundaries, unwrap()/expect() density, panic! paths
-- [ ] Backtest the score against history (reverts + hotfixes as labels); tune thresholds from data
+- [x] Backtest — scripts/backtest_risk.py: precision/recall @10/20/50 of hotspot ranks vs incident files; report-only until more history accumulates
 
 ### New tools
 - [x] `get_tests_for_symbol` — which tests reach a symbol ("12 callers, 0 tests") — shipped with risk-score test exclusion + is_test extraction
 - [x] `resolve_stacktrace` — map panic backtraces / file:line logs to symbols + neighborhoods
 - [x] `recent_changes_near` — commits from last N days touching a symbol or its blast radius
 - [x] `find_hotspots` — high-churn + highly-connected + poorly-tested, ranked
-- [ ] `find_cycles` — dependency cycles between modules/crates
+- [x] `find_cycles` — module-level Tarjan SCC (iterative); crate-level via get_crate_graph
 - [x] `find_dead_code` — no callers outside tests; false positives double as parser-accuracy checks
 
 ### Search quality
 - [ ] Cross-encoder reranker (bge-reranker-base) over top hybrid results
 - [ ] Try a code-specific embedding model vs bge-base on the golden set
-- [ ] Include `///` doc comments and signatures prominently in chunks
-- [ ] Query-conditioned boosts instead of global (payment-helpful ≠ boosted everywhere)
+- [x] Doc comments prefixed into chunk content at extraction (`// {doc}`) — embedded with the symbol text
+- [x] Query-conditioned boosts — similar-past-query weights replace global when available, global as cold-start
 
 ### Learning loop
 - [x] Golden eval set — built from +1 search feedback (no hand-labeling), hit@5/hit@10/MRR via GET /api/index/eval/golden, quality recorded per build in the registry (rollback signal ready; auto-rollback deliberately off until baselines stabilize)
-- [ ] Mine implicit feedback from logs (search → get_symbol_content on result #4 = relevance signal)
-- [ ] Deterministic feedback validation (cited symbols exist, claimed tool calls appear in logs)
+- [x] Implicit feedback — click-through mining (content lookup on a recently-served result records a labeled +1)
+- [x] Deterministic validation — fabricated symbol ids in results_used rejected with the list
 
 ### Agent ergonomics
-- [ ] Ship the PR-review workflow as an MCP prompt (travels with the server)
+- [x] PR-review workflow as pr_review MCP prompt (prompts/list + prompts/get, diff templating)
 - [ ] Consolidate `_detailed`/`_enhanced` variants into options on base tools
-- [ ] Token-budget-aware responses: summary-first, pagination, consistent error codes
-- [ ] Version tool schemas + contract tests (response-shape changes shouldn't silently break agents)
+- [x] Token-budget responses — summary_only on blast radius/traverse, line-range paging on get_symbol_content, structured UAM/error payloads
+- [x] TOOL_SCHEMA_VERSION in tools/list + pinned 26-tool registry contract test
 
 ### Operations and reliability
 - [x] **Postgres backups** — nightly pg_dump to another disk/object storage + tested restore (most important item here; Postgres is the source of truth)
-- [ ] Run tests before deploying (deployer already gates `last-good` on health; add the test gate)
+- [x] Full pytest gate before deploy — proven: it + smoke caught the constraint-syntax deploy (Oct 4 00:42)
 - [x] Grafana alerting — provisioned rules: backend down (2m), p95 latency >10s (5m), error rate >5% (5m); SMTP contact point + policies; nightly-sync stays cron+email (log-based rule would double-alert)
 - [ ] Docker secrets — deferred: UAM keys are hashed in Postgres, tokens are separate scoped secrets in a 600-mode gitignored .env; compose-secrets migration is a deploy-path risk
-- [ ] Neo4j indexes + constraints on symbol IDs and generation tags (traversal speed as graph grows)
+- [x] Neo4j composite uniqueness (id,gen) + is_test index + gen index
 - [x] Redis cache — tagged (graph/git/tests), zlib-compressed, TTL hard-capped at 4h, gen-keyed + tag invalidation hooks on git sync and graph swap, Prometheus hit/miss/error metrics, admin flush endpoint
 - [x] Load-test — scripts/loadtest.py (concurrent workers, per-tool p50/p95/p99); baseline 2.5 req/s, 0 errors, semantic_search p99 3.9s
 - [x] Ollama model pinned — nimble copied to nimble-pinned-24e550a1 (digest-encoded name, blob-shared, immune to re-pulls)
@@ -85,7 +85,7 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 ### Adoption
 - [ ] Blast-radius summaries as PR comments (GitHub Action / webhook) — needs repo webhooks, deferred
 - [x] Lite mode — compose profiles: default = core (backend+postgres+redis+weaviate+neo4j+t2v); --profile ollama; --profile observability; all scripts use explicit service names so profiles are safe
-- [ ] Index progress endpoint (the 1-2h first index shouldn't be a black box)
+- [x] GET /api/index/progress — embedding N/total with percent
 
 
 ## Session additions (2026-10-03/04)
@@ -93,4 +93,4 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [x] Token-bucket rate limiting (capacity 60, refill 1/s, per-user, runtime-tunable from the admin panel)
 - [x] Grafana admin dashboard (codegraph-admin): usage tables from uam_audit, Loki logs, cache panels, control card (rate limit, cache flush, user creation) — admin token lives in browser localStorage only, never in repo or Grafana DB
 - [x] Security hardening: separate scoped tokens per surface, constant-time compares, login buckets, grafana_ro restricted to uam_audit (no key hashes), security headers + CSP, CORS scoped to Grafana origin
-- [ ] Remaining from Phase 2: SCIP/rust-analyzer parsing (needs their build), crate-level Cargo.toml graph, cross-encoder reranker (CPU-bound), embedding model trial, semver-checks, GitHub Action PR comments
+- [ ] Remaining: SCIP/rust-analyzer parsing (needs their build), cross-encoder reranker (CPU-bound box), embedding model trial, semver-checks, GitHub Action PR comments, co-change/ownership signals

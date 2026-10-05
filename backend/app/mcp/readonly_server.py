@@ -29,6 +29,7 @@ from app.mcp.tools.graph_read_tools import (
     recent_changes_near,
     find_hotspots,
     find_cycles,
+    get_crate_graph,
     get_blast_radius,
     traverse_graph,
     get_graph_stats,
@@ -503,6 +504,20 @@ _TOOLS: dict[str, Any] = {
             "required": ["symbol_id"],
         },
     },
+    "get_crate_graph": {
+        "handler": get_crate_graph,
+        "description": inspect.getdoc(get_crate_graph) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "crate": {
+                    "type": "string",
+                    "description": "Optional crate name (e.g. 'common') for a single-crate view; omit for the workspace summary",
+                },
+            },
+            "required": [],
+        },
+    },
     "find_cycles": {
         "handler": find_cycles,
         "description": inspect.getdoc(find_cycles) or "",
@@ -773,6 +788,22 @@ _DIRECTORY = {
                 "blast_radius_commits": "array[object]",
                 "direct_commit_count": "int",
                 "blast_radius_commit_count": "int",
+            },
+        },
+        {
+            "name": "get_crate_graph",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Workspace crate dependencies from Cargo.toml — deps, dependents, cross-crate risk, crate-level cycles.",
+            "arguments": {
+                "crate": "string (optional) — single-crate view",
+            },
+            "response_shape": {
+                "crate_count": "int",
+                "internal_edges": "int",
+                "most_depended_on": "array[object]",
+                "crate_cycles": "array[object] | null",
+                "crates": "object",
             },
         },
         {

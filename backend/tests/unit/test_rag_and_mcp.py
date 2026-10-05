@@ -1012,7 +1012,7 @@ class ContractDriftTestCase(unittest.TestCase):
             "get_reinforcement_stats",
             "find_warnings_in_blast_radius", "diff_modules", "make_decision",
             "resolve_stacktrace", "find_dead_code", "get_tests_for_symbol",
-            "recent_changes_near", "find_hotspots", "find_cycles",
+            "recent_changes_near", "find_hotspots", "find_cycles", "get_crate_graph",
         }
         actual = set(readonly_server._TOOLS.keys())
         self.assertEqual(actual, expected,
@@ -1238,3 +1238,54 @@ class AdminControlPlaneTestCase(unittest.TestCase):
         client = TestClient(app)
         r = client.get("/api/uam/users")
         self.assertIn(r.status_code, (401, 503))
+
+    def test_crate_graph_tool(self):
+        from unittest.mock import patch
+        from app.mcp.tools import graph_read_tools as grt
+        fake_graph = {
+            "common": {"path": "crates/common", "manifest_dir": "/x", "dependencies": [], "dependents": ["wallet", "uam"]},
+            "wallet": {"path": "crates/wallet", "manifest_dir": "/x", "dependencies": ["common"], "dependents": []},
+            "uam": {"path": "crates/uam", "manifest_dir": "/x", "dependencies": ["common"], "dependents": []},
+        }
+        with patch("app.rag.ingestion.crate_graph.load_crate_graph", return_value=fake_graph):
+            full = grt.get_crate_graph()
+            self.assertEqual(full["crate_count"], 3)
+            self.assertEqual(full["internal_edges"], 2)
+            self.assertTrue(any(c["crate"] == "common" and c["dependents"] == 2 for c in full["most_depended_on"]))
+            self.assertIsNone(full["crate_cycles"], "DAG workspace must report no cycles")
+
+            single = grt.get_crate_graph("common")
+            self.assertEqual(single["dependent_count"], 2)
+            self.assertEqual(single["cross_crate_risk"], "medium", ">5 dependents is high; 2 is medium")
+            self.assertEqual(single["dependencies"], [])
+
+            missing = grt.get_crate_graph("nope")
+            self.assertIn("unknown crate", missing["error"])
+
+    def test_hotspots_incident_factor(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        from app.rag.retrieval.graph import graph_index
+        graph_index.upsert_symbol("crates::x::hot", metadata={"kind": "fn", "file_path": "crates/x/hot.rs"})
+        for i in range(5):
+            graph_index.upsert_symbol(f"crates::x::c{i}", calls=["crates::x::hot"], metadata={"kind": "fn"})
+        snap = SimpleNamespace(chunks=[
+            SimpleNamespace(symbol_id="crates::x::hot", file_path="crates/x/hot.rs",
+                            start_line=1, end_line=5, is_test=False, kind="fn", visibility="pub"),
+        ])
+        fake_churn = {"crates/x/hot.rs": 5}
+        fake_history = [
+            {"subject": "fix: payment bug", "files": ["crates/x/hot.rs"]},
+            {"subject": "revert previous change", "files": ["crates/x/hot.rs"]},
+            {"subject": "feat: new thing", "files": ["crates/x/hot.rs"]},
+            {"subject": "unrelated", "files": ["other.rs"]},
+        ]
+        from app.mcp.tools import graph_read_tools as grt
+        with patch("app.rag.ingestion.git_ingestor.get_file_churn", return_value=fake_churn), \
+             patch("app.rag.ingestion.git_ingestor.get_recent_history", return_value=fake_history), \
+             patch("app.core.index_store.index_metadata_store.load_snapshot", return_value=snap):
+            out = grt.find_hotspots(days=30)
+        h = out["hotspots"][0]
+        self.assertEqual(h["components"]["fix_or_revert_commits"], 2)
+        # 5 commits x degree floor 1.0 x untested-anchor 1.5 x incident 1.1
+        self.assertAlmostEqual(h["score"], 8.2, places=1)

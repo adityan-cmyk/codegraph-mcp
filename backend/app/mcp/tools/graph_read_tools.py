@@ -940,6 +940,21 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
     degrees = graph_index.get_symbol_degrees()
     test_counts = graph_index.get_test_caller_counts()
 
+    # Incident history: commits whose subject says fix/hotfix/revert are
+    # proven incident markers — files that keep needing them are riskier
+    # than churn alone suggests.
+    fix_counts: dict[str, int] = {}
+    try:
+        from app.rag.ingestion.git_ingestor import get_recent_history
+        import re as _re
+        _FIX_RE = _re.compile(r"\b(fix|hotfix|revert)\b", _re.IGNORECASE)
+        for commit in get_recent_history(days):
+            if _FIX_RE.search(commit.get("subject") or ""):
+                for f in commit.get("files") or []:
+                    fix_counts[f] = fix_counts.get(f, 0) + 1
+    except Exception:
+        pass
+
     hotspots: list[dict[str, object]] = []
     for file_path, commit_count in churn.items():
         if commit_count < min_churn:
@@ -953,14 +968,17 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
         anchor_tests = test_counts.get(max_sym.symbol_id, 0)
         untested_syms = sum(1 for c in symbols if test_counts.get(c.symbol_id, 0) == 0)
         untested_ratio = untested_syms / len(symbols)
+        fix_commits = fix_counts.get(file_path, 0)
         degree_factor = min(max_degree, 100) / 10
         test_factor = 1.5 if anchor_tests == 0 else (1.25 if untested_ratio > 0.8 else 1.0)
-        score = commit_count * max(degree_factor, 1.0) * test_factor
+        incident_factor = 1.0 + min(fix_commits, 10) * 0.05
+        score = commit_count * max(degree_factor, 1.0) * test_factor * incident_factor
         hotspots.append({
             "file_path": file_path,
             "score": round(score, 1),
             "components": {
                 "commits": commit_count,
+                "fix_or_revert_commits": fix_commits,
                 "top_symbol_connections": max_degree,
                 "file_total_connections": file_degree,
                 "untested_symbol_ratio": round(untested_ratio, 2),
@@ -980,21 +998,14 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
         "min_churn": min_churn,
         "hotspot_count": len(hotspots),
         "hotspots": hotspots[:limit],
-        "method": "score = commits x min(top-symbol connections,100)/10 x test penalty (1.5 untested anchor / 1.25 mostly untested / 1.0 covered)",
+        "method": "score = commits x min(top-symbol connections,100)/10 x test penalty (1.5/1.25/1.0) x incident factor (1 + 0.05 x fix-or-revert commits, capped 1.5)",
     }
     cache_set("hotspots", cache_args, payload, ttl=4*3600, tags=["graph", "git", "tests"])
     return payload
 
 
-def find_cycles(min_size: int = 2, limit: int = 10) -> dict[str, object]:
-    """Find dependency cycles between modules — strongly connected components in the module-level call/type graph. Circular dependencies make changes ripple unpredictably and block clean testing; use this to find refactoring targets. Read-only, safe to call anytime."""
-    limit = max(1, min(limit, 30))
-
-    edges = graph_index.get_module_edges()
-    if not edges:
-        return {"cycles": [], "cycle_count": 0, "note": "no cross-module edges in the graph"}
-
-    # Tarjan strongly connected components, iterative (no recursion limits)
+def _sccs(edges: list[tuple[str, str]], min_size: int = 2) -> list[list[str]]:
+    """Iterative Tarjan strongly connected components (no recursion limits)."""
     graph: dict[str, list[str]] = {}
     for src, dst in edges:
         graph.setdefault(src, []).append(dst)
@@ -1043,6 +1054,71 @@ def find_cycles(min_size: int = 2, limit: int = 10) -> dict[str, object]:
                         break
                 if len(component) >= max(min_size, 2):
                     sccs.append(sorted(component))
+    return sccs
+
+
+def get_crate_graph(crate: str = "") -> dict[str, object]:
+    """Workspace crate dependencies from Cargo.toml — path deps and workspace-inherited deps between crates, with dependents and crate-level cycles. Cross-crate changes are riskier: a crate with many internal dependents has a wider blast radius. Call without arguments for the full workspace summary with cycles; pass a crate name (e.g. 'common') for that crate's dependencies, dependents, and cycle membership. Read-only, safe to call anytime."""
+    try:
+        from app.rag.ingestion.crate_graph import load_crate_graph, crate_edges
+        graph = load_crate_graph()
+    except Exception as exc:
+        return {"error": f"crate graph unavailable: {exc}"}
+
+    if not graph:
+        return {"error": "no workspace members found — is this a Cargo workspace?"}
+
+    edges = crate_edges(graph)
+
+
+    if crate:
+        crate = crate.strip()
+        info = graph.get(crate)
+        if info is None:
+            return {"error": f"unknown crate: {crate}", "known_crates": sorted(graph.keys())[:30]}
+        cycle_groups = [c for c in _sccs(edges) if crate in c]
+        return {
+            "crate": crate,
+            "path": info["path"],
+            "dependencies": info["dependencies"],
+            "dependents": info["dependents"],
+            "dependent_count": len(info["dependents"]),
+            "cross_crate_risk": (
+                "high" if len(info["dependents"]) > 5
+                else "medium" if info["dependents"]
+                else "leaf — no internal consumers"
+            ),
+            "cycle_membership": cycle_groups or None,
+        }
+
+    cycles = _sccs(edges)
+    ranked = sorted(
+        ((name, len(info["dependents"])) for name, info in graph.items()),
+        key=lambda kv: -kv[1],
+    )[:10]
+    return {
+        "crate_count": len(graph),
+        "internal_edges": len(edges),
+        "most_depended_on": [{"crate": n, "dependents": d} for n, d in ranked],
+        "crate_cycles": [{"crates": c, "size": len(c)} for c in cycles] or None,
+        "cycle_note": (
+            f"{len(cycles)} crate-level cycle group(s) — circular crate dependencies"
+            if cycles else "no crate-level cycles — workspace is a DAG"
+        ),
+        "crates": {name: {"dependencies": info["dependencies"], "dependents": len(info["dependents"])}
+                   for name, info in sorted(graph.items())},
+    }
+
+
+def find_cycles(min_size: int = 2, limit: int = 10) -> dict[str, object]:
+    """Find dependency cycles between modules — strongly connected components in the module-level call/type graph. Circular dependencies make changes ripple unpredictably and block clean testing; use this to find refactoring targets. Read-only, safe to call anytime."""
+    limit = max(1, min(limit, 30))
+
+    edges = graph_index.get_module_edges()
+    if not edges:
+        return {"cycles": [], "cycle_count": 0, "note": "no cross-module edges in the graph"}
+
+    sccs = _sccs(edges, min_size)
 
     def cycle_score(comp: list[str]) -> int:
         comp_set = set(comp)

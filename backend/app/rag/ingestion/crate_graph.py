@@ -37,30 +37,33 @@ def _member_name(manifest: dict, fallback: str) -> str:
     return pkg.get("name") or fallback
 
 
-def _path_deps(manifest: dict, workspace_deps: dict[str, str], crate_dir: Path) -> list[str]:
+def _path_deps(manifest: dict, workspace_deps: dict[str, dict], crate_dir: Path, repo_root: Path) -> list[str]:
     """Resolve this crate's internal dependencies to crate NAMES.
 
-    Handles both `foo = { path = "../foo" }` and workspace inheritance
-    `foo = { workspace = true }` (resolved via [workspace.dependencies]).
+    Handles both `foo = { path = "../foo" }` (relative to the member) and
+    workspace inheritance `foo = { workspace = true }` — whose
+    [workspace.dependencies] paths are relative to the WORKSPACE ROOT.
     """
+
+    def _name_for(dep_dir: Path, fallback: str) -> str | None:
+        dep_manifest = _parse_cargo_toml(dep_dir / "Cargo.toml")
+        return _member_name(dep_manifest, fallback) if dep_manifest else None
+
     names: set[str] = set()
     for section in ("dependencies", "dev-dependencies"):
         for dep_name, spec in (manifest.get(section) or {}).items():
             if not isinstance(spec, dict):
                 continue  # registry dep ("foo = "1.0"")
             if "path" in spec:
-                dep_dir = (crate_dir / spec["path"]).resolve()
-                dep_manifest = _parse_cargo_toml(dep_dir / "Cargo.toml")
-                if dep_manifest:
-                    names.add(_member_name(dep_manifest, dep_name))
+                name = _name_for((crate_dir / spec["path"]).resolve(), dep_name)
+                if name:
+                    names.add(name)
             elif spec.get("workspace") is True and dep_name in workspace_deps:
-                # workspace.dependencies entries carry the path (or are registry deps)
                 wspec = workspace_deps[dep_name]
-                if isinstance(wspec, dict) and "path" in wspec:
-                    dep_dir = (crate_dir / wspec["path"]).resolve()
-                    dep_manifest = _parse_cargo_toml(dep_dir / "Cargo.toml")
-                    if dep_manifest:
-                        names.add(_member_name(dep_manifest, dep_name))
+                if "path" in wspec:
+                    name = _name_for((repo_root / wspec["path"]).resolve(), dep_name)
+                    if name:
+                        names.add(name)
     return sorted(names)
 
 
@@ -93,7 +96,7 @@ def load_crate_graph(repository_path: str | None = None) -> dict[str, dict]:
         graph[name] = {
             "path": member,
             "manifest_dir": str(crate_dir),
-            "dependencies": _path_deps(manifest, workspace_deps, crate_dir),
+            "dependencies": _path_deps(manifest, workspace_deps, crate_dir, repo),
             "dependents": [],
         }
 
