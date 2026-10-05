@@ -37,7 +37,7 @@ docker run --rm \
     # their deps can require a newer stable than the image ships
     # (aws-types needed 1.94.1 when the image had 1.94.0)
     for attempt in 1 2 3; do
-      if rustup update stable --no-self-update --quiet; then break; fi
+      if rustup update stable 2>&1 | tail -1; then break; fi
       echo "rustup update failed (attempt $attempt/3)" >&2; sleep 20
     done
     rustup default stable
