@@ -31,9 +31,9 @@ class Neo4jGraphIndex:
             )
             # Composite uniqueness on (id, gen): correctness for MERGE and an
             # index for every id-scoped lookup (blast radius, tests, degrees).
+            # Nameless form — the named form rejected by this Neo4j version.
             session.run(
-                "CREATE CONSTRAINT IF NOT EXISTS symbol_id_gen "
-                "FOR (s:Symbol) REQUIRE (s.id, s.gen) IS UNIQUE"
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (s:Symbol) REQUIRE (s.id, s.gen) IS UNIQUE"
             )
             session.run(
                 "CREATE INDEX IF NOT EXISTS FOR (s:Symbol) ON (s.is_test)"
