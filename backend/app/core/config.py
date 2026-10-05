@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     api_auth_token: str | None = None
     mcp_auth_token: str | None = None
     admin_panel_token: str | None = None
+    reranker_enabled: bool = False
+    reranker_url: str = "http://reranker:8001"
+    # SCIP refinement: replace regex edges with rust-analyzer-resolved ones
+    # for files the index covers (see scripts/generate-scip.sh)
+    scip_refine_enabled: bool = False
+    scip_index_path: str = ""
 
     # SMTP notifications
     smtp_host: str | None = None

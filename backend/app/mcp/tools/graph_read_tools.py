@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 
+from app.core.config import settings as _settings
 from app.rag.retrieval.graph import graph_index
 from app.rag.retrieval.semantic import semantic_index
 
@@ -1284,6 +1285,26 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
 # Idea 4: Semantic search with timeout + fallback
 # ============================================================================
 
+def _rerank_via_sidecar(query: str, documents: list[str], timeout: float = 4.0) -> dict | None:
+    """Ask the cross-encoder sidecar to score query-doc relevance. Returns
+    {"order": [...], ...} or None — never raises into the search path."""
+    try:
+        import requests
+
+        url = getattr(_settings, "reranker_url", "") or "http://reranker:8001"
+        r = requests.post(
+            f"{url}/rerank",
+            json={"query": query, "documents": documents},
+            timeout=timeout,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return data
+    except Exception:
+        pass
+    return None
+
+
 def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
     import time as _t
 
@@ -1359,6 +1380,27 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
     reranked.sort(key=lambda x: x[1], reverse=True)
     reranked = reranked[:limit]
 
+    # Cross-encoder rerank: reorder the top hits by direct query-doc
+    # relevance. Strict budget — the CPU box cannot let this dominate
+    # latency; any failure keeps the hybrid ordering.
+    rerank_info: dict[str, object] | None = None
+    if reranked and getattr(_settings, "reranker_enabled", False):
+        try:
+            import concurrent.futures as _fut
+
+            docs = [f"{m.symbol_id}\n{m.content[:600]}" for m, _, _ in reranked]
+            with _fut.ThreadPoolExecutor(max_workers=1) as _ex:
+                _rr = _ex.submit(
+                    _rerank_via_sidecar, query, docs, timeout=4.0
+                )
+                rerank_info = _rr.result(timeout=5.0)
+            if rerank_info and rerank_info.get("order"):
+                order = rerank_info["order"][: len(reranked)]
+                reranked = [reranked[i] for i in order if i < len(reranked)]
+                rerank_info = {k: v for k, v in rerank_info.items() if k != "order"}
+        except Exception:
+            rerank_info = None
+
     query_id = uuid.uuid4().hex[:12]
 
     # Implicit-feedback mining: remember which symbols this search served.
@@ -1385,11 +1427,12 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
         pass
 
     SEMANTIC_SEARCH_LATENCY_MS.observe((_t.monotonic() - _search_start) * 1000)
-    return _attach_stale_warning({
+    response = _attach_stale_warning({
         "query": query,
         "query_id": query_id,
         "matches": len(reranked),
         "expansion_applied": bool(expansions),
+        "reranked": rerank_info,
         "timed_out": False,
         "results": [
             {
@@ -1403,6 +1446,7 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
             for m, adj, boost in reranked
         ],
     })
+    return response
 
 
 # ============================================================================

@@ -482,10 +482,36 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
     for edge in snapshot.graph_edges:
         if edge.relation == "uses":
             uses_with_modes_by_source.setdefault(edge.source_symbol_id, []).append(
-                (edge.target_symbol_id, edge.usage_modes or ["reference"])
-            )
+                (edge.target_symbol_id, edge.usage_modes or ["reference"]))
         else:
             calls_by_source.setdefault(edge.source_symbol_id, []).append(edge.target_symbol_id)
+
+    # SCIP refinement: where a rust-analyzer index is available, its
+    # type-resolved edges REPLACE the regex edges for files it covers —
+    # precise beats approximate. Uncovered files keep regex edges.
+    scip_refinement = _load_scip_refinement(snapshot)
+    if scip_refinement is not None:
+        scip_edges, covered_files, scip_stats = scip_refinement
+        replaced_sources = 0
+        for chunk in snapshot.chunks:
+            if chunk.file_path in covered_files:
+                sid = chunk.symbol_id
+                if sid in calls_by_source or sid in uses_with_modes_by_source:
+                    replaced_sources += 1
+                calls_by_source.pop(sid, None)
+                uses_with_modes_by_source.pop(sid, None)
+                for target_id, relation in scip_edges.get(sid, []):
+                    if relation == "calls":
+                        calls_by_source.setdefault(sid, []).append(target_id)
+                    else:
+                        uses_with_modes_by_source.setdefault(sid, []).append((target_id, ["reference"]))
+        logger.info(
+            "SCIP refinement: %d files covered, %d sources switched to type-resolved edges "
+            "(%d calls, %d uses from SCIP)",
+            len(covered_files), replaced_sources, scip_stats.get("edges_calls", 0),
+            scip_stats.get("edges_uses", 0),
+        )
+
     chunk_meta: dict[str, dict] = {}
     for chunk in snapshot.chunks:
         chunk_meta[chunk.symbol_id] = {
@@ -528,10 +554,9 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
     except Exception:
         pass
 
+
     def _cleanup_old_gen():
         try:
-            # Call on the NEW graph: it holds the surviving gen and deletes
-            # every other. The old instance may be dead or mid-kill.
             new_graph.cleanup_other_gens()
             logger.info("Cleaned up graph generations older than current (gen %d)", new_gen)
         except Exception:
@@ -562,6 +587,37 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
     )
 
     return new_stats
+
+
+def _load_scip_refinement(snapshot) -> tuple | None:
+    """(scip_edges, covered_files, stats) if a SCIP index is configured —
+    or None when unavailable/disabled."""
+    from app.core.config import settings
+
+    path = getattr(settings, "scip_index_path", "") or ""
+    enabled = getattr(settings, "scip_refine_enabled", False)
+    if not enabled or not path:
+        return None
+    import os
+
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        logger.warning("SCIP refinement enabled but index missing/empty at %s", path)
+        return None
+    try:
+        from app.rag.ingestion.scip_ingestor import build_scip_edges, parse_index
+
+        index = parse_index(path)
+        covered = {
+            d.relative_path for d in index.documents if d.relative_path.endswith(".rs")
+        }
+        # stale index (older than the indexed commit) still refines better
+        # than regex — but log the mismatch for observability
+        edges, stats = build_scip_edges(path, snapshot.chunks)
+        return edges, covered, stats
+    except Exception:
+        logger.warning("SCIP refinement failed — falling back to regex edges", exc_info=True)
+        return None
+
 
 
 def _wait_for_weaviate_ready() -> None:

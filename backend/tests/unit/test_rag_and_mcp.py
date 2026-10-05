@@ -1308,3 +1308,58 @@ class AdminControlPlaneTestCase(unittest.TestCase):
             pairs = get_co_change_pairs(days=30, min_count=2)
             self.assertEqual(pairs.get(("a.rs", "b.rs")), 2)
             self.assertNotIn(("b.rs", "c.rs"), pairs, "below min_count")
+
+    def test_scip_refinement_disabled_by_default(self):
+        from app.rag.indexing_service import _load_scip_refinement
+        self.assertIsNone(_load_scip_refinement(None),
+                          "refinement must be a no-op when disabled or index missing")
+
+    def test_scip_edge_extraction(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from app.rag.ingestion import scip_ingestor as si
+
+        # synthesize a minimal protobuf index
+        from app.rag.ingestion.scip import scip_pb2
+        idx = scip_pb2.Index()
+        doc = idx.documents.add()
+        doc.relative_path = "crates/x/pay.rs"
+        # def occurrence for process_payment at line 10 (name span)
+        d = doc.occurrences.add()
+        d.symbol = "rust-analyzer cargo x 0.1.0 pay/process_payment()."
+        d.symbol_roles = 1
+        d.range.extend([10, 7, 23])
+        # reference to settle_txn inside process_payment body (line 12)
+        r = doc.occurrences.add()
+        r.symbol = "rust-analyzer cargo x 0.1.0 settle/settle_txn()."
+        r.symbol_roles = 0
+        r.range.extend([12, 8, 18])
+        # reference at line 2 (imports — outside any fn body)
+        r2 = doc.occurrences.add()
+        r2.symbol = "rust-analyzer cargo x 0.1.0 settle/settle_txn()."
+        r2.symbol_roles = 0
+        r2.range.extend([2, 4, 14])
+
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(suffix=".scip", delete=False) as f:
+            f.write(idx.SerializeToString())
+            path = f.name
+        try:
+            chunks = [
+                SimpleNamespace(symbol_id="crates::x::pay::process_payment",
+                                file_path="crates/x/pay.rs", kind="fn",
+                                start_line=10, end_line=40, is_test=False, visibility="pub"),
+                SimpleNamespace(symbol_id="crates::x::settle::settle_txn",
+                                file_path="crates/x/settle.rs", kind="fn",
+                                start_line=1, end_line=30, is_test=False, visibility="pub"),
+            ]
+            edges, stats = si.build_scip_edges(path, chunks)
+        finally:
+            os.unlink(path)
+
+        self.assertIn("crates::x::pay::process_payment", edges)
+        edge_list = edges["crates::x::pay::process_payment"]
+        self.assertIn(("crates::x::settle::settle_txn", "calls"), edge_list,
+                      "fn reference inside fn body = CALLS edge")
+        # import-line reference must NOT create an edge (outside fn bodies)
+        self.assertEqual(len([e for e in edge_list if e[0] == "crates::x::settle::settle_txn"]), 1)

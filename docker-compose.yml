@@ -76,6 +76,27 @@ services:
           cpus: "2.0"
           memory: 2G
 
+  reranker:
+    build:
+      context: ./reranker
+    container_name: oncall-reranker
+    restart: unless-stopped
+    environment:
+      RERANKER_MODEL: "${RERANKER_MODEL:-BAAI/bge-reranker-base}"
+    volumes:
+      - reranker_models:/models
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3G
+
   weaviate:
     image: semitechnologies/weaviate:latest
     container_name: oncall-weaviate
@@ -127,7 +148,10 @@ services:
       - .env
     volumes:
       - ${CODEBASE_REPO_PATH}:/repos/codebase:ro
+      - ./scip-data:/scip-data:ro
     environment:
+      SCIP_REFINE_ENABLED: "${SCIP_REFINE_ENABLED:-false}"
+      SCIP_INDEX_PATH: "/scip-data/index.scip"
       INDEX_METADATA_BACKEND: postgres
       SEMANTIC_INDEX_BACKEND: weaviate
       GRAPH_INDEX_BACKEND: neo4j
@@ -307,6 +331,7 @@ services:
 
 
 volumes:
+  reranker_models:
   postgres_data:
   redis_data:
   neo4j_data:
