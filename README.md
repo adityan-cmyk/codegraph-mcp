@@ -119,7 +119,7 @@ Add this to your `opencode.json`:
 }
 ```
 
-### Available Tools (26)
+### Available Tools (26) — graph now SCIP-refined (rust-analyzer type resolution) since gen-9
 
 | Tool | Description |
 |---|---|

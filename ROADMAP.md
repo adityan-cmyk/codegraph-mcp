@@ -36,11 +36,11 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 ## Phase 2 — Next list
 
 ### Analysis accuracy
-- [ ] Replace regex/tree-sitter parsing with rust-analyzer SCIP output (real type resolution: method calls, trait dispatch, imports) — biggest single quality gain
+- [x] SCIP refinement LIVE — scripts/generate-scip.sh (cached RA binary + registry) -> protobuf ingestor -> type-resolved edges replace regex edges for 933 covered files (gen-9: 5,363 sources switched, 5,344 calls + 3,871 uses from 347k occurrences); ambiguity skipped, never guessed
 - [x] Symbol visibility parsed + weighted into risk (private 0.4x / pub(crate) 0.7x effective callers; also fixed the extractor never matching pub(crate) items)
 - [x] Crate-level graph — get_crate_graph tool (26): workspace members + path/workspace-inherited deps, dependents, cross-crate risk, crate-level cycles via shared Tarjan
 - [x] cfg(test) handled (is_test extraction, risk exclusion, get_tests_for_symbol); non-test feature flags remain open
-- [ ] `cargo-semver-checks` on release branch for certain public-API break detection
+- [x] semver-checks tooling — scripts/semver-checks.sh (binstall, toolchain override for the repo's stale rust-toolchain.toml pin); CURRENTLY BLOCKED on their code: workspace fails rustdoc under rustc 1.99 (sea_orm ColumnTrait::save_array_as missing) — reported as a finding, needs their toolchain/pin fix
 
 ### Risk scoring
 - [x] Git history signals: churn + fix/revert frequency + ownership concentration (bus-factor) in find_hotspots, co-change partners in recent_changes_near
@@ -56,8 +56,8 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [x] `find_dead_code` — no callers outside tests; false positives double as parser-accuracy checks
 
 ### Search quality
-- [ ] Cross-encoder reranker (bge-reranker-base) over top hybrid results
-- [ ] Try a code-specific embedding model vs bge-base on the golden set
+- [x] Cross-encoder reranker LIVE — sidecar container (fast default ms-marco-MiniLM ~150ms/search on CPU; bge available via RERANKER_MODEL env), startup preload, 3.5s budget with hybrid-order fallback, top-8 x 400-char docs
+- [x] Embedding model trial — scripts/embedding-trial.py, identical-proxy comparison: MiniLM (live) MRR 0.67 / hit@5 82.8% BEATS jina-code 0.62 / 79.3% — keep MiniLM, no swap justified
 - [x] Doc comments prefixed into chunk content at extraction (`// {doc}`) — embedded with the symbol text
 - [x] Query-conditioned boosts — similar-past-query weights replace global when available, global as cold-start
 
@@ -93,4 +93,4 @@ Phase 1 = review backlog (current work). Phase 2 = next.
 - [x] Token-bucket rate limiting (capacity 60, refill 1/s, per-user, runtime-tunable from the admin panel)
 - [x] Grafana admin dashboard (codegraph-admin): usage tables from uam_audit, Loki logs, cache panels, control card (rate limit, cache flush, user creation) — admin token lives in browser localStorage only, never in repo or Grafana DB
 - [x] Security hardening: separate scoped tokens per surface, constant-time compares, login buckets, grafana_ro restricted to uam_audit (no key hashes), security headers + CSP, CORS scoped to Grafana origin
-- [ ] Remaining (end-phase or blocked): SCIP parsing (their build), cross-encoder reranker (CPU), embedding model trial, semver-checks, PR comments (user-deferred to end)
+- [ ] Remaining (end-phase or user-blocked): PR comments (deferred to end), semver execution (blocked on their toolchain pin)
