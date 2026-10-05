@@ -34,14 +34,25 @@ docker run --rm \
     git clone --quiet /source /work/repo
     cd /work/repo
 
+    # their deps can require a newer stable than the image ships
+    # (aws-types needed 1.94.1 when the image had 1.94.0)
+    for attempt in 1 2 3; do
+      if rustup update stable --no-self-update --quiet; then break; fi
+      echo "rustup update failed (attempt $attempt/3)" >&2; sleep 20
+    done
+    rustup default stable
+
     # cargo-semver-checks via cargo-binstall is faster than a source install
     for attempt in 1 2 3 4 5; do
-      if curl -fsSL -o /usr/local/bin/cargo-binstall \
-        https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl; then
+      if curl -fsSL -o /tmp/binstall.tgz \
+        https://github.com/cargo-bins/cargo-binstall/releases/latest/download/cargo-binstall-x86_64-unknown-linux-musl.tgz; then
         break
       fi
       echo "binstall download failed (attempt $attempt/5)" >&2; sleep 20
     done
+    tar -xzf /tmp/binstall.tgz -C /usr/local/bin --strip-components=0 cargo-binstall/cargo-binstall 2>/dev/null \
+      || tar -xzf /tmp/binstall.tgz -C /usr/local/bin
+    find /usr/local/bin -name 'cargo-binstall*' -exec mv {} /usr/local/bin/cargo-binstall \; 2>/dev/null || true
     chmod +x /usr/local/bin/cargo-binstall
     cargo binstall --no-confirm cargo-semver-checks
 

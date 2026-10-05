@@ -12,10 +12,10 @@ RUN pip install --no-cache-dir \
     fastapi==0.115.0 \
     uvicorn==0.30.6
 
-# Model is configurable: bge-reranker-base (best quality, ~1GB, slower) or
-# cross-encoder/ms-marco-MiniLM-L-6-v2 (fast, ~90MB). CPU box — pick per
-# latency budget.
-ENV RERANKER_MODEL=BAAI/bge-reranker-base
+# Model is configurable via RERANKER_MODEL. Default ms-marco-MiniLM-L-6-v2:
+# ~100ms/doc on CPU. BAAI/bge-reranker-base is higher quality but ~1s/doc
+# on this box — only viable with fewer, shorter docs.
+ENV RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 ENV HF_HOME=/models
 
 COPY server.py .

@@ -23,14 +23,15 @@ for line in open(os.path.join(os.path.dirname(__file__), "..", ".env")):
         TOKEN = line.split("=", 1)[1].strip()
 
 TRIAL_SCRIPT = r'''
-import json, sys, urllib.request
+import json, sys
 
 candidate = sys.argv[1]
-req = urllib.request.Request("http://host.docker.internal:8000/api/index/eval/golden/stats")
-golden_count = 0
 
 from sentence_transformers import SentenceTransformer
-model = SentenceTransformer(candidate)
+model = SentenceTransformer(candidate, trust_remote_code=True)
+
+# baseline: the live embedding model under the SAME proxy — side by side
+baseline = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 pairs = json.load(open("/tmp/golden.json"))
 queries = sorted({p["query"] for p in pairs})
@@ -38,28 +39,37 @@ symbols = sorted({p["symbol_id"] for p in pairs})
 
 q_vecs = model.encode(queries, normalize_embeddings=True, show_progress_bar=False)
 s_vecs = model.encode(symbols, normalize_embeddings=True, show_progress_bar=False)
+bq_vecs = baseline.encode(queries, normalize_embeddings=True, show_progress_bar=False)
+bs_vecs = baseline.encode(symbols, normalize_embeddings=True, show_progress_bar=False)
 
 # for each pair: rank of the expected symbol among all golden symbols
 import numpy as np
 q_index = {q: i for i, q in enumerate(queries)}
 s_index = {s: i for i, s in enumerate(symbols)}
-hits5 = hits10 = 0
-mrr = 0.0
-for p in pairs:
-    sims = s_vecs @ q_vecs[q_index[p["query"]]]
-    ranked = sorted(range(len(symbols)), key=lambda i: -sims[i])
-    rank = ranked.index(s_index[p["symbol_id"]]) + 1
-    if rank <= 5: hits5 += 1
-    if rank <= 10: hits10 += 1
-    mrr += 1.0 / rank
-n = len(pairs)
+def metrics(q_vecs_, s_vecs_):
+    import numpy as np
+    hits5 = hits10 = 0
+    mrr = 0.0
+    for p in pairs:
+        sims = s_vecs_ @ q_vecs_[q_index[p["query"]]]
+        ranked = sorted(range(len(symbols)), key=lambda i: -sims[i])
+        rank = ranked.index(s_index[p["symbol_id"]]) + 1
+        if rank <= 5: hits5 += 1
+        if rank <= 10: hits10 += 1
+        mrr += 1.0 / rank
+    n = len(pairs)
+    return {"hit_at_5": round(hits5 / n, 4), "hit_at_10": round(hits10 / n, 4), "mrr": round(mrr / n, 4)}
+
+cand_m = metrics(q_vecs, s_vecs)
+base_m = metrics(bq_vecs, bs_vecs)
 print(json.dumps({
     "candidate": candidate,
-    "golden_pairs": n,
-    "note": "retrieval over golden SYMBOL IDS + queries only — a quick proxy, not the full corpus",
-    "hit_at_5": round(hits5 / n, 4),
-    "hit_at_10": round(hits10 / n, 4),
-    "mrr": round(mrr / n, 4),
+    "baseline": "sentence-transformers/all-MiniLM-L6-v2 (live model)",
+    "golden_pairs": len(pairs),
+    "note": "symbol-id-only retrieval proxy, both models under identical conditions",
+    "candidate_metrics": cand_m,
+    "baseline_metrics": base_m,
+    "verdict": "candidate wins" if cand_m["mrr"] > base_m["mrr"] else "baseline wins",
 }))
 '''
 

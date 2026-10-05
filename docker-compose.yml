@@ -82,7 +82,7 @@ services:
     container_name: oncall-reranker
     restart: unless-stopped
     environment:
-      RERANKER_MODEL: "${RERANKER_MODEL:-BAAI/bge-reranker-base}"
+      RERANKER_MODEL: "${RERANKER_MODEL:-cross-encoder/ms-marco-MiniLM-L-6-v2}"
     volumes:
       - reranker_models:/models
     healthcheck:

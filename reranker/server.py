@@ -33,6 +33,17 @@ class RerankRequest(BaseModel):
     documents: list[str]
 
 
+@app.on_event("startup")
+def warm() -> None:
+    """Load the model before serving — a cold /rerank would exceed the
+    backend's 3.5s budget on its first call after every restart."""
+    try:
+        _get_model()
+        logger.info("model preloaded")
+    except Exception:
+        logger.exception("model preload failed — will retry on first request")
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "model": os.environ.get("RERANKER_MODEL", "?"), "loaded": _model is not None}

@@ -1388,16 +1388,16 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
         try:
             import concurrent.futures as _fut
 
-            docs = [f"{m.symbol_id}\n{m.content[:600]}" for m, _, _ in reranked]
+            docs = [f"{m.symbol_id}\n{m.content[:400]}" for m, _, _ in reranked[:8]]
             with _fut.ThreadPoolExecutor(max_workers=1) as _ex:
                 _rr = _ex.submit(
-                    _rerank_via_sidecar, query, docs, timeout=4.0
+                    _rerank_via_sidecar, query, docs, timeout=3.5
                 )
-                rerank_info = _rr.result(timeout=5.0)
-            if rerank_info and rerank_info.get("order"):
-                order = rerank_info["order"][: len(reranked)]
+                rerank_info = _rr.result(timeout=4.0)
+            if rerank_info and rerank_info.get("reranked_order"):
+                order = rerank_info["reranked_order"][: len(reranked)]
                 reranked = [reranked[i] for i in order if i < len(reranked)]
-                rerank_info = {k: v for k, v in rerank_info.items() if k != "order"}
+                rerank_info = {k: v for k, v in rerank_info.items() if k != "reranked_order"}
         except Exception:
             rerank_info = None
 
