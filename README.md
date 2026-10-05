@@ -58,7 +58,7 @@ An interactive version of this diagram with full explanations lives in [docs/arc
 | `neo4j` | Code dependency graph (generation-tagged, zero-downtime rebuild) | 7474/7687 | core |
 | `weaviate` | Vector search (shadow collections, zero-downtime rebuild) | 8080 | core |
 | `t2v-transformers` | Embedding model (all-MiniLM-L6-v2 — beat jina-code in the golden-set trial) | 8081 | core |
-| `reranker` | Cross-encoder rerank sidecar (ms-marco-MiniLM, ~150ms on CPU) | — (internal) | core |
+| `reranker` | Cross-encoder rerank sidecar — **opt-in** (`--profile reranker`): measured MRR 0.49→0.395 on the golden set, off by default | — (internal) | reranker |
 | `ollama` | Decision model for feedback quality gate (digest-pinned copy) | — | ollama |
 | `prometheus` | Metrics TSDB, 10s scrape, 30d retention | — (internal) | observability |
 | `loki` | Log aggregation, 30d retention | — (internal) | observability |
@@ -134,7 +134,7 @@ Add this to your `opencode.json`:
 | `get_blast_radius_detailed` | Blast radius with confidence scores AND usage modes on each edge (high/medium/low confidence). |
 | `batch_blast_radius` | Get blast radius for multiple symbols at once. Returns combined impact analysis. |
 | `get_symbol_content` | Get the source code of a symbol. Supports `start_line`/`end_line` paging for 500+ line symbols. |
-| `semantic_search` | Search by meaning (natural language). Hybrid BM25+vector, 30s timeout, auto-fallback to graph search, query-conditioned boosts, cross-encoder rerank (~150ms), click-through mining. |
+| `semantic_search` | Search by meaning (natural language). Hybrid BM25+vector, 30s timeout, auto-fallback to graph search, query-conditioned boosts, click-through mining. (Cross-encoder rerank available but off — measurably worse on code, see reranker service note.) |
 | `analyze_pr_diff` | Parse a git diff, extract changed symbols, classify change types (new, signature_change, body_only, trait_impl, struct_field, deleted), get blast radius for each — all in one call. Symbol resolution is scoped to the diff's files. |
 | `find_dependency_path` | Find the shortest dependency path between two symbols. Prefers CALLS over USES, filters config types (GlobalState, etc.). |
 | `traverse_graph` | Multi-hop dependency traversal from a symbol (depth 1-5). Supports `summary_only` mode for compact output (counts per hop only, up to 1000 neighborhoods). |
