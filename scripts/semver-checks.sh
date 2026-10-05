@@ -41,6 +41,9 @@ docker run --rm \
       echo "rustup update failed (attempt $attempt/3)" >&2; sleep 20
     done
     rustup default stable
+    # the repo pins 1.94.0 via rust-toolchain.toml but its current deps
+    # need newer (aws-types requires 1.94.1+) — env override wins
+    export RUSTUP_TOOLCHAIN=stable
 
     # cargo-semver-checks via cargo-binstall is faster than a source install
     for attempt in 1 2 3 4 5; do
