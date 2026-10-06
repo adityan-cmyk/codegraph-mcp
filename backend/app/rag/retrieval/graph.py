@@ -153,10 +153,13 @@ class InMemoryGraphIndex:
 
     def search_symbols(self, query: str, limit: int = 20) -> list[dict[str, object]]:
         query_lower = query.lower()
+        # separator-insensitive secondary match: 'CloseTag' must find
+        # 'close_tag' — a plain substring check fails on the underscore
+        query_nosep = query_lower.replace("_", "")
         node_ids = set(self._upstream) | set(self._downstream) | set(self._used_by) | set(self._uses)
         results: list[dict[str, object]] = []
         for sid in node_ids:
-            if query_lower in sid.lower():
+            if query_lower in sid.lower() or (query_nosep and query_nosep in sid.lower().replace("_", "")):
                 meta = self._metadata.get(sid, {})
                 results.append({
                     "symbol_id": sid,
@@ -175,18 +178,19 @@ class InMemoryGraphIndex:
                     break
         return results
 
-    def traverse(self, symbol_id: str, depth: int = 1) -> list[GraphNeighborhood]:
+    def traverse(self, symbol_id: str, depth: int = 1, exclude: set[str] | None = None) -> list[GraphNeighborhood]:
         if depth < 1:
             raise ValueError("Depth must be at least 1.")
 
         visited: set[str] = set()
+        blocked = exclude or set()
         frontier = [symbol_id]
         neighborhoods: list[GraphNeighborhood] = []
 
         for _ in range(depth):
             next_frontier: list[str] = []
             for current in frontier:
-                if current in visited:
+                if current in visited or (current in blocked and current != symbol_id):
                     continue
                 visited.add(current)
                 neighborhood = self.get_blast_radius(current)
@@ -262,11 +266,11 @@ class GraphIndexProxy:
             return backend.get_neighbors(symbol_id, depth=depth)
         return backend.get_blast_radius(symbol_id)
 
-    def traverse(self, symbol_id: str, depth: int = 2, max_neighborhoods: int = 100) -> list[GraphNeighborhood]:
+    def traverse(self, symbol_id: str, depth: int = 2, max_neighborhoods: int = 100, exclude: set[str] | None = None) -> list[GraphNeighborhood]:
         backend = self._active()
         if hasattr(backend, "traverse"):
             try:
-                return backend.traverse(symbol_id, depth=depth, max_neighborhoods=max_neighborhoods)
+                return backend.traverse(symbol_id, depth=depth, max_neighborhoods=max_neighborhoods, exclude=exclude)
             except TypeError:
                 return backend.traverse(symbol_id, depth=depth)
         return backend.get_blast_radius(symbol_id)

@@ -1,7 +1,7 @@
 import asyncio
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
-from app.rag.indexing_service import IndexingSecurityError, index_rust_repository, replay_indexes_from_storage, semantic_rebuild_is_in_progress, reindex_semantic_only
+from app.rag.indexing_service import IndexingSecurityError, RebuildInProgressError, index_rust_repository, replay_indexes_from_storage, semantic_rebuild_is_in_progress, reindex_semantic_only
 from app.rag.ingestion.git_ingestor import ingest_incremental, get_last_indexed_commit, get_current_head
 from app.rag.retrieval.graph import graph_index
 from app.rag.retrieval.semantic import semantic_index
@@ -39,6 +39,8 @@ async def index_repository(payload: IndexRepositoryRequest) -> IndexingResult:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository path was not found.") from exc
     except IndexingSecurityError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except RebuildInProgressError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 

@@ -198,6 +198,32 @@ _TEST_ATTR_PATTERN = re.compile(r"#\[[^\]]*\btest\]")
 _CFG_TEST_MOD_PATTERN = re.compile(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+")
 
 
+def _brace_matched_end(source: str, search_from: int, fallback_end: int) -> int:
+    """Offset just past the item's closing brace, brace-counted.
+
+    Regex extractors assign each symbol 'until the next symbol starts' — a
+    function-local const then spans 91 lines and inherits the next fn's body
+    in every tool that reasons from line ranges. This walks the item's own
+    braces instead; string/char literals containing braces are rare enough in
+    signatures that plain counting is a strict improvement over the fallback.
+    """
+    brace = source.find("{", search_from)
+    if brace < 0 or brace >= fallback_end:
+        return fallback_end
+    depth = 0
+    i = brace
+    while i < len(source):
+        c = source[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return min(i + 1, fallback_end)
+        i += 1
+    return fallback_end
+
+
 def _cfg_test_spans(source: str) -> list[tuple[int, int]]:
     """Brace-counted spans of #[cfg(test)] modules — everything inside is a test."""
     spans: list[tuple[int, int]] = []
@@ -224,7 +250,13 @@ def _detect_visibility(match_text: str) -> str:
     """pub / pub(crate) / private from the item's signature text."""
     if re.search(r"\bpub\s*\(\s*crate\s*\)", match_text):
         return "pub_crate"
-    if re.search(r"\bpub\s+(?:fn|struct|enum|trait|type|const|static|mod)\b", match_text) or re.match(r"\s*pub\b", match_text):
+    # strip doc-comment and attribute lines, then look at the signature head:
+    # 'pub async fn' / 'pub const fn' have keywords between pub and fn, so a
+    # pub-immediately-before-kind regex missed them (and doc prose mentioning
+    # 'pub' must not mark a private item public)
+    sig = re.sub(r"(?m)^\s*(?:///.*|#[^\n]*)\n", "", match_text)
+    head = sig.split("{")[0]
+    if re.search(r"\bpub\b", head):
         return "pub"
     return "private"
 
@@ -260,10 +292,13 @@ def _extract_impl_methods(impl_match: re.Match, source: str, module_id: str, all
     for fi, fn_match in enumerate(fn_matches):
         fn_start = fn_match.start()
         fn_end = fn_matches[fi + 1].start() if fi + 1 < len(fn_matches) else len(impl_body)
+        # brace-matched extent instead of 'until the next fn in the impl'
+        fn_end = _brace_matched_end(impl_body, fn_match.end(), fn_end)
         fn_content = impl_body[fn_start:fn_end]
         fn_name = fn_match.group("name")
         abs_fn_start = start_offset + fn_start
         fn_is_test = _is_test_offset(abs_fn_start, source, fn_content, cfg_test_spans or [])
+        fn_visibility = _detect_visibility(fn_match.group(0))
 
         if len(fn_content.strip()) < MIN_CHUNK_LINES:
             continue
@@ -288,6 +323,7 @@ def _extract_impl_methods(impl_match: re.Match, source: str, module_id: str, all
                 start_line=abs_start_line,
                 end_line=abs_end_line,
                 is_test=fn_is_test,
+                visibility=fn_visibility,
             )
         )
     return method_chunks
@@ -378,6 +414,9 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
     for index, match in enumerate(matches):
         start_offset = match.start()
         end_offset = matches[index + 1].start() if index + 1 < len(matches) else len(source)
+        # brace-matched extent — 'until next symbol' made local consts span
+        # whole functions and bled the next item's body into line ranges
+        end_offset = _brace_matched_end(source, match.end(), end_offset)
         start_line = source[:start_offset].count("\n") + 1
         end_line = source[:end_offset].count("\n") + 1
         symbol_name = match.group("name")

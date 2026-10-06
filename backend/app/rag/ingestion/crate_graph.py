@@ -96,6 +96,10 @@ def load_crate_graph(repository_path: str | None = None) -> dict[str, dict]:
         graph[name] = {
             "path": member,
             "manifest_dir": str(crate_dir),
+            # symbol-id module prefix for this crate — crate NAMES (au-client)
+            # and symbol prefixes (crates::au::client) differ; filters built
+            # from the name silently match nothing
+            "module_prefix": (member[: -len("/src")] if member.endswith("/src") else member).replace("/", "::"),
             "dependencies": _path_deps(manifest, workspace_deps, crate_dir, repo),
             "dependents": [],
         }

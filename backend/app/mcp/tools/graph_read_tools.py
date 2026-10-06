@@ -108,6 +108,8 @@ def _filter_noise(results: list) -> list:
 def search_symbols(query: str, limit: int = 20) -> dict[str, object]:
     """Search for symbols in the graph by partial name match. Use this FIRST when you don't know the exact symbol_id — it returns matching symbol IDs that you can then pass to get_blast_radius or traverse_graph. Provide a partial name (e.g. 'InventoryClient', 'process_review', 'tag_inventory')."""
     limit = max(1, min(limit, 50))
+    if not query or not query.strip():
+        return {"error": "query must be a non-empty symbol-name fragment", "query": query}
     results = _filter_noise(graph_index.search_symbols(query, limit=max(limit * 2, 50)))[:limit]
     return {
         "query": query,
@@ -272,6 +274,14 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
         "called_by_this_symbol": len(downstream),
         "type_references_to_this_symbol": len(used_by),
         "types_used_by_this_symbol": len(uses),
+    }
+    # the same symbol legitimately shows different counts in different tools —
+    # label what each measures so nobody has to guess which is "right"
+    result["count_semantics"] = {
+        "total_connections": "raw union of all four edge directions (test callers included, unweighted)",
+        "connection_breakdown": "raw count per edge direction",
+        "risk_factors": "EFFECTIVE counts: test callers excluded, visibility-weighted (private 0.4x, pub(crate) 0.7x, pub 1.0x)",
+        "traverse_graph_hop1_hotspots": "unique 1-hop neighbors, deduplicated across edge kinds",
     }
 
     result["total_upstream"] = len(upstream)
@@ -475,12 +485,25 @@ def get_symbol_content(symbol_id: str, start_line: int | None = None, end_line: 
     if snapshot:
         for chunk in snapshot.chunks:
             if chunk.symbol_id == symbol_id:
+                # chunk.content carries an index-time enrichment prefix
+                # ('// summary', '// Imports: ...') that is NOT source — an
+                # agent pasting content back as code would be wrong. Split it
+                # into its own field; also fixes line-offset paging, which the
+                # prefix's extra lines silently shifted.
+                src_lines = chunk.content.split("\n")
+                enrich_lines: list[str] = []
+                while src_lines and src_lines[0].startswith("// "):
+                    enrich_lines.append(src_lines.pop(0))
+                if src_lines and src_lines[0] == "":
+                    src_lines.pop(0)
+                enrichment = "\n".join(enrich_lines) or None
+                content = "\n".join(src_lines)
                 if start_line is not None or end_line is not None:
                     lo = max(start_line or chunk.start_line, chunk.start_line)
                     hi = min(end_line or chunk.end_line, chunk.end_line)
                     if lo > hi:
                         return {"error": f"line range [{lo}, {hi}] outside symbol range [{chunk.start_line}, {chunk.end_line}]", "symbol_id": symbol_id}
-                    page_lines = chunk.content.split("\n")[(lo - chunk.start_line):(hi - chunk.start_line + 1)]
+                    page_lines = content.split("\n")[(lo - chunk.start_line):(hi - chunk.start_line + 1)]
                     return {
                         "symbol_id": chunk.symbol_id,
                         "kind": chunk.kind,
@@ -490,6 +513,7 @@ def get_symbol_content(symbol_id: str, start_line: int | None = None, end_line: 
                         "symbol_span": [chunk.start_line, chunk.end_line],
                         "total_lines": chunk.end_line - chunk.start_line + 1,
                         "content": "\n".join(page_lines)[:16000],
+                        "enrichment_summary": enrichment,
                         "truncated": (hi - lo + 1) > 16000 // 40,
                     }
                 return {
@@ -499,9 +523,10 @@ def get_symbol_content(symbol_id: str, start_line: int | None = None, end_line: 
                     "start_line": chunk.start_line,
                     "end_line": chunk.end_line,
                     "total_lines": chunk.end_line - chunk.start_line + 1,
-                    "content": chunk.content[:8000],
-                    "truncated": len(chunk.content) > 8000,
-                    "hint": "content truncated — re-call with start_line/end_line to page" if len(chunk.content) > 8000 else None,
+                    "content": content[:8000],
+                    "enrichment_summary": enrichment,
+                    "truncated": len(content) > 8000,
+                    "hint": "content truncated — re-call with start_line/end_line to page" if len(content) > 8000 else None,
                 }
 
     return {"error": f"Symbol '{symbol_id}' found in metadata but content not available.", "symbol_id": symbol_id}
@@ -672,7 +697,17 @@ def find_dependency_path(from_symbol: str, to_symbol: str, max_depth: int = 5) -
             direction = "forward"
 
     if not record:
-        return {"from": from_symbol, "to": to_symbol, "path_found": False, "message": f"No path found within {max_depth} hops."}
+        # A dead end should still point somewhere: reverse-direction and
+        # nearest-common-neighbor hints turn "no path" into a lead (e.g. a
+        # job queue sits between the two symbols — no synchronous path).
+        hints = _dependency_dead_end_hints(from_symbol, to_symbol, max_depth)
+        return {
+            "from": from_symbol,
+            "to": to_symbol,
+            "path_found": False,
+            "message": f"No path found within {max_depth} hops.",
+            **hints,
+        }
 
     symbol_path = record["symbol_path"]
     edge_types = record["edge_types"]
@@ -692,6 +727,48 @@ def find_dependency_path(from_symbol: str, to_symbol: str, max_depth: int = 5) -
         "edge_types": edge_types,
         "readable_path": " -> ".join(symbol_path),
     }
+
+
+def _dependency_dead_end_hints(from_symbol: str, to_symbol: str, max_depth: int) -> dict[str, object]:
+    """Reverse-path existence + nearest common neighbor for failed lookups."""
+    hints: dict[str, object] = {}
+    try:
+        backend = graph_index._active()
+        if not hasattr(backend, "_get_driver"):
+            return hints
+        gen = backend._gen
+        with backend._get_driver().session() as session:
+            rev = session.run(
+                f"""
+                MATCH path = shortestPath(
+                    (start:Symbol {{id: $to_id, gen: $gen}})-[:CALLS*1..{max_depth + 3}]->(end:Symbol {{id: $from_id, gen: $gen}})
+                )
+                RETURN count(path) AS n
+                """,
+                to_id=to_symbol, from_id=from_symbol, gen=gen,
+            ).single()
+            if rev and rev["n"]:
+                hints["reverse_path_exists"] = (
+                    f"'{to_symbol.split('::')[-1]}' reaches '{from_symbol.split('::')[-1]}' — the dependency "
+                    "runs opposite to the queried direction"
+                )
+            # nearest common neighbor within 3 hops each way
+            common = session.run(
+                """
+                MATCH (a:Symbol {id: $a, gen: $gen})-[:CALLS|USES*1..3]-(m:Symbol)-[:CALLS|USES*1..3]-(b:Symbol {id: $b, gen: $gen})
+                WHERE m.gen = $gen AND m.id <> $a AND m.id <> $b
+                   AND NOT m.id ENDS WITH 'GlobalState' AND NOT m.id ENDS WITH 'FastagGlobalState' AND NOT m.id ENDS WITH 'AppState'
+                RETURN m.id AS id, count(*) AS strength ORDER BY strength DESC LIMIT 3
+                """,
+                a=from_symbol, b=to_symbol, gen=gen,
+            )
+            near = [r["id"] for r in common]
+            if near:
+                hints["nearest_common_neighbors"] = near
+                hints["note"] = "no direct path — these shared neighbors are where the two flows meet (async boundaries like job queues commonly sit between them)"
+    except Exception:
+        pass
+    return hints
 
 
 def _find_path_bfs(from_symbol: str, to_symbol: str, max_depth: int) -> list[str] | None:
@@ -714,8 +791,8 @@ def _find_path_bfs(from_symbol: str, to_symbol: str, max_depth: int) -> list[str
     return None
 
 
-def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False) -> dict[str, object]:
-    """Traverse the dependency graph from a symbol up to N hops, returning neighborhoods for every reachable symbol. Use this to map the full impact radius of a change across the codebase. Provide symbol_id and optional depth (default 1, max 5). Set summary_only=true for a compact response with just counts per hop — use this when you only need the blast radius size, not the full symbol lists."""
+def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False, exclude_shared_state_types: bool = True) -> dict[str, object]:
+    """Traverse the dependency graph from a symbol up to N hops, returning neighborhoods for every reachable symbol. Use this to map the full impact radius of a change across the codebase. Provide symbol_id and optional depth (default 1, max 5). Set summary_only=true for a compact response with just counts per hop — use this when you only need the blast radius size, not the full symbol lists. exclude_shared_state_types=true (default, same as get_blast_radius) filters god-types (GlobalState-like, >50 type-references) from every hop — without it a depth-3 traversal reaches ~40% of the graph through shared-state types and stops meaning anything."""
     depth = max(1, min(depth, 5))
 
     if not graph_index.has_symbol(symbol_id):
@@ -724,12 +801,21 @@ def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False) -
     # summary_only only needs counts, not full neighborhoods — allow a much
     # larger traversal than the payload-protecting default cap.
     max_hoods = 1000 if summary_only else _MAX_TRAVERSE_NEIGHBORHOODS
-    neighborhoods = graph_index.traverse(symbol_id, depth=depth, max_neighborhoods=max_hoods)
+    # God-type filter (same default as get_blast_radius): shared-state types
+    # connect to half the graph through USES edges — without it a depth-3
+    # traversal from close_tag reached 3,065 symbols (40% of the graph),
+    # 2,248 arriving at hop 2 via used_by. Blocked nodes are not expanded,
+    # so paths THROUGH god types don't silently leak symbols into the hops.
+    blocked = _god_type_blocklist() if exclude_shared_state_types else set()
+    neighborhoods = graph_index.traverse(symbol_id, depth=depth, max_neighborhoods=max_hoods, exclude=blocked)
 
     all_symbols: set[str] = set()
     capped_neighborhoods: list[dict] = []
     for n in neighborhoods[:_MAX_TRAVERSE_NEIGHBORHOODS]:
         nb = n.model_dump() if hasattr(n, "model_dump") else n
+        if blocked:
+            for k in ("upstream", "downstream", "used_by", "uses"):
+                nb[k] = [s for s in nb.get(k, []) if s not in blocked]
         all_symbols.update(nb.get("upstream", []))
         all_symbols.update(nb.get("downstream", []))
         all_symbols.update(nb.get("used_by", []))
@@ -1006,10 +1092,13 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
         top_author = own.get("top_author", "")
         top_author_share = own.get("top_author_share", 0.0)
         degree_factor = min(max_degree, 100) / 10
+        # no floor: a zero-connection file must score zero — flooring at 1.0
+        # made disconnected files rank as hotspots (mis/au/models.rs scored
+        # 23.6 with zero connections, contradicting the method description)
         test_factor = 1.5 if anchor_tests == 0 else (1.25 if untested_ratio > 0.8 else 1.0)
         incident_factor = 1.0 + min(fix_commits, 10) * 0.05
         owner_factor = 1.1 if (top_author_share >= 0.8 and commit_count >= 5) else 1.0
-        score = commit_count * max(degree_factor, 1.0) * test_factor * incident_factor * owner_factor
+        score = commit_count * max(degree_factor, 0.1) * test_factor * incident_factor * owner_factor
         hotspots.append({
             "file_path": file_path,
             "score": round(score, 1),
@@ -1228,8 +1317,10 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
                 seen = set()
                 for chunk in snapshot.chunks:
                     sid = chunk.symbol_id
-                    if sid in seen:
+                    if sid in seen or _is_noise_symbol(sid):
                         continue
+                    if chunk.kind in ("module", "file_summary", "module_exports"):
+                        continue  # pseudo-chunks outranked real symbols on filename queries
                     short_name = sid.split("::")[-1].lower()
                     if query_lower in short_name or short_name in query_lower:
                         seen.add(sid)
@@ -1244,6 +1335,23 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
                         })
                         if len(results) >= limit:
                             break
+                # typo tier last: 'wallte' never corrected to 'wallet' —
+                # substring fuzzy can't see transpositions
+                if len(results) < limit:
+                    import difflib as _dl
+                    shorts = {}
+                    for chunk in snapshot.chunks:
+                        if not _is_noise_symbol(chunk.symbol_id) and chunk.kind not in ("module", "file_summary", "module_exports"):
+                            shorts.setdefault(chunk.symbol_id.split("::")[-1].lower(), chunk.symbol_id)
+                    for match in _dl.get_close_matches(query_lower, list(shorts), n=limit, cutoff=0.8):
+                        sid = shorts[match]
+                        if sid not in seen:
+                            seen.add(sid)
+                            results.append({
+                                "symbol_id": sid,
+                                "short_name": sid.split("::")[-1],
+                                "match_type": "typo_correction",
+                            })
         except Exception:
             pass
 
@@ -1255,7 +1363,9 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
                 query_lower = query.lower().replace(".rs", "")
                 existing_sids = {r["symbol_id"] for r in results}
                 for chunk in snapshot.chunks:
-                    if chunk.symbol_id in existing_sids:
+                    if chunk.symbol_id in existing_sids or _is_noise_symbol(chunk.symbol_id):
+                        continue
+                    if chunk.kind in ("module", "file_summary", "module_exports"):
                         continue
                     if query_lower in chunk.file_path.lower():
                         results.append({
@@ -1273,6 +1383,12 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
                             break
         except Exception:
             pass
+
+    # a filename-looking query wants the file's symbols first — fuzzy name
+    # hits (module names, artifacts) ranked above file matches before
+    looks_like_file = query.strip().endswith(".rs") or "/" in query
+    if looks_like_file:
+        results.sort(key=lambda r: 0 if r.get("match_type") == "file_path" else 1)
 
     return {
         "query": query,
@@ -1427,6 +1543,12 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
         pass
 
     SEMANTIC_SEARCH_LATENCY_MS.observe((_t.monotonic() - _search_start) * 1000)
+    # Low-relevance signal: scores pinned at the 0.5 fallback floor mean the
+    # hybrid search found nothing real — agents trusted those hits (a
+    # nonsense query returned "matches"). Flag it instead of letting the
+    # floor masquerade as relevance.
+    top_scores = [adj for _, adj, _ in reranked[:5]]
+    low_relevance = bool(reranked) and all(0.49 <= s <= 0.51 for s in top_scores)
     response = _attach_stale_warning({
         "query": query,
         "query_id": query_id,
@@ -1434,6 +1556,11 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
         "expansion_applied": bool(expansions),
         "reranked": rerank_info,
         "timed_out": False,
+        "low_relevance": low_relevance,
+        "low_relevance_note": (
+            "all top scores sit at the scoring floor (~0.5) — the index likely has nothing "
+            "for this query; treat these results as unranked filler, not matches"
+        ) if low_relevance else None,
         "results": [
             {
                 "symbol_id": m.symbol_id,
@@ -1732,12 +1859,16 @@ def resolve_stacktrace(stacktrace: str, include_neighborhood: bool = False) -> d
             if c.start_line <= line <= c.end_line and c.kind in ("fn", "method", "struct", "enum", "trait", "impl", "module")
         ]
         if not candidates:
-            # tolerate path prefix differences (leading crates/, src/)
-            suffix = file_path.rsplit("/", 2)[-1] if "/" in file_path else file_path
-            candidates = [
-                c for c in snapshot.chunks
-                if c.file_path.endswith(suffix) and c.start_line <= line <= c.end_line
-            ]
+            # tolerate path prefix differences (leading crates/, src/) — but
+            # only on full path-segment boundaries: a bare endswith made a
+            # nonexistent 'tag_generation.rs' resolve into
+            # process_tag_generation_file.rs (a fabricated frame match)
+            suffix = file_path.rsplit("/", 2)[-1] if "/" in file_path else None
+            if suffix and "/" in suffix:
+                candidates = [
+                    c for c in snapshot.chunks
+                    if c.file_path.endswith("/" + suffix) and c.start_line <= line <= c.end_line
+                ]
         if not candidates:
             resolved.append({"file_path": file_path, "line": line, "symbol_id": None,
                              "note": "no enclosing symbol in the index"})
@@ -1825,7 +1956,15 @@ def diff_modules(module_a: str, module_b: str) -> dict[str, object]:
             if sid == p or sid.startswith(p + "::"):
                 if c.kind in ("file_summary", "module_exports"):
                     continue
-                out.setdefault(sid.split("::")[-1], []).append(sid)
+                # boilerplate exclusion: std trait impls (From, Display,
+                # Serialize...) and per-module helper clones appear in every
+                # module and dominated the drift score without meaning
+                # anything — a 0.70 "drift" was 20x ist_day_start_utc +
+                # From/from impls
+                short = sid.split("::")[-1]
+                if short in _BOILERPLATE_SYMBOL_NAMES:
+                    continue
+                out.setdefault(short, []).append(sid)
         return out
 
     a = _symbols_for(module_a)
@@ -1850,7 +1989,8 @@ def diff_modules(module_a: str, module_b: str) -> dict[str, object]:
         "only_in_b": only_b[:100],
         "only_in_b_count": len(only_b),
         "drift_score": round(len(only_a) + len(only_b)) / max(1, len(shared) + len(only_a) + len(only_b)),
-        "note": "only_in_a / only_in_b are the drift — counterparts missing from one side",
+        "boilerplate_excluded": sorted(_BOILERPLATE_SYMBOL_NAMES),
+        "note": "only_in_a / only_in_b are the drift — counterparts missing from one side; std trait impls and common helper names are excluded from the score",
     }
 
 

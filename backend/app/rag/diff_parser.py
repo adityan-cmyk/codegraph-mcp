@@ -176,12 +176,15 @@ def extract_symbols_from_diff(diff_text: str) -> dict[str, object]:
             continue
         if line.startswith("@@"):
             in_hunk = True
-            # git puts the enclosing fn in the hunk header: '@@ -12,7 +12,8 @@ fn process_x'
+            # git puts the enclosing fn in the hunk header: '@@ -12,7 +12,8 @@ pub async fn process_x('
             m = _DIFF_HUNK_PATTERN.match(line)
-            ctx = (m.group(1).strip().split("(")[0].split("<")[0].strip() if m and m.group(1) else "")
-            if ctx.startswith("fn "):
-                ctx = ctx[3:].strip()
-            hunk_context_fn = ctx if re.match(r"^[a-z_][a-z0-9_]*$", ctx or "") else None
+            ctx = (m.group(1).strip() if m and m.group(1) else "")
+            # extract the fn NAME from whatever signature prefix it carries
+            # (pub, pub(crate), async, const, unsafe...) — matching only a
+            # bare 'fn ' prefix silently dropped every in-body edit inside
+            # pub/async fns, which is most of a Rust codebase
+            fn_match = re.search(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)", ctx)
+            hunk_context_fn = fn_match.group(1) if fn_match else None
             continue
         if not in_hunk:
             continue

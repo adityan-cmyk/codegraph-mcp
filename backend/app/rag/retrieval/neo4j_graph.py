@@ -239,14 +239,15 @@ class Neo4jGraphIndex:
     def get_blast_radius(self, symbol_id: str) -> GraphNeighborhood:
         return self.get_neighbors(symbol_id, depth=2)
 
-    def traverse(self, symbol_id: str, depth: int = 2, max_neighborhoods: int = 100) -> list[GraphNeighborhood]:
+    def traverse(self, symbol_id: str, depth: int = 2, max_neighborhoods: int = 100, exclude: set[str] | None = None) -> list[GraphNeighborhood]:
         neighborhoods: list[GraphNeighborhood] = []
         visited: set[str] = set()
+        blocked = exclude or set()
         queue: list[tuple[str, int]] = [(symbol_id, 0)]
 
         while queue and len(neighborhoods) < max_neighborhoods:
             current, current_depth = queue.pop(0)
-            if current in visited:
+            if current in visited or (current in blocked and current != symbol_id):
                 continue
 
             visited.add(current)
@@ -278,6 +279,7 @@ class Neo4jGraphIndex:
                 """
                 MATCH (s:Symbol {gen: $gen})
                 WHERE toLower(s.id) CONTAINS toLower($search_term)
+                   OR toLower(replace(s.id, '_', '')) CONTAINS toLower(replace($search_term, '_', ''))
                 RETURN s.id AS symbol_id,
                        [(s)-[r:CALLS]->() | r][0..1] AS has_calls,
                        [(s)-[r:USES]->() | r][0..1] AS has_uses,

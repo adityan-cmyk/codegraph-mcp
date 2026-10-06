@@ -711,7 +711,28 @@ def semantic_rebuild_is_in_progress() -> bool:
         return _semantic_rebuild_in_progress
 
 
+_REBUILD_MUTEX = threading.Lock()
+
+
+class RebuildInProgressError(RuntimeError):
+    """Raised when a graph rebuild is requested while one is already running.
+
+    Concurrent rebuilds corrupt each other: build A's post-swap generation
+    cleanup deletes build B's in-flight nodes (observed live on 2026-10-06 —
+    three overlapping /api/index/repository calls left a half-built graph
+    serving). The API layer maps this to HTTP 409."""
+
+
 def index_rust_repository(repository_path: str | None = None) -> IndexingResult:
+    if not _REBUILD_MUTEX.acquire(blocking=False):
+        raise RebuildInProgressError("a graph rebuild is already in progress")
+    try:
+        return _index_rust_repository_locked(repository_path)
+    finally:
+        _REBUILD_MUTEX.release()
+
+
+def _index_rust_repository_locked(repository_path: str | None = None) -> IndexingResult:
     target_path = resolve_repository_path(repository_path)
     rust_files = _discover_rust_files(target_path)
 
@@ -792,6 +813,15 @@ def index_rust_repository(repository_path: str | None = None) -> IndexingResult:
 
 
 def replay_indexes_from_storage() -> IndexingResult | None:
+    if not _REBUILD_MUTEX.acquire(blocking=False):
+        raise RebuildInProgressError("a graph rebuild is already in progress")
+    try:
+        return _replay_indexes_from_storage_locked()
+    finally:
+        _REBUILD_MUTEX.release()
+
+
+def _replay_indexes_from_storage_locked() -> IndexingResult | None:
     snapshot = index_metadata_store.load_snapshot()
     if snapshot is None:
         semantic_index.reset_documents()
@@ -891,6 +921,18 @@ def incremental_update_symbols(
     repository_path: str | None = None,
 ) -> IndexingResult:
     """Update only the symbols in modified files without full reindex."""
+    if not _REBUILD_MUTEX.acquire(blocking=False):
+        raise RebuildInProgressError("a graph rebuild is already in progress — retry the incremental sync after it completes")
+    try:
+        return _incremental_update_symbols_locked(modified_files, repository_path)
+    finally:
+        _REBUILD_MUTEX.release()
+
+
+def _incremental_update_symbols_locked(
+    modified_files: list[str],
+    repository_path: str | None = None,
+) -> IndexingResult:
     target_path = resolve_repository_path(repository_path)
     snapshot = index_metadata_store.load_snapshot()
     if snapshot is None:

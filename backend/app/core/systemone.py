@@ -50,6 +50,17 @@ def _decision_acquire(timeout: float) -> bool:
             _DECISION_WAITERS -= 1
 
 
+def interactive_waiters() -> int:
+    """Agent-facing decisions currently waiting on the model.
+
+    The feedback gate checks this between entries: if a reviewer is waiting
+    for an interactive decision, remaining entries defer to the next
+    5-minute cycle instead of queuing another ~30s inference in front of
+    them (observed: instant busy-hint on make_decision while the gate ran)."""
+    with _WAITERS_LOCK:
+        return _DECISION_WAITERS
+
+
 def _background_acquire(max_yield_seconds: float = 120.0) -> None:
     """Acquire for gate/classification — yields the next model slot to any
     waiting decision before taking the lock."""

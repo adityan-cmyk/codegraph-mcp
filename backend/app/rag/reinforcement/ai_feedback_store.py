@@ -296,6 +296,17 @@ def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
 
                 from app.core.prom_metrics import FEEDBACK_SUBMISSIONS, GATE_LATENCY_MS, GATE_VERDICTS
 
+                # Interactive decisions outrank the gate: if an agent-facing
+                # make_decision is waiting on the model, defer remaining
+                # entries to the next cycle instead of queueing another
+                # ~30s inference in front of a reviewer.
+                if use_decision_model and systemone.interactive_waiters() > 0:
+                    logger.info(
+                        "Gate deferring %d remaining entries — interactive decision waiting on the model",
+                        len(rows),
+                    )
+                    break
+
                 try:
                     _gate_start = _t.monotonic()
                     judged = systemone.judge_feedback(row) if use_decision_model else None

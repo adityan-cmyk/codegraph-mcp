@@ -1228,6 +1228,13 @@ class AdminControlPlaneTestCase(unittest.TestCase):
         from unittest.mock import patch
         from types import SimpleNamespace
         from app.rag.retrieval.graph import graph_index
+        # the git-ingestor's 5-min history cache survives between tests and
+        # serves another test's mocked commits here — clear it for hermeticity
+        from app.rag.ingestion import git_ingestor as _gi
+        _gi._HISTORY_CACHE.clear()
+        # same for the shared graph singleton: prior tests' symbols inflate
+        # this symbol's degree otherwise
+        graph_index.reset()
         graph_index.upsert_symbol("crates::x::hot", metadata={"kind": "fn", "file_path": "crates/x/hot.rs"})
         for i in range(5):
             graph_index.upsert_symbol(f"crates::x::c{i}", calls=["crates::x::hot"], metadata={"kind": "fn"})
@@ -1250,8 +1257,9 @@ class AdminControlPlaneTestCase(unittest.TestCase):
         h = out["hotspots"][0]
         self.assertEqual(h["components"]["fix_or_revert_commits"], 2)
         self.assertFalse(h["components"]["bus_factor"], "mixed authorship must not trigger the bus-factor penalty")
-        # 5 commits x degree floor 1.0 x untested-anchor 1.5 x incident 1.1 x owner 1.0
-        self.assertAlmostEqual(h["score"], 8.2, places=1)
+        # 5 commits x degree 5 -> 0.5 (NO floor: connectivity must scale;
+        # flooring made zero-connection files rank as hotspots) x 1.5 x 1.1 x 1.0
+        self.assertAlmostEqual(h["score"], 4.1, places=1)
 
     def test_ownership_and_cochange(self):
         from app.rag.ingestion.git_ingestor import get_ownership, get_co_change_pairs
