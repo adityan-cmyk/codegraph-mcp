@@ -100,7 +100,7 @@ Get the full source code of a symbol.
 ```json
 {"symbol_id": "crates::inventory::client::InventoryClient"}
 ```
-- Returns: `content` (source code, max 8000 chars), `file_path`, `start_line`, `end_line`, `total_lines`, `truncated`, and a paging hint.
+- Returns: `content` (pure source code, max 8000 chars — never injected summaries), `enrichment_summary` (the index-time doc/import summary, separately), `file_path`, `start_line`, `end_line`, `total_lines`, `truncated`, and a paging hint.
 - For 500+ line symbols the content is truncated — re-call with `start_line`/`end_line` (absolute file line numbers within the symbol's span) to page through the rest:
 ```json
 {"symbol_id": "crates::inventory::client::InventoryClient", "start_line": 200, "end_line": 400}
@@ -122,6 +122,7 @@ Symbol-set drift between counterpart modules — catches sync/async implementati
 {"module_a": "dashboard::product::mis_report", "module_b": "dashboard::product::generators"}
 ```
 - Returns `only_in_a` / `only_in_b` (the drift) plus shared counts and a drift score.
+- Std trait impls (`From`, `Display`, ...) and per-module helper clones are excluded from the drift score (`boilerplate_excluded` lists them).
 
 #### `semantic_search`
 Search the codebase by meaning, not by name. Hybrid BM25+vector search with 30s timeout and auto-fallback to graph search.
@@ -164,6 +165,7 @@ Multi-hop dependency traversal from a symbol up to N hops.
 - Returns neighborhoods for every reachable symbol (max 50).
 - Use this when a change is significant (signature change, removed function, new trait impl).
 - `depth=1` = same as `get_blast_radius`, `depth=2` = immediate + transitive.
+- `exclude_shared_state_types=true` by default (same as `get_blast_radius`): god-types are filtered from every hop and the traversal does not expand through them — set `false` only if you explicitly need the shared-state fanout.
 - Supports `summary_only=true` for compact output (counts per hop only, no full neighborhood data):
 ```json
 {"symbol_id": "crates::inventory::client::InventoryClient", "depth": 2, "summary_only": true}

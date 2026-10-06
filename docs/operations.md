@@ -267,6 +267,10 @@ Nightly cron job (`scripts/nightly-sync.sh`) runs at midnight:
 curl -s http://localhost:8000/api/index/stats | python3 -m json.tool
 ```
 
+### Rebuild concurrency
+
+Full rebuilds, replays, and incremental syncs share a mutex — a second request while one runs returns HTTP 409 (`RebuildInProgressError`). Concurrent rebuilds corrupted each other live on 2026-10-06: build A's post-swap generation cleanup deleted build B's in-flight Neo4j nodes, leaving a half-built graph serving queries until a clean rebuild restored it.
+
 ### Manual re-index
 
 ```bash
