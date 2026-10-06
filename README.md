@@ -6,7 +6,7 @@ Since gen-9 the graph is **SCIP-refined**: a rust-analyzer index supplies type-r
 
 > **Note:** the full on-call assistant (incident lifecycle, LLM agent, chat, eval suites) lives on the [`oncall-assistant`](../../tree/oncall-assistant) branch. This branch is the MCP server only.
 
-**Documentation:** [docs/tools.md](docs/tools.md) — tool reference (generated table + usage guide) · [docs/operations.md](docs/operations.md) — runbooks and internals · [docs/security.md](docs/security.md) — hardening, UAM, admin surfaces · [startup.md](startup.md) — from-scratch setup · [AGENTS.md](AGENTS.md) — PR-review workflow for AI agents
+**Documentation:** [docs/tools.md](docs/tools.md) — tool reference (generated table + usage guide) · [docs/operations.md](docs/operations.md) — runbooks and internals · [docs/security.md](docs/security.md) — hardening, access control, admin surfaces · [startup.md](startup.md) — from-scratch setup · [AGENTS.md](AGENTS.md) — PR-review workflow for AI agents
 
 ---
 
@@ -16,8 +16,8 @@ Since gen-9 the graph is **SCIP-refined**: a rust-analyzer index supplies type-r
 ┌──────────────────┐     ┌──────────────────┐     ┌────────────────────┐
 │  opencode Agent  │────▶│  MCP Server      │────▶│  Neo4j             │  dependency graph (gen-tagged, SCIP-refined, provenance-labeled edges)
 │  (any machine)   │     │  :8002           │────▶│  Weaviate          │  semantic vector search (shadow collections)
-│                  │     │  UAM: roles +    │────▶│  PostgreSQL        │  snapshots, feedback, build registry, uam_audit
-│                  │     │  tier quotas,    │     │  ollama            │  decision model (nimble, digest-pinned)
+│                  │     │  token-bucket    │────▶│  PostgreSQL        │  snapshots, feedback, build registry
+    │  ollama            │  decision model (nimble, digest-pinned)
 │                  │────▶│  token buckets   │     │  Redis             │  query cache (tagged, compressed)
 └──────────────────┘     │  REST API :8000  │     └────────────────────┘
                          │  (26 tools)      │
@@ -34,8 +34,8 @@ An interactive version of this diagram lives in [docs/architecture.html](docs/ar
 
 | Service | Purpose | Port | Profile |
 |---|---|---|---|
-| `backend` | FastAPI REST + stateless MCP server (UAM auth, token buckets, Redis query cache, admin console at `/admin`) | 8000, 8002 | core |
-| `postgres` | Snapshots, feedback, build registry, UAM users + audit | 5433 | core |
+| `backend` | FastAPI REST + stateless MCP server (bearer auth, token-bucket rate limiting, Redis query cache, admin console at `/admin`) | 8000, 8002 | core |
+| `postgres` | Snapshots, feedback, build registry | 5433 | core |
 | `redis` | Query cache (tagged, compressed), token buckets | 6380 | core |
 | `neo4j` | Code dependency graph (generation-tagged, zero-downtime rebuild) | 7474/7687 | core |
 | `weaviate` | Vector search (shadow collections, zero-downtime rebuild) | 8080 | core |
@@ -132,7 +132,7 @@ Day-to-day operation is automated: `git push origin main` is the entire deploy c
 
 Runbooks, indexing internals, API endpoints, environment variables, backups, and testing: **[docs/operations.md](docs/operations.md)**.
 
-Security posture, access control (UAM roles/tiers), rate limiting, and admin surfaces: **[docs/security.md](docs/security.md)**.
+Security posture, bearer-token access control, rate limiting, and admin surfaces: **[docs/security.md](docs/security.md)**.
 
 ---
 

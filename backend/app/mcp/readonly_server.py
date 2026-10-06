@@ -1106,40 +1106,6 @@ async def _handle_mcp(request: Request) -> Response:
                 "isError": True,
             })
 
-        # UAM: per-user policy + daily tier quota + audit. Legacy token
-        # (no UAM user attached) is the break-glass bootstrap admin — audited
-        # separately with file fallback + rate-limited email alert.
-        uam_user = getattr(request.state, "uam_user", None)
-        if uam_user is not None:
-            from app.core import uam
-
-            allowed, reason = uam.check_access(uam_user, tool_name)
-            if allowed:
-                quota = uam.quota_state(uam_user)
-                if not quota.get("unlimited") and quota.get("remaining", 1) <= 0:
-                    allowed = False
-                    reason = (
-                        f"daily quota exhausted for tier '{uam_user.tier}' "
-                        f"({quota.get('used')}/{quota.get('limit')} calls today, resets UTC midnight)"
-                    )
-            uam.audit(uam_user, tool_name, allowed, reason)
-            if not allowed:
-                return _respond(req_id, {
-                    "content": [{"type": "text", "text": json.dumps({
-                        "error": f"UAM: access denied — {reason}",
-                        "user": uam_user.name,
-                        "tier": uam_user.tier,
-                        "roles": uam_user.effective_roles,
-                        "upgrade_hint": "ask an admin to raise your tier or roles" if "quota" in reason else None,
-                    })}],
-                    "isError": True,
-                })
-
-        elif getattr(request.state, "legacy_token", False):
-            from app.core import uam
-
-            uam.audit_legacy(tool_name)
-
         handler = _TOOLS[tool_name]["handler"]
         import time as _t
 
@@ -1233,13 +1199,12 @@ def _client_key(request: Request) -> str:
 
 
 class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
-    """Bearer token auth with UAM identity + token-bucket rate limiting.
+    """Bearer token auth + token-bucket rate limiting.
 
     Security measures:
-    - UAM key resolution (hashed keys in Postgres) with legacy-token fallback
-      if the store is unreachable — a Postgres blip must never lock everyone out
-    - Token-bucket tool-call limiting per authenticated user (capacity 60,
-      refill 1/s — no fixed-window boundary bursts, no mass quota re-grant)
+    - Constant-time bearer token comparison (MCP_AUTH_TOKEN)
+    - Token-bucket tool-call limiting per client IP (capacity 60,
+      refill 1/s — no fixed-window boundary bursts)
     - Per-IP rate limiting on failed attempts (max 5 per 60s, then 5min lockout)
     - All denied attempts logged with client IP and timestamp
     - /health endpoint is exempt (so monitoring works without a token)
@@ -1342,24 +1307,15 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
         if auth.startswith("Bearer "):
             provided = auth[7:]
 
-        # UAM resolution first; legacy exact-match fallback keeps the server
-        # usable when Postgres is unreachable.
-        uam_user = None
-        try:
-            from app.core import uam
-
-            uam_user = uam.lookup_user(provided)
-        except Exception:
-            uam_user = None
-
-        if uam_user is not None or hmac.compare_digest(provided, token):
-            request.state.uam_user = uam_user
-            request.state.legacy_token = uam_user is None
-            identity = uam_user.name if uam_user else "legacy-admin"
-            # Authenticated tool-call rate limiting — token bucket per user.
-            # Protects the process (and in-flight builds) from agent load tests
-            # and runaway loops — the GIL means unbounded concurrent tool calls
-            # starve embedding and indexing threads.
+        # UAM resolution removed with the user-action model: the MCP bearer
+        # token is the single shared credential again; the rate-limit bucket
+        # is keyed per client IP.
+        if hmac.compare_digest(provided, token):
+            identity = f"mcp-ip-{client_ip}"
+            # Authenticated tool-call rate limiting — token bucket per client
+            # IP. Protects the process (and in-flight builds) from agent load
+            # tests and runaway loops — the GIL means unbounded concurrent
+            # tool calls starve embedding and indexing threads.
             if request.method == "POST" and request.url.path.endswith("/mcp"):
                 allowed, retry_after = self._tool_rate_limited(identity)
                 if not allowed:

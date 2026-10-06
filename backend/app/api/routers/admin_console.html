@@ -80,11 +80,7 @@
     <div class="msg" id="cmsg"></div>
   </section>
 
-  <section>
-    <h2>Usage — last 7 days</h2>
-    <table id="byuser"><thead><tr><th>user</th><th>allowed</th><th>denied</th><th>last seen</th></tr></thead><tbody></tbody></table>
-    <table id="bytool" style="margin-top:14px"><thead><tr><th>tool</th><th>calls</th></tr></thead><tbody></tbody></table>
-  </section>
+
 </main>
 
 <script>
@@ -110,10 +106,9 @@ function lock(msg) {
 
 async function refresh() {
   try {
-    const [rl, cache, usage] = await Promise.all([
+    const [rl, cache] = await Promise.all([
       api("/api/admin/rate-limit"),
       api("/api/admin/cache"),
-      api("/api/admin/usage?days=7"),
     ]);
     $("dot").className = "dot ok";
     $("hdrmsg").textContent = "";
@@ -123,12 +118,6 @@ async function refresh() {
       .filter(k => ck[k] != null)
       .map(k => `<div><div class="v">${typeof ck[k] === "number" && ck[k] > 1000 ? ck[k].toLocaleString() : ck[k]}</div><div class="k">${k}</div></div>`).join("")
       + (ck.redis_info ? `<div><div class="v">${ck.redis_info.used_memory_human || ""}</div><div class="k">redis memory</div></div>` : "");
-    const bu = usage.by_user || [];
-    $("byuser").tBodies[0].innerHTML = bu.map(u =>
-      `<tr><td>${u.user_name}</td><td>${u.allowed}</td><td>${u.denied}</td><td>${u.last_seen || ""}</td></tr>`).join("") || "<tr><td colspan=4>no traffic</td></tr>";
-    const bt = usage.by_tool || [];
-    $("bytool").tBodies[0].innerHTML = bt.map(t =>
-      `<tr><td>${t.tool}</td><td>${t.calls}</td></tr>`).join("") || "<tr><td colspan=2>no calls</td></tr>";
   } catch (e) {
     if (e.message !== "401") { $("hdrmsg").textContent = "refresh failed: " + e.message; }
   }
@@ -140,7 +129,7 @@ $("unlock").onclick = async () => {
   if (!TOKEN) return;
   $("lockmsg").textContent = "checking…";
   try {
-    await api("/api/admin/usage?days=1");
+    await api("/api/admin/rate-limit");
     $("lock").style.display = "none";
     $("ui").style.display = "grid";
     refresh();

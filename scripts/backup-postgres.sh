@@ -76,4 +76,38 @@ if [ "$LATEST" -eq 0 ]; then
     alert "[codegraph ALERT] Postgres backup is stale" "No backup newer than 25h found in $BACKUP_DIR. Check the backup cron."
 fi
 
+# Off-site copy — OPTIONAL, disabled by default.
+# Backups on the same machine as Postgres die with the machine. To make them
+# protective, copy the nightly dump elsewhere (another tailnet box, a NAS,
+# anything you own). Enable in .env:
+#   OFFSITE_BACKUP_ENABLED=true
+#   OFFSITE_BACKUP_TARGET=host:/remote/path   (any rsync-compatible target;
+#                                              SSH key must already work)
+# Read via grep (not `source .env`) so unrelated .env content can never
+# break the backup path.
+OFFSITE_BACKUP_ENABLED=$(grep -E '^OFFSITE_BACKUP_ENABLED=' .env 2>/dev/null | cut -d= -f2 || true)
+OFFSITE_BACKUP_TARGET=$(grep -E '^OFFSITE_BACKUP_TARGET=' .env 2>/dev/null | cut -d= -f2 || true)
+if [ "${OFFSITE_BACKUP_ENABLED:-false}" = "true" ] && [ -n "${OFFSITE_BACKUP_TARGET:-}" ]; then
+    log "off-site copy to $OFFSITE_BACKUP_TARGET"
+    COPIED=""
+    for attempt in 1 2 3; do
+        if rsync -az --timeout=120 "$DUMP" "$OFFSITE_BACKUP_TARGET/"; then
+            COPIED="ok"
+            break
+        fi
+        log "off-site copy failed (attempt $attempt/3)"
+        sleep 20
+    done
+    if [ -z "$COPIED" ]; then
+        log "OFF-SITE COPY FAILED after 3 attempts"
+        alert "[codegraph ALERT] Off-site backup copy FAILED" "Backup $STAMP ($SIZE) could not be copied to $OFFSITE_BACKUP_TARGET after 3 attempts. Local dump is intact; check network/SSH to the target."
+    else
+        # retention on the remote mirrors local (best effort, non-fatal)
+        ssh "${OFFSITE_BACKUP_TARGET%%:*}" \
+            "find '${OFFSITE_BACKUP_TARGET#*:}' -name 'oncall-*.sql.gz' -mtime +$KEEP_DAYS -delete" \
+            >> "$LOG" 2>&1 || log "remote retention skipped (non-fatal)"
+        log "off-site copy complete"
+    fi
+fi
+
 log "backup cycle complete"

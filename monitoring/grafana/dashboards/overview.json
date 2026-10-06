@@ -602,6 +602,95 @@
         "wrapLogMessage": true,
         "sortOrder": "Descending"
       }
+    },
+    {
+      "type": "row",
+      "title": "Query cache",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 100
+      },
+      "panels": [],
+      "id": 53
+    },
+    {
+      "id": 54,
+      "type": "timeseries",
+      "title": "cache stored bytes / errors",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "query_cache_bytes_stored",
+          "legendFormat": "bytes"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(query_cache_errors_total[5m])",
+          "legendFormat": "errors/s"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 101
+      }
+    },
+    {
+      "id": 55,
+      "type": "timeseries",
+      "title": "hits vs misses",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(query_cache_hits_total[5m])",
+          "legendFormat": "hits/s"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(query_cache_misses_total[5m])",
+          "legendFormat": "misses/s"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 101
+      }
+    },
+    {
+      "id": 56,
+      "type": "timeseries",
+      "title": "index freshness (hours behind HEAD)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "index_stale_hours",
+          "legendFormat": "hours"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 101
+      }
     }
   ]
 }

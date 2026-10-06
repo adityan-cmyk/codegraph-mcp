@@ -427,6 +427,15 @@ The unit suite includes tests that pin cross-component contracts so they cannot 
 
 `scripts/backup-postgres.sh` (cron 01:00): nightly gzipped pg_dump to `backups/postgres/` with 7-day retention. Every dump is restore-tested immediately — restored into a scratch database, key tables counted, dropped. Failures (dump error, empty restore, stale backup >25h) email an alert. Postgres is the source of truth; an untested backup is a hope, not a backup.
 
+**Off-site copy (optional, off by default)**: backups on the same machine as Postgres die with the machine. Set in `.env`:
+
+```
+OFFSITE_BACKUP_ENABLED=true
+OFFSITE_BACKUP_TARGET=host:/remote/path   # any rsync target; SSH key must work
+```
+
+When enabled, the nightly dump is rsynced to the target after the restore test passes (3 retries, email alert on failure, remote retention mirrors the 7-day local one).
+
 ### Testing
 
 ```bash
@@ -439,7 +448,7 @@ The unit suite includes tests that pin cross-component contracts so they cannot 
 
 - `docs/tools.md` — the full MCP tool reference (generated table + usage guide)
 - `docs/operations.md` — reinforcement system, indexing, API, runbooks
-- `docs/security.md` — supply chain, hardening, UAM, rate limits, admin surfaces
+- `docs/security.md` — supply chain, hardening, access control, rate limits, admin surfaces
 - `startup.md` — from-scratch setup guide
 - `AGENTS.md` — PR-review workflow for AI agents
 - `docs/architecture.html` — interactive architecture diagram

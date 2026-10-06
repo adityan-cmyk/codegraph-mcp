@@ -4,7 +4,7 @@ Supply chain, hardening, access control, and admin surfaces for codegraph-mcp.
 
 ## Contents
 - [Security measures](#security) — supply chain, container hardening, API security, rate limiting
-- [Access control (UAM)](#access-control-uam)
+- [Access control](#access-control)
 - [Query cache](#query-cache)
 - [Admin surfaces](#admin-console) — console, Grafana, break-glass token
 
@@ -62,24 +62,21 @@ Supply chain, hardening, access control, and admin surfaces for codegraph-mcp.
 
 ---
 
-## Access control (UAM)
+## Access control
 
-Tool calls are governed by a user-action model: every API key maps to a user with roles and a tier.
+Single shared bearer token per surface — a deliberate choice for a small internal team (a per-user roles/tiers system existed here and was removed as machinery without a purpose).
 
-| Tier | Daily quota | Roles allowed |
+| Surface | Token | Notes |
 |---|---|---|
-| free | 200 calls | viewer |
-| pro | 5,000 calls | viewer, reviewer, operator |
-| enterprise | unlimited | all + admin |
+| MCP (`:8002/mcp`) | `MCP_AUTH_TOKEN` | constant-time compare; per-IP failure lockout (5 fails/min → 5 min) |
+| REST (`:8000/api/*`) | `API_AUTH_TOKEN` | same middleware family |
+| Admin console + `/api/admin/*` | `ADMIN_PANEL_TOKEN` | separate scoped secret; brute-force bucket on the login path |
 
-Roles grant tool policies (`viewer` = read/search tools, `reviewer` = diff analysis + feedback, `operator` = + `make_decision`, `admin` = everything). Every `tools/call` is policy-checked, quota-counted, and audited (`uam_audit`). Manage via REST (`/api/uam/users`, admin token) or the admin console at `http://<host>:8000/admin`. Keys are stored hashed (SHA-256). The legacy `MCP_AUTH_TOKEN` is a **break-glass master key**, and its auditing is two-tier by design:
-
-- **Postgres up**: the token resolves to `bootstrap-admin` through normal UAM lookup — every call is policy-checked and audited to `uam_audit` like any user.
-- **Postgres down** (the case that would otherwise be unauditable): UAM lookup fails, the token still authenticates, and every tool call is appended to `logs/legacy_token_use.log` on the host (size-rotated) with an email alert (rate-limited to 1/hour). Rotate the token if that alert fires unexpectedly.
+Token hygiene: all tokens live in a 600-mode gitignored `.env`; rotate by changing the value and recreating the backend (`docker compose up -d backend`). Every failed auth attempt is logged with client IP.
 
 ## Rate limiting
 
-Token buckets per authenticated user (capacity 60 burst, 1/s sustained refill) — no fixed-window boundary bursts, exact `Retry-After` on 429. Runtime-tunable via the admin console or `PUT /api/admin/rate-limit` (new calls within 30s).
+Token buckets per client IP (capacity 60 burst, 1/s sustained refill) — no fixed-window boundary bursts, exact `Retry-After` on 429. Runtime-tunable via the admin console or `PUT /api/admin/rate-limit` (new calls within 30s).
 
 ## Query cache
 

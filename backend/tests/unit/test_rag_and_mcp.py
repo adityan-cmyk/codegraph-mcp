@@ -1131,34 +1131,6 @@ class TokenBucketTestCase(unittest.TestCase):
         self.assertFalse(ok2, "bucket must persist across take_tokens calls")
 
 
-class UAMTestCase(unittest.TestCase):
-    def test_policy_matching(self):
-        from app.core import uam
-        user = uam.UAMUser("alice", "h", ["viewer"], "free", True)
-        self.assertTrue(uam.check_access(user, "search_symbols")[0])
-        self.assertTrue(uam.check_access(user, "get_blast_radius")[0])
-        ok, reason = uam.check_access(user, "make_decision")
-        self.assertFalse(ok)
-        self.assertIn("no policy", reason)
-        # reviewer+operator roles unlock more
-        user2 = uam.UAMUser("bob", "h", ["viewer", "reviewer", "operator"], "pro", True)
-        self.assertTrue(uam.check_access(user2, "analyze_pr_diff")[0])
-        self.assertTrue(uam.check_access(user2, "make_decision")[0])
-        # tier gates roles: free tier cannot hold operator even if listed
-        user3 = uam.UAMUser("eve", "h", ["operator"], "free", True)
-        self.assertFalse(uam.check_access(user3, "make_decision")[0])
-
-    def test_protocol_methods_always_allowed(self):
-        from app.core import uam
-        user = uam.UAMUser("alice", "h", [], "free", True)
-        for m in ("tools/list", "ping", "prompts/list"):
-            self.assertTrue(uam.check_access(user, m)[0])
-
-    def test_tier_definitions(self):
-        from app.core import uam
-        self.assertEqual(uam.TIERS["free"]["daily_calls"], 200)
-        self.assertIsNone(uam.TIERS["enterprise"]["daily_calls"])
-
 class AdminControlPlaneTestCase(unittest.TestCase):
     def test_cache_compression_roundtrip(self):
         from app.core import query_cache as qc
@@ -1227,16 +1199,6 @@ class AdminControlPlaneTestCase(unittest.TestCase):
         app.include_router(router)
         client = TestClient(app)
         r = client.get("/api/admin/cache")
-        self.assertIn(r.status_code, (401, 503))
-
-    def test_uam_admin_requires_token(self):
-        from fastapi.testclient import TestClient
-        from app.api.routers.uam import router
-        from fastapi import FastAPI
-        app = FastAPI()
-        app.include_router(router)
-        client = TestClient(app)
-        r = client.get("/api/uam/users")
         self.assertIn(r.status_code, (401, 503))
 
     def test_crate_graph_tool(self):

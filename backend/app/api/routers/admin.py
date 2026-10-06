@@ -2,7 +2,7 @@
 
 Everything visual lives in Grafana (Prometheus/Loki/Postgres datasources);
 these endpoints are the small mutation set the panel's control card calls:
-runtime rate-limit tuning, cache inspection/flush, and UAM passthrough.
+runtime rate-limit tuning and cache inspection/flush.
 
 Auth: the ADMIN_PANEL_TOKEN bearer (constant-time compare). This token is
 SEPARATE from the MCP token, the REST API token, and Grafana's own admin
@@ -44,10 +44,18 @@ def _require_admin_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="admin token required")
 
 
+def _connect():
+    """Postgres connection for the runtime-settings store."""
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from app.core.config import settings
+
+    return psycopg.connect(settings.postgres_dsn, row_factory=dict_row, connect_timeout=3)
+
+
 def _settings_store():
     """Tiny key/value store in Postgres for runtime-tunable settings."""
-    from app.core.uam import _connect
-
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -125,52 +133,3 @@ def cache_flush(request: Request, tag: str = ""):
     else:
         removed = flush_all()
     return {"removed": removed, "tag": tag or None}
-
-
-@router.get("/usage")
-def usage_summary(request: Request, days: int = 7):
-    """Audit aggregates for the panel's usage tables (also queryable directly
-    in Grafana via pg-oncall)."""
-    _require_admin_token(request)
-    from app.core.uam import _connect
-
-    days = max(1, min(days, 90))
-    with _connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT user_name, count(*) FILTER (WHERE allowed) AS allowed,
-                       count(*) FILTER (WHERE NOT allowed) AS denied
-                FROM uam_audit WHERE created_at >= now() - (%s || ' days')::interval
-                GROUP BY user_name ORDER BY allowed DESC LIMIT 50
-                """,
-                (str(days),),
-            )
-            by_user = cur.fetchall()
-            cur.execute(
-                """
-                SELECT action AS tool, count(*) AS calls,
-                       count(*) FILTER (WHERE NOT allowed) AS denied
-                FROM uam_audit WHERE created_at >= now() - (%s || ' days')::interval
-                GROUP BY action ORDER BY calls DESC LIMIT 50
-                """,
-                (str(days),),
-            )
-            by_tool = cur.fetchall()
-            cur.execute(
-                """
-                SELECT user_name, action, reason, created_at
-                FROM uam_audit WHERE NOT allowed
-                ORDER BY created_at DESC LIMIT 25
-                """,
-            )
-            recent_denied = cur.fetchall()
-    return {
-        "days": days,
-        "by_user": by_user,
-        "by_tool": by_tool,
-        "recent_denials": [
-            {"user": r["user_name"], "tool": r["action"], "reason": r["reason"],
-             "at": str(r["created_at"])} for r in recent_denied
-        ],
-    }
