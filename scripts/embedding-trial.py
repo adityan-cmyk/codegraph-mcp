@@ -35,7 +35,7 @@ model = SentenceTransformer(candidate, trust_remote_code=True)
 # model; the live model is bge-base-en-v1.5. Never hardcode this again.)
 baseline = SentenceTransformer("BAAI/bge-base-en-v1.5")
 
-pairs = json.load(open("/tmp/golden.json"))
+pairs = json.load(open("/app/golden.json"))
 queries = sorted({p["query"] for p in pairs})
 symbols = sorted({p["symbol_id"] for p in pairs})
 
@@ -110,10 +110,10 @@ print(json.dumps(build_golden_set()))
     # runs in the backend container: bge-base is pre-cached there (HF_HOME),
     # candidates download on first use
     os.system(
-        f"docker cp /tmp/opencode/golden.json oncall-backend:/tmp/golden.json && "
-        f"docker cp /tmp/opencode/trial_inner.py oncall-backend:/tmp/trial_inner.py && "
+        f"docker cp /tmp/opencode/golden.json oncall-backend:/app/golden.json && "
+        f"docker cp /tmp/opencode/trial_inner.py oncall-backend:/app/trial_inner.py && "
         f"docker exec -e HF_HOME=/app/.cache/huggingface oncall-backend "
-        f"python /tmp/trial_inner.py {CANDIDATE}"
+        f"python /app/trial_inner.py {CANDIDATE}"
     )
     return 0
 
