@@ -11,6 +11,10 @@ class InMemoryGraphIndex:
         self._used_by: dict[str, set[str]] = {}
         self._uses: dict[str, set[str]] = {}
         self._metadata: dict[str, dict] = {}
+        # provenance of a symbol's outgoing edges: "scip" (type-resolved via
+        # rust-analyzer) or "regex" (extractor-guessed). Per-source, because
+        # SCIP refinement replaces a covered symbol's edges wholesale.
+        self._edge_source: dict[str, str] = {}
 
     def reset(self) -> None:
         self._upstream.clear()
@@ -18,11 +22,12 @@ class InMemoryGraphIndex:
         self._used_by.clear()
         self._uses.clear()
         self._metadata.clear()
+        self._edge_source.clear()
 
     def reset_documents(self) -> None:
         self.reset()
 
-    def upsert_symbol(self, symbol_id: str, *, calls: list[str] | None = None, called_by: list[str] | None = None, uses: list[str] | None = None, used_by: list[str] | None = None, uses_with_modes: list[tuple[str, list[str]]] | None = None, metadata: dict | None = None) -> None:
+    def upsert_symbol(self, symbol_id: str, *, calls: list[str] | None = None, called_by: list[str] | None = None, uses: list[str] | None = None, used_by: list[str] | None = None, uses_with_modes: list[tuple[str, list[str]]] | None = None, metadata: dict | None = None, edge_source: str = "regex") -> None:
         self._downstream.setdefault(symbol_id, set()).update(calls or [])
         # Mirror CALLS into the callee's upstream, same as USES below —
         # Neo4j derives both directions from the stored edge.
@@ -40,6 +45,23 @@ class InMemoryGraphIndex:
         self._used_by.setdefault(symbol_id, set()).update(used_by or [])
         if metadata:
             self._metadata[symbol_id] = metadata
+        if edge_source:
+            self._edge_source[symbol_id] = edge_source
+
+    def get_edge_provenance(self, symbol_id: str) -> dict[str, str]:
+        """{neighbor_id: "scip"|"regex"} for every 1-hop edge touching the symbol.
+
+        An edge's provenance is the source symbol's extractor — SCIP refinement
+        replaces a covered source's outgoing edges wholesale, so per-source is
+        exact. Inbound edges carry the CALLER's provenance.
+        """
+        out: dict[str, str] = {}
+        own = self._edge_source.get(symbol_id, "regex")
+        for target in self._downstream.get(symbol_id, set()) | self._uses.get(symbol_id, set()):
+            out[target] = own
+        for caller in self._upstream.get(symbol_id, set()) | self._used_by.get(symbol_id, set()):
+            out[caller] = self._edge_source.get(caller, "regex")
+        return out
 
     def get_blast_radius(self, symbol_id: str) -> GraphNeighborhood:
         return GraphNeighborhood(
@@ -227,6 +249,12 @@ class GraphIndexProxy:
 
     def get_blast_radius(self, symbol_id: str) -> GraphNeighborhood:
         return self._active().get_blast_radius(symbol_id)
+
+    def get_edge_provenance(self, symbol_id: str) -> dict[str, str]:
+        backend = self._active()
+        if hasattr(backend, "get_edge_provenance"):
+            return backend.get_edge_provenance(symbol_id)
+        return {}
 
     def get_neighbors(self, symbol_id: str, depth: int = 1) -> GraphNeighborhood:
         backend = self._active()

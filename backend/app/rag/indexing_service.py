@@ -490,6 +490,7 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
     # type-resolved edges REPLACE the regex edges for files it covers —
     # precise beats approximate. Uncovered files keep regex edges.
     scip_refinement = _load_scip_refinement(snapshot)
+    covered_files: set[str] = set()
     if scip_refinement is not None:
         scip_edges, covered_files, scip_stats = scip_refinement
         replaced_sources = 0
@@ -527,11 +528,15 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
     for chunk in snapshot.chunks:
         if _should_skip_for_graph(chunk):
             continue
+        # covered files' edges come wholly from SCIP (regex was popped above);
+        # everything else is extractor-guessed. Per-edge provenance for agents
+        # and risk weighting — see get_edge_provenance / get_index_meta.
         new_graph.upsert_symbol(
             chunk.symbol_id,
             calls=calls_by_source.get(chunk.symbol_id, []),
             uses_with_modes=uses_with_modes_by_source.get(chunk.symbol_id, []),
             metadata=chunk_meta.get(chunk.symbol_id),
+            edge_source="scip" if chunk.file_path in covered_files else "regex",
         )
 
     new_stats = new_graph.get_stats()

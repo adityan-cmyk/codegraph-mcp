@@ -8,7 +8,7 @@ You have access to a read-only code dependency graph via the `oncall-graph` MCP 
 
 Always use: `./scripts/run-tests.sh` — runs pytest in a `--network none` container (no network path to any backend). Protection layers: (1) `tests/unit/conftest.py` forces in-memory backends, (2) `app/core/test_guard.py` makes real-backend reset() raise under pytest, (3) the script cuts the network entirely.
 
-## Available MCP Tools (19)
+## Available MCP Tools (26)
 
 | Tool | When to use |
 |---|---|
@@ -30,6 +30,13 @@ Always use: `./scripts/run-tests.sh` — runs pytest in a `--network none` conta
 | `get_reinforcement_stats` | See which symbols are boosted/penalized from past feedback |
 | `find_warnings_in_blast_radius` | Metal detector — TODO/FIXME comments, swallowed errors, stub fns, commented-out code, fail-open defaults within a symbol's blast radius |
 | `diff_modules` | Symbol-set drift between counterpart modules (sync vs async generators, handler mirrors) |
+| `find_cycles` | Circular dependencies in the module graph |
+| `get_crate_graph` | Workspace crate dependency graph, dependents, cross-crate risk |
+| `find_hotspots` | Rank files by churn × connectivity × missing tests × incidents × ownership |
+| `recent_changes_near` | Recent commits touching a symbol or its blast radius (merge-conflict risk) |
+| `get_tests_for_symbol` | Test fns covering a symbol — gauge regression coverage before changes |
+| `find_dead_code` | Symbols with no callers, type-refs, or uses — deletion candidates |
+| `resolve_stacktrace` | Resolve a raw Rust panic backtrace to graph symbols with context |
 | `make_decision` | Typed judgments (noul yes/no, score, choice) from the local decision model. 10-35s per call — for decisions worth waiting on (PR risk, triage, gating), NOT per-message |
 
 All tools are read-only. They cannot modify the index, run code, or access files.
@@ -107,5 +114,5 @@ Shows how many symbols are boosted/penalized from accumulated feedback.
 
 - The MCP server is **stateless** — no session required. You can call `tools/list` and `tools/call` directly.
 - The graph indexes a Rust codebase. Symbol IDs use `::` paths (e.g. `crates::inventory::client::InventoryClient`).
-- All 16 tools are available at `http://<host-ip>:8002/mcp` via MCP JSON-RPC.
+- All 26 tools are available at `http://<host-ip>:8002/mcp` via MCP JSON-RPC.
 - The feedback API is at `http://<host-ip>:8000/api/feedback/`.

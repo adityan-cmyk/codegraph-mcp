@@ -60,7 +60,7 @@ class Neo4jGraphIndex:
                 gen=self._gen,
             )
 
-    def upsert_symbol(self, symbol_id: str, calls: list[str] | None = None, uses: list[str] | None = None, uses_with_modes: list[tuple[str, list[str]]] | None = None, metadata: dict | None = None) -> None:
+    def upsert_symbol(self, symbol_id: str, calls: list[str] | None = None, uses: list[str] | None = None, uses_with_modes: list[tuple[str, list[str]]] | None = None, metadata: dict | None = None, edge_source: str = "regex") -> None:
         gen = self._gen
         with self._get_driver().session() as session:
             if metadata:
@@ -119,11 +119,13 @@ class Neo4jGraphIndex:
                     """
                     MATCH (s:Symbol {id: $symbol_id, gen: $gen})
                     MATCH (t:Symbol {id: $target_id, gen: $gen})
-                    MERGE (s)-[:CALLS]->(t)
+                    MERGE (s)-[r:CALLS]->(t)
+                    SET r.source = $edge_source
                     """,
                     symbol_id=symbol_id,
                     target_id=target,
                     gen=gen,
+                    edge_source=edge_source,
                 )
 
             if uses_with_modes:
@@ -141,12 +143,13 @@ class Neo4jGraphIndex:
                         MATCH (s:Symbol {id: $symbol_id, gen: $gen})
                         MATCH (t:Symbol {id: $target_id, gen: $gen})
                         MERGE (s)-[r:USES]->(t)
-                        SET r.usage_modes = $modes
+                        SET r.usage_modes = $modes, r.source = $edge_source
                         """,
                         symbol_id=symbol_id,
                         target_id=target,
                         gen=gen,
                         modes=modes,
+                        edge_source=edge_source,
                     )
             else:
                 for target in uses or []:
@@ -162,11 +165,13 @@ class Neo4jGraphIndex:
                         """
                         MATCH (s:Symbol {id: $symbol_id, gen: $gen})
                         MATCH (t:Symbol {id: $target_id, gen: $gen})
-                        MERGE (s)-[:USES]->(t)
+                        MERGE (s)-[r:USES]->(t)
+                        SET r.source = $edge_source
                         """,
                         symbol_id=symbol_id,
                         target_id=target,
                         gen=gen,
+                        edge_source=edge_source,
                     )
 
     def get_neighbors(self, symbol_id: str, depth: int = 1) -> GraphNeighborhood:
@@ -389,10 +394,42 @@ class Neo4jGraphIndex:
             )
             edge_count = edge_result.single()["count"]
 
+            provenance_result = session.run(
+                """
+                MATCH (s:Symbol {gen: $gen})-[r:CALLS|USES]->(t:Symbol {gen: $gen})
+                RETURN coalesce(r.source, 'regex') AS source, count(r) AS count
+                """,
+                gen=self._gen,
+            )
+            provenance = {record["source"]: record["count"] for record in provenance_result}
+
         return {
             "graph_nodes": node_count,
             "graph_edges": edge_count,
+            "scip_edges": provenance.get("scip", 0),
+            "regex_edges": provenance.get("regex", 0),
         }
+
+    def get_edge_provenance(self, symbol_id: str) -> dict[str, str]:
+        """{neighbor_id: "scip"|"regex"} for every 1-hop edge touching the symbol.
+
+        An edge's provenance is its source symbol's extractor (SCIP refinement
+        replaces a covered source's edges wholesale). Inbound edges carry the
+        CALLER's provenance. Edges from gens built before provenance existed
+        coalesce to "regex".
+        """
+        with self._get_driver().session() as session:
+            result = session.run(
+                """
+                MATCH (s:Symbol {id: $symbol_id, gen: $gen})-[r:CALLS|USES]-(t:Symbol)
+                WHERE t.gen = $gen
+                RETURN t.id AS neighbor,
+                       coalesce(r.source, 'regex') AS source
+                """,
+                symbol_id=symbol_id,
+                gen=self._gen,
+            )
+            return {record["neighbor"]: record["source"] for record in result}
 
     def close(self) -> None:
         if self._driver is not None:

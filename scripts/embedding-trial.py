@@ -30,8 +30,10 @@ candidate = sys.argv[1]
 from sentence_transformers import SentenceTransformer
 model = SentenceTransformer(candidate, trust_remote_code=True)
 
-# baseline: the live embedding model under the SAME proxy — side by side
-baseline = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+# baseline: the ACTUAL live model (weaviate_semantic._EMBED_MODEL_NAME) under
+# the SAME proxy — side by side. (An earlier run mislabeled MiniLM as the live
+# model; the live model is bge-base-en-v1.5. Never hardcode this again.)
+baseline = SentenceTransformer("BAAI/bge-base-en-v1.5")
 
 pairs = json.load(open("/tmp/golden.json"))
 queries = sorted({p["query"] for p in pairs})
@@ -64,7 +66,7 @@ cand_m = metrics(q_vecs, s_vecs)
 base_m = metrics(bq_vecs, bs_vecs)
 print(json.dumps({
     "candidate": candidate,
-    "baseline": "sentence-transformers/all-MiniLM-L6-v2 (live model)",
+    "baseline": "BAAI/bge-base-en-v1.5 (actual live model)",
     "golden_pairs": len(pairs),
     "note": "symbol-id-only retrieval proxy, both models under identical conditions",
     "candidate_metrics": cand_m,
@@ -105,10 +107,13 @@ print(json.dumps(build_golden_set()))
     with open("/tmp/opencode/trial_inner.py", "w") as f:
         f.write(TRIAL_SCRIPT)
 
+    # runs in the backend container: bge-base is pre-cached there (HF_HOME),
+    # candidates download on first use
     os.system(
-        f"docker cp /tmp/opencode/golden.json oncall-reranker:/tmp/golden.json && "
-        f"docker cp /tmp/opencode/trial_inner.py oncall-reranker:/tmp/trial_inner.py && "
-        f"docker exec oncall-reranker python /tmp/trial_inner.py {CANDIDATE}"
+        f"docker cp /tmp/opencode/golden.json oncall-backend:/tmp/golden.json && "
+        f"docker cp /tmp/opencode/trial_inner.py oncall-backend:/tmp/trial_inner.py && "
+        f"docker exec -e HF_HOME=/app/.cache/huggingface oncall-backend "
+        f"python /tmp/trial_inner.py {CANDIDATE}"
     )
     return 0
 

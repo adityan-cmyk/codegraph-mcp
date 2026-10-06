@@ -1107,7 +1107,8 @@ async def _handle_mcp(request: Request) -> Response:
             })
 
         # UAM: per-user policy + daily tier quota + audit. Legacy token
-        # (no UAM user attached) bypasses — it is the bootstrap admin.
+        # (no UAM user attached) is the break-glass bootstrap admin — audited
+        # separately with file fallback + rate-limited email alert.
         uam_user = getattr(request.state, "uam_user", None)
         if uam_user is not None:
             from app.core import uam
@@ -1133,6 +1134,11 @@ async def _handle_mcp(request: Request) -> Response:
                     })}],
                     "isError": True,
                 })
+
+        elif getattr(request.state, "legacy_token", False):
+            from app.core import uam
+
+            uam.audit_legacy(tool_name)
 
         handler = _TOOLS[tool_name]["handler"]
         import time as _t
@@ -1348,6 +1354,7 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
 
         if uam_user is not None or hmac.compare_digest(provided, token):
             request.state.uam_user = uam_user
+            request.state.legacy_token = uam_user is None
             identity = uam_user.name if uam_user else "legacy-admin"
             # Authenticated tool-call rate limiting — token bucket per user.
             # Protects the process (and in-flight builds) from agent load tests

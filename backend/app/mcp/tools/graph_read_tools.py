@@ -1513,16 +1513,23 @@ def get_blast_radius_detailed(symbol_id: str) -> dict[str, object]:
     used_by_modes = br.get("used_by_modes", {})
     uses_modes = br.get("uses_modes", {})
 
+    try:
+        from app.rag.retrieval.graph import graph_index as _gi
+
+        provenance = _gi.get_edge_provenance(symbol_id)
+    except Exception:
+        provenance = {}
+
     for sym in br.get("upstream", []):
-        detailed["upstream"].append({"symbol_id": sym, "confidence": "high", "edge_type": "calls"})
+        detailed["upstream"].append({"symbol_id": sym, "confidence": "high", "edge_type": "calls", "via": provenance.get(sym, "regex")})
     for sym in br.get("downstream", []):
-        detailed["downstream"].append({"symbol_id": sym, "confidence": "high", "edge_type": "calls"})
+        detailed["downstream"].append({"symbol_id": sym, "confidence": "high", "edge_type": "calls", "via": provenance.get(sym, "regex")})
     for sym in br.get("used_by", []):
         modes = used_by_modes.get(sym, ["reference"])
-        detailed["used_by"].append({"symbol_id": sym, "confidence": "medium", "edge_type": "type_reference", "usage_modes": modes})
+        detailed["used_by"].append({"symbol_id": sym, "confidence": "medium", "edge_type": "type_reference", "usage_modes": modes, "via": provenance.get(sym, "regex")})
     for sym in br.get("uses", []):
         modes = uses_modes.get(sym, ["reference"])
-        detailed["uses"].append({"symbol_id": sym, "confidence": "medium", "edge_type": "type_reference", "usage_modes": modes})
+        detailed["uses"].append({"symbol_id": sym, "confidence": "medium", "edge_type": "type_reference", "usage_modes": modes, "via": provenance.get(sym, "regex")})
 
     total_high = len(detailed["upstream"]) + len(detailed["downstream"])
     total_medium = len(detailed["used_by"]) + len(detailed["uses"])
@@ -1547,6 +1554,13 @@ def get_blast_radius_detailed(symbol_id: str) -> dict[str, object]:
 # ============================================================================
 
 _CLASSIFIER_VERSION = "3"
+
+# single source of truth for the live embedding model — hardcoded copies in
+# docs/tools drift (the README bge/MiniLM contradiction came from exactly that)
+try:
+    from app.rag.retrieval.weaviate_semantic import _EMBED_MODEL_NAME, _EMBED_DIMENSIONS as _EMBED_MODEL_REF
+except Exception:  # store-less contexts (tests) keep a sane default
+    _EMBED_MODEL_REF = ("unknown", 0)
 
 _USAGE_MODE_WEIGHTS = {
     "pattern_match": 3,
@@ -1637,9 +1651,9 @@ def get_index_meta() -> dict[str, object]:
         "total_symbols": len(snapshot.chunks) if snapshot else 0,
         "total_edges": len(snapshot.graph_edges) if snapshot else 0,
         "weaviate_collection": weaviate_collection,
-        "embedding_model": "BAAI/bge-base-en-v1.5",
+        "embedding_model": _EMBED_MODEL_REF[0],
         "coverage": coverage,
-        "embedding_dimensions": 768,
+        "embedding_dimensions": _EMBED_MODEL_REF[1],
         "features": [
             "hybrid_bm25_vector_search",
             "chunk_enrichment",

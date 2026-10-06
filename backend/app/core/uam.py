@@ -270,6 +270,73 @@ def audit(user: UAMUser | None, action: str, allowed: bool, reason: str) -> None
         logger.debug("audit write failed", exc_info=True)
 
 
+# --- break-glass: the legacy master token ----------------------------------
+
+_LEGACY_ALERT_INTERVAL_SEC = 3600.0
+_legacy_last_alert = 0.0
+
+
+def audit_legacy(action: str, allowed: bool = True) -> None:
+    """Audit + alert for use of the legacy master token (break-glass).
+
+    The legacy token is an enterprise-equivalent master key that keeps working
+    when Postgres is down — exactly when uam_audit rows can't be written. So:
+    try the audit row, AND always append to logs/legacy_token_use.log on the
+    host (size-rotated), AND send an email alert rate-limited to once per hour
+    (agent batches legitimately using the token would otherwise storm SMTP).
+    """
+    global _legacy_last_alert
+    import time as _time
+
+    now = _time.time()
+    db_ok = False
+    try:
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO uam_audit (key_hash, user_name, action, allowed, reason)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (_LEGACY_KEY_MARKER, "legacy-admin", action, allowed, "break-glass legacy master token"),
+                )
+        db_ok = True
+    except Exception:
+        logger.warning("legacy-token audit row failed (store unreachable?)", exc_info=True)
+
+    try:
+        from pathlib import Path as _P
+
+        path = _P("logs/legacy_token_use.log")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:  # simple size rotation at 5 MB
+            if path.exists() and path.stat().st_size > 5 * 1024 * 1024:
+                path.rename(path.with_suffix(".log.1"))
+        except OSError:
+            pass
+        with path.open("a") as fh:
+            fh.write(f"{_time.strftime('%Y-%m-%dT%H:%M:%S')} tool={action} allowed={allowed} db={'ok' if db_ok else 'DOWN'}\n")
+    except Exception:
+        logger.debug("legacy-token file log failed", exc_info=True)
+
+    if now - _legacy_last_alert > _LEGACY_ALERT_INTERVAL_SEC:
+        _legacy_last_alert = now
+        try:
+            from app.core.notifications import send_email
+
+            send_email(
+                "BREAK-GLASS: legacy master token in use",
+                "<p>The legacy MCP master token (bootstrap-admin) was just used "
+                f"(tool: <code>{action}</code>, Postgres audit: "
+                f"{'ok' if db_ok else '<b>FAILED — store unreachable</b>'}).</p>"
+                "<p>This token is an enterprise-equivalent master key. If this use "
+                "was not expected, rotate it: set a new MCP_AUTH_TOKEN, update the "
+                "bootstrap-admin key, and restart the backend.</p>",
+            )
+        except Exception:
+            logger.debug("legacy-token alert email failed", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Admin operations
 # ---------------------------------------------------------------------------

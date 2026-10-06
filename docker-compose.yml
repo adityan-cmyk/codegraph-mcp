@@ -64,18 +64,6 @@ services:
           cpus: "2.0"
           memory: 2G
 
-  t2v-transformers:
-    image: semitechnologies/transformers-inference:sentence-transformers-all-MiniLM-L6-v2
-    container_name: oncall-t2v-transformers
-    restart: unless-stopped
-    ports:
-      - "8081:8080"
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 2G
-
   reranker:
     build:
       context: ./reranker
@@ -103,8 +91,6 @@ services:
     image: semitechnologies/weaviate:latest
     container_name: oncall-weaviate
     restart: unless-stopped
-    depends_on:
-      - t2v-transformers
     ports:
       - "8080:8080"
     environment:
@@ -151,6 +137,7 @@ services:
     volumes:
       - ${CODEBASE_REPO_PATH}:/repos/codebase:ro
       - ./scip-data:/scip-data:ro
+      - ./logs:/app/logs
     environment:
       SCIP_REFINE_ENABLED: "${SCIP_REFINE_ENABLED:-false}"
       SCIP_INDEX_PATH: "/scip-data/index.scip"
@@ -313,7 +300,6 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_USERS_VIEWERS_CAN_EDIT: "false"
       GF_SECURITY_ALLOW_ANONYMOUS: "false"
-      GF_PANELS_DISABLE_SANITIZE_HTML: "true"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/overview.json
     volumes:

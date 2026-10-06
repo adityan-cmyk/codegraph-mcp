@@ -45,6 +45,23 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         FAILURES.append(f"{name}: {detail}")
 
 
+def skipped(name: str, reason: str) -> None:
+    # not run by design (e.g. optional compose profile not up) — never blocks a deploy
+    print(f"[SKIP] {name} — {reason}")
+
+
+def ollama_profile_running() -> bool:
+    # lite mode (no --profile ollama) is a supported deployment; make_decision
+    # requires the decision model, so probe the backend for it instead of failing
+    try:
+        r = requests.get("http://localhost:8000/api/health/decision-model", timeout=10)
+        if r.status_code == 200:
+            return bool(r.json().get("available"))
+    except Exception:
+        pass
+    return True  # probe failed — assume full stack, keep the check strict
+
+
 def mcp_call(tool: str, arguments: dict, timeout: float = 240.0) -> dict:
     r = requests.post(
         MCP,
@@ -83,21 +100,24 @@ def main() -> int:
           str(dm.get("reason", ""))[:80])
 
     # 3. make_decision actually answers (noul ping) — busy is transient, retry
-    md = {}
-    for attempt in range(3):
-        t0 = time.time()
-        md = mcp_call("make_decision", {
-            "state": "smoke test ping",
-            "questions": {"alive": {"type": "noul", "instructions": "Is the system alive?"}},
-        })
-        if "error" not in md or "busy" not in str(md.get("error", "")).lower():
-            break
-        time.sleep(25)
-    elapsed = time.time() - t0
-    answers = md.get("answers", {})
-    check("make_decision answers noul",
-          "alive" in answers and isinstance(answers["alive"].get("noul"), (int, float)),
-          f"{elapsed:.0f}s" + (f" err={md.get('error', '')[:60]}" if "error" in md else ""))
+    if ollama_profile_running():
+        md = {}
+        for attempt in range(3):
+            t0 = time.time()
+            md = mcp_call("make_decision", {
+                "state": "smoke test ping",
+                "questions": {"alive": {"type": "noul", "instructions": "Is the system alive?"}},
+            })
+            if "error" not in md or "busy" not in str(md.get("error", "")).lower():
+                break
+            time.sleep(25)
+        elapsed = time.time() - t0
+        answers = md.get("answers", {})
+        check("make_decision answers noul",
+              "alive" in answers and isinstance(answers["alive"].get("noul"), (int, float)),
+              f"{elapsed:.0f}s" + (f" err={md.get('error', '')[:60]}" if "error" in md else ""))
+    else:
+        skipped("make_decision answers noul", "lite mode — ollama profile not running")
 
     # 4. Semantic scores are not flat (the None-distance 1.0 bug)
     ss = mcp_call("semantic_search", {"query": "wallet closure settlement", "limit": 5})

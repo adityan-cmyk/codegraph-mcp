@@ -1363,3 +1363,42 @@ class AdminControlPlaneTestCase(unittest.TestCase):
                       "fn reference inside fn body = CALLS edge")
         # import-line reference must NOT create an edge (outside fn bodies)
         self.assertEqual(len([e for e in edge_list if e[0] == "crates::x::settle::settle_txn"]), 1)
+
+
+class ToolsDocContractTestCase(unittest.TestCase):
+    """docs/tools.md generated table must match the live registry.
+
+    The README's tool table drifted from the server repeatedly (19 vs 24 vs
+    26 tools, stale descriptions). The table is now generated from the
+    registry (scripts/generate-tools-doc.sh) and this test pins the contract:
+    regenerate the doc in the same commit as any registry change.
+    """
+
+    def test_generated_table_matches_registry(self):
+        from pathlib import Path
+
+        from app.mcp.readonly_server import _TOOLS
+        from app.mcp.tools_doc import extract_generated_section, render_tools_table
+
+        doc_candidates = [
+            Path("/app/docs/tools.md"),          # test container mount
+            Path(__file__).resolve().parents[2] / "docs" / "tools.md",  # repo checkout
+        ]
+        doc = next((p for p in doc_candidates if p.exists()), None)
+        self.assertIsNotNone(doc, "docs/tools.md not found (expected at /app/docs or repo root)")
+
+        committed = extract_generated_section(doc.read_text())
+        self.assertIsNotNone(committed, "generated markers missing from docs/tools.md")
+        self.assertEqual(
+            committed.strip(), render_tools_table().strip(),
+            "docs/tools.md tool table is stale — run ./scripts/generate-tools-doc.sh "
+            "and commit it with your registry change",
+        )
+
+    def test_registry_counts_consistent(self):
+        from app.mcp.readonly_server import _TOOLS
+        from app.mcp.tools_doc import MUTATING_TOOLS
+
+        self.assertEqual(len(_TOOLS), 26)
+        self.assertTrue(MUTATING_TOOLS.issubset(_TOOLS))
+        self.assertEqual(len(MUTATING_TOOLS), 2)
