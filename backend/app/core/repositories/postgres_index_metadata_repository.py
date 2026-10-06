@@ -110,8 +110,9 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                 cursor.executemany(
                     """
                     INSERT INTO index_code_chunks (
-                        snapshot_id, symbol_id, file_path, language, kind, content, start_line, end_line
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        snapshot_id, symbol_id, file_path, language, kind, content, start_line, end_line,
+                        is_test, visibility
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     [
                         (
@@ -123,6 +124,8 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                             chunk.content,
                             chunk.start_line,
                             chunk.end_line,
+                            chunk.is_test,
+                            chunk.visibility,
                         )
                         for chunk in unique_chunks
                     ],
@@ -157,7 +160,8 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
 
                 cursor.execute(
                     """
-                    SELECT symbol_id, file_path, language, kind, content, start_line, end_line
+                    SELECT symbol_id, file_path, language, kind, content, start_line, end_line,
+                           is_test, visibility
                     FROM index_code_chunks
                     WHERE snapshot_id = %s
                     ORDER BY file_path, start_line, symbol_id
@@ -247,6 +251,8 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                                 chunk.content,
                                 chunk.start_line,
                                 chunk.end_line,
+                                chunk.is_test,
+                                chunk.visibility,
                             )
                             for chunk in unique
                         ],

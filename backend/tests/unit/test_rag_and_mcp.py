@@ -1392,3 +1392,34 @@ class AdminConsoleAuthPathTestCase(unittest.TestCase):
         # middleware did not shadow the scoped admin path)
         r = client.get("/api/admin/cache")
         self.assertIn(r.status_code, (401, 503))
+
+
+class SnapshotRoundTripTestCase(unittest.TestCase):
+    """is_test and visibility must survive the Postgres snapshot round-trip.
+
+    The repository INSERT omitted both columns: in-memory chunks carried them
+    (graph nodes were correct) but every stored row silently degraded to
+    private/not-test — so get_blast_radius applied false 'visibility relief'
+    and find_hotspots lost its test exclusion after any restart."""
+
+    def test_chunk_fields_survive_roundtrip(self):
+        from app.rag.ingestion.chunking import build_code_chunk
+        from app.schemas.codebase import CodeChunk
+
+        chunk = build_code_chunk(
+            symbol_id="crates::x::close_tag", file_path="crates/x.rs", kind="fn",
+            content="pub async fn close_tag() {}", start_line=10, end_line=20,
+            is_test=True, visibility="pub",
+        )
+        # CodeChunk model must carry both fields end to end
+        validated = CodeChunk.model_validate(chunk.model_dump())
+        self.assertTrue(validated.is_test)
+        self.assertEqual(validated.visibility, "pub")
+
+        # repository INSERT column list must include both (static guard
+        # against the columns being dropped again in a refactor)
+        import inspect
+        from app.core.repositories import postgres_index_metadata_repository as repo
+        source = inspect.getsource(repo)
+        for stmt in ("is_test, visibility",):
+            self.assertIn(stmt, source, "snapshot INSERT/SELECT must persist is_test + visibility")
