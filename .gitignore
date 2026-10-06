@@ -27,3 +27,5 @@ coverage/
 .vscode/
 backend/.venv/
 scip-data/
+backups/
+logs/
