@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 _PUBLIC_PATHS = {"/health", "/", "/docs", "/openapi.json", "/redoc"}
 _PUBLIC_PREFIXES = ("/assets/",)
+# the admin router enforces its own scoped ADMIN_PANEL_TOKEN (with a
+# brute-force bucket) — the outer API_AUTH_TOKEN gate must not shadow it
+_SELF_AUTHED_PREFIXES = ("/api/admin/",)
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -27,6 +30,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
         for prefix in _PUBLIC_PREFIXES:
             if path.startswith(prefix):
                 return await call_next(request)
+
+        if path.startswith(_SELF_AUTHED_PREFIXES):
+            return await call_next(request)
 
         if path.startswith("/api/"):
             auth_header = request.headers.get("Authorization", "")

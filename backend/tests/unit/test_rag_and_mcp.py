@@ -1364,3 +1364,23 @@ class ToolsDocContractTestCase(unittest.TestCase):
         self.assertEqual(len(_TOOLS), 26)
         self.assertTrue(MUTATING_TOOLS.issubset(_TOOLS))
         self.assertEqual(len(MUTATING_TOOLS), 2)
+
+
+class AdminConsoleAuthPathTestCase(unittest.TestCase):
+    """The outer API_AUTH_TOKEN middleware must let /api/admin/* through to
+    the admin router's own ADMIN_PANEL_TOKEN check — otherwise the scoped
+    admin token can never work against the live app (only against the router
+    mounted standalone in tests, which is how the bug shipped)."""
+
+    def test_admin_prefix_bypasses_outer_api_token(self):
+        from fastapi.testclient import TestClient
+
+        from app.main import app
+
+        client = TestClient(app)
+        # no API_AUTH_TOKEN supplied — must still reach the admin router's
+        # own check (401 = wrong/absent admin token, 503 = admin token not
+        # configured; both are router-level responses proving the outer
+        # middleware did not shadow the scoped admin path)
+        r = client.get("/api/admin/cache")
+        self.assertIn(r.status_code, (401, 503))
