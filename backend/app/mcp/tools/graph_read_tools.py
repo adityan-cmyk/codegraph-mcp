@@ -752,17 +752,22 @@ def _dependency_dead_end_hints(from_symbol: str, to_symbol: str, max_depth: int)
                     f"'{to_symbol.split('::')[-1]}' reaches '{from_symbol.split('::')[-1]}' — the dependency "
                     "runs opposite to the queried direction"
                 )
-            # nearest common neighbor within 3 hops each way
-            common = session.run(
-                """
-                MATCH (a:Symbol {id: $a, gen: $gen})-[:CALLS|USES*1..3]-(m:Symbol)-[:CALLS|USES*1..3]-(b:Symbol {id: $b, gen: $gen})
-                WHERE m.gen = $gen AND m.id <> $a AND m.id <> $b
-                   AND NOT m.id ENDS WITH 'GlobalState' AND NOT m.id ENDS WITH 'FastagGlobalState' AND NOT m.id ENDS WITH 'AppState'
-                RETURN m.id AS id, count(*) AS strength ORDER BY strength DESC LIMIT 3
-                """,
-                a=from_symbol, b=to_symbol, gen=gen,
-            )
-            near = [r["id"] for r in common]
+            # nearest common neighbor: two BOUNDED 2-hop neighborhoods
+            # intersected in memory — the single undirected 3+3-hop cartesian
+            # pattern took 237s on the live graph (unacceptable on a tool path)
+            def _call_neighborhood(sid: str) -> set[str]:
+                rows = session.run(
+                    f"""
+                    MATCH (s:Symbol {{id: $sid, gen: $gen}})-[:CALLS*1..2]-(n:Symbol)
+                    WHERE n.gen = $gen AND n.id <> $sid
+                      AND NOT n.id ENDS WITH 'GlobalState' AND NOT n.id ENDS WITH 'FastagGlobalState'
+                    RETURN DISTINCT n.id AS id LIMIT 400
+                    """,
+                    sid=sid, gen=gen,
+                )
+                return {r["id"] for r in rows}
+
+            near = sorted(_call_neighborhood(from_symbol) & _call_neighborhood(to_symbol))[:3]
             if near:
                 hints["nearest_common_neighbors"] = near
                 hints["note"] = "no direct path — these shared neighbors are where the two flows meet (async boundaries like job queues commonly sit between them)"
