@@ -48,7 +48,6 @@ scrape_configs:
       - targets:
           - postgres:5432
           - redis:6379
-          - t2v-transformers:8080
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

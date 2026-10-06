@@ -32,6 +32,28 @@ _THREAD: threading.Thread | None = None
 _last_rerank_count = 0
 
 
+_AUTOBUILD_COOLDOWN_SEC = 6 * 3600
+
+
+def _autobuild_on_cooldown() -> bool:
+    """True if the last registered build is younger than the cooldown."""
+    try:
+        from app.rag.reinforcement import build_registry
+        import time as _time
+
+        history = build_registry.get_build_history(limit=1)
+        if not history:
+            return False
+        last = history[0]
+        created = last.get("created_at")
+        if created is None:
+            return False
+        age = _time.time() - created.timestamp()
+        return 0 <= age < _AUTOBUILD_COOLDOWN_SEC
+    except Exception:
+        return False
+
+
 def _trigger_rebuild(feedback_entries: list[dict]) -> None:
     """Trigger a zero-downtime rebuild, consuming the given feedback."""
     if not _REBUILD_LOCK.acquire(blocking=False):
@@ -157,13 +179,20 @@ def _agent_tick():
         stats = ai_feedback_store.get_feedback_stats()
         unconsumed = stats.get("unconsumed_accepted", 0)
 
-        # At 10: full rebuild
+        # At 10: full rebuild — with a cooldown: active reviewer-agent testing
+        # can submit feedback faster than the ~100-minute semantic phase
+        # completes, which meant near-continuous indexing (gen 9 -> 14 in a
+        # day) and deployer deferral the whole time. Feedback queues up; a
+        # build every 6h max consumes it just as well.
         if unconsumed >= _AUTOBUILD_THRESHOLD:
-            logger.info("Reinforcement: %d unconsumed accepted feedbacks >= threshold %d — triggering full rebuild", unconsumed, _AUTOBUILD_THRESHOLD)
-            accepted_entries = ai_feedback_store.get_accepted_feedback(limit=_AUTOBUILD_THRESHOLD)
-            _trigger_rebuild(accepted_entries)
-            global _last_rerank_count
-            _last_rerank_count = 0
+            if _autobuild_on_cooldown():
+                logger.info("Reinforcement: %d unconsumed accepted feedbacks, but auto-build is on cooldown", unconsumed)
+            else:
+                logger.info("Reinforcement: %d unconsumed accepted feedbacks >= threshold %d — triggering full rebuild", unconsumed, _AUTOBUILD_THRESHOLD)
+                accepted_entries = ai_feedback_store.get_accepted_feedback(limit=_AUTOBUILD_THRESHOLD)
+                _trigger_rebuild(accepted_entries)
+                global _last_rerank_count
+                _last_rerank_count = 0
 
         # At 5 (and not yet at 10): reranking refresh (no re-embedding, just re-sort)
         elif unconsumed >= _RERANK_THRESHOLD and unconsumed > _last_rerank_count:

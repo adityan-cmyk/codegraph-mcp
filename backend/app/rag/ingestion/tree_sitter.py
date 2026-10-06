@@ -198,6 +198,20 @@ _TEST_ATTR_PATTERN = re.compile(r"#\[[^\]]*\btest\]")
 _CFG_TEST_MOD_PATTERN = re.compile(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+")
 
 
+def _statement_end(source: str, search_from: int, fallback_end: int) -> int:
+    """Offset just past the terminating ';' of a brace-less item.
+
+    const/static/type items have no braces, so brace-matching falls back to
+    'next symbol starts' — a fn-local const then swallowed the entire
+    following function into its chunk. Bounding at the item's own semicolon
+    keeps the span honest.
+    """
+    semi = source.find(";", search_from)
+    if semi < 0 or semi >= fallback_end:
+        return fallback_end
+    return min(semi + 1, fallback_end)
+
+
 def _brace_matched_end(source: str, search_from: int, fallback_end: int) -> int:
     """Offset just past the item's closing brace, brace-counted.
 
@@ -413,14 +427,17 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
 
     for index, match in enumerate(matches):
         start_offset = match.start()
+        symbol_name = match.group("name")
+        kind = match.group("kind")
         end_offset = matches[index + 1].start() if index + 1 < len(matches) else len(source)
         # brace-matched extent — 'until next symbol' made local consts span
         # whole functions and bled the next item's body into line ranges
-        end_offset = _brace_matched_end(source, match.end(), end_offset)
+        if kind in ("const", "static", "type"):
+            end_offset = _statement_end(source, match.end(), end_offset)
+        else:
+            end_offset = _brace_matched_end(source, match.end(), end_offset)
         start_line = source[:start_offset].count("\n") + 1
         end_line = source[:end_offset].count("\n") + 1
-        symbol_name = match.group("name")
-        kind = match.group("kind")
         doc = _extract_docstring(match.group("doc") or "")
 
         chunk_content = source[start_offset:end_offset]
@@ -460,5 +477,21 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
             for mc in method_chunks:
                 mc.file_path = file_path
             chunks.extend(method_chunks)
+
+    # Drop function-local consts/statics: the regex has no scope awareness,
+    # so a const inside a fn body gets a module-level symbol_id — three
+    # same-named locals in different fns became three chunks under ONE id,
+    # each duplicating content that already lives in the enclosing fn chunk.
+    body_spans = [
+        (c.start_line, c.end_line)
+        for c in chunks
+        if c.kind in ("fn", "impl")
+    ]
+    if body_spans:
+        def _inside_a_body(c) -> bool:
+            return c.kind in ("const", "static") and any(
+                s < c.start_line and c.end_line <= e for s, e in body_spans
+            )
+        chunks = [c for c in chunks if not _inside_a_body(c)]
 
     return chunks

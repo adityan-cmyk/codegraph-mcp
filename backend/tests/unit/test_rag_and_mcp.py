@@ -1423,3 +1423,31 @@ class SnapshotRoundTripTestCase(unittest.TestCase):
         source = inspect.getsource(repo)
         for stmt in ("is_test, visibility",):
             self.assertIn(stmt, source, "snapshot INSERT/SELECT must persist is_test + visibility")
+
+
+class DiffModulesBoilerplateTestCase(unittest.TestCase):
+    """diff_modules 500'd live (2026-10-06 17:18) — the boilerplate exclusion
+    referenced _BOILERPLATE_SYMBOL_NAMES without defining it, and no test
+    exercised the code path. This test calls the real function."""
+
+    def test_diff_modules_excludes_boilerplate(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from app.mcp.tools import graph_read_tools as grt
+
+        chunks = [
+            SimpleNamespace(symbol_id="m::a::close_tag", kind="fn"),
+            SimpleNamespace(symbol_id="m::a::From", kind="impl"),
+            SimpleNamespace(symbol_id="m::a::ist_day_start_utc", kind="fn"),
+            SimpleNamespace(symbol_id="m::b::close_tag", kind="fn"),
+            SimpleNamespace(symbol_id="m::b::process", kind="fn"),
+        ]
+        snap = SimpleNamespace(chunks=chunks)
+        with patch("app.core.index_store.index_metadata_store.load_snapshot", return_value=snap):
+            out = grt.diff_modules("m::a", "m::b")
+        self.assertNotIn("error", out, f"diff_modules must not fail: {out.get('error')}")
+        # From + ist_day_start_utc excluded from m::a's symbol count
+        self.assertEqual(out["symbols_a"], 1)
+        self.assertEqual(out["symbols_b"], 2)
+        self.assertIn("from", out["boilerplate_excluded"])

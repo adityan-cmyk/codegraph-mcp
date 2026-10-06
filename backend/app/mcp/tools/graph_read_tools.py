@@ -90,6 +90,17 @@ def _get_symbol_metadata(symbol_id: str) -> dict[str, object] | None:
     return None
 
 
+# std trait impls and per-module helper clones: appear in (nearly) every
+# module, so they carry no drift signal — diff_modules excludes them from
+# its score (a 0.70 "drift" was 20x one helper + From/from impls)
+_BOILERPLATE_SYMBOL_NAMES = frozenset({
+    "from", "tryfrom", "display", "debug", "clone", "partial_eq", "eq",
+    "hash", "serialize", "deserialize", "default", "as_ref", "borrow",
+    "deref", "into", "to_string", "into_iter", "from_iter", "iterator",
+    "ist_day_start_utc", "now_utc", "now_naive_utc",
+})
+
+
 def _is_noise_symbol(symbol_id: str) -> bool:
     """Filter index noise: wildcard bindings (`_`), single-char scraps, and
     pseudo-symbols (file summaries, module exports, keyword-named parser
@@ -700,7 +711,16 @@ def find_dependency_path(from_symbol: str, to_symbol: str, max_depth: int = 5) -
         # A dead end should still point somewhere: reverse-direction and
         # nearest-common-neighbor hints turn "no path" into a lead (e.g. a
         # job queue sits between the two symbols — no synchronous path).
-        hints = _dependency_dead_end_hints(from_symbol, to_symbol, max_depth)
+        # Hints are garnish: exhaustive shortestPath exploration on
+        # DISCONNECTED pairs can take minutes — never let garnish block the
+        # no-path answer (regression: dead ends timed out at any depth).
+        import concurrent.futures as _fut
+
+        try:
+            with _fut.ThreadPoolExecutor(max_workers=1) as _ex:
+                hints = _ex.submit(_dependency_dead_end_hints, from_symbol, to_symbol, max_depth).result(timeout=5.0)
+        except Exception:
+            hints = {}
         return {
             "from": from_symbol,
             "to": to_symbol,
@@ -1041,6 +1061,20 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
     snapshot = index_metadata_store.load_snapshot()
     if not snapshot:
         return {"error": "index snapshot unavailable — trigger a reindex"}
+
+    # Accept crate NAMES as prefixes: 'au-client' translates to the symbol-id
+    # prefix 'crates::au::client' via the crate graph — name-built filters
+    # silently matched nothing before
+    if module_prefix:
+        try:
+            from app.rag.ingestion.crate_graph import load_crate_graph
+
+            for info in load_crate_graph().values():
+                if module_prefix in (info.get("path"), info.get("path", "").removesuffix("/src")) or module_prefix == info.get("module_prefix"):
+                    module_prefix = info["module_prefix"]
+                    break
+        except Exception:
+            pass
 
     file_symbols: dict[str, list] = {}
     for c in snapshot.chunks:
@@ -1548,12 +1582,12 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
         pass
 
     SEMANTIC_SEARCH_LATENCY_MS.observe((_t.monotonic() - _search_start) * 1000)
-    # Low-relevance signal: scores pinned at the 0.5 fallback floor mean the
-    # hybrid search found nothing real — agents trusted those hits (a
-    # nonsense query returned "matches"). Flag it instead of letting the
-    # floor masquerade as relevance.
-    top_scores = [adj for _, adj, _ in reranked[:5]]
-    low_relevance = bool(reranked) and all(0.49 <= s <= 0.51 for s in top_scores)
+    # Low-relevance signal: the TOP hit sitting at the 0.5 fallback floor
+    # means the hybrid search found nothing real — agents trusted those hits
+    # (a nonsense query returned "matches" headed by a floor-scored entry).
+    # Top-only, not all-top-5: real results under a floor-scored leader are
+    # still noise-ranked, but mixed lists with a genuine leader are fine.
+    low_relevance = bool(reranked) and 0.49 <= reranked[0][1] <= 0.51
     response = _attach_stale_warning({
         "query": query,
         "query_id": query_id,
@@ -1843,7 +1877,13 @@ def resolve_stacktrace(stacktrace: str, include_neighborhood: bool = False) -> d
 
     from app.core.index_store import index_metadata_store
 
-    frames = _re.findall(r"([A-Za-z0-9_./-]+\.rs):(\d+)", stacktrace)
+    # strip './' prefixes — Rust panic output uses them, and the exact-match
+    # against indexed paths (never ./-prefixed) silently failed (regression
+    # from the path-strictness fix)
+    frames = [
+        (f.removeprefix("./").removeprefix("/"), ln)
+        for f, ln in _re.findall(r"([A-Za-z0-9_./-]+\.rs):(\d+)", stacktrace)
+    ]
     if not frames:
         return {"error": "no 'file.rs:line' frames found in the stacktrace text"}
 
@@ -1965,9 +2005,9 @@ def diff_modules(module_a: str, module_b: str) -> dict[str, object]:
                 # Serialize...) and per-module helper clones appear in every
                 # module and dominated the drift score without meaning
                 # anything — a 0.70 "drift" was 20x ist_day_start_utc +
-                # From/from impls
+                # From/from impls. Case-insensitive: Rust impls are TitleCase.
                 short = sid.split("::")[-1]
-                if short in _BOILERPLATE_SYMBOL_NAMES:
+                if short.lower() in _BOILERPLATE_SYMBOL_NAMES:
                     continue
                 out.setdefault(short, []).append(sid)
         return out
