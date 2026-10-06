@@ -242,6 +242,16 @@ Remaining ceiling (applies to both extractors):
 - **Dynamic dispatch**: `dyn Trait` call sites resolve to the trait, not the concrete impl that will run
 - **SCIP snapshot age**: the index is generated per-revision (`scripts/generate-scip.sh`); if it lags the indexed commit, refinement still applies but reflects the older revision — regenerate after large pulls
 
+### Embedding model decision (recorded)
+
+The live embedding model is `BAAI/bge-base-en-v1.5` (768-dim, embedded locally by the backend; Weaviate uses `Vectorizer.none()`). A golden-set trial of code-specialist candidates (`jina-embeddings-v2-base-code`) was run twice:
+
+- First run's verdict ("MiniLM wins, keep MiniLM") was **retracted** — its "live model" baseline was mislabeled: the script downloaded MiniLM instead of comparing against the actual live bge-base.
+- Corrected run: the candidate cannot even load under the deployed, hash-pinned transformers — its `trust_remote_code` modeling imports symbols removed from current transformers (`find_pruneable_heads_and_indices`). Any model that requires remote code compatible only with old transformers is undeployable here regardless of quality.
+- Golden set fairness check: 89 pairs, only ~3% name-match-heavy (≥50% of query terms appearing in the expected symbol path) — the set is overwhelmingly natural-language, so the benchmark does not structurally favor lexical models.
+
+**Decision: keep bge-base-en-v1.5.** Revisit only with a candidate that (a) loads on pinned current transformers without remote code, and (b) beats bge-base on the golden proxy.
+
 ### Incremental Ingest
 
 Nightly cron job (`scripts/nightly-sync.sh`) runs at midnight:
