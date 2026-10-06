@@ -1451,3 +1451,35 @@ class DiffModulesBoilerplateTestCase(unittest.TestCase):
         self.assertEqual(out["symbols_a"], 1)
         self.assertEqual(out["symbols_b"], 2)
         self.assertIn("from", out["boilerplate_excluded"])
+
+
+class SnapshotSqlConsistencyTestCase(unittest.TestCase):
+    """Every index_code_chunks INSERT must have matching column, placeholder,
+    and param-tuple counts. The 2026-10-07 nightly-sync failure ('8
+    placeholders but 10 parameters') shipped because the round-trip fix
+    extended one site's param tuple without its column list — different
+    indentation defeated the string replace. This counts all three on every
+    INSERT in the module source."""
+
+    def test_insert_placeholder_consistency(self):
+        import inspect
+        import re
+
+        from app.core.repositories import postgres_index_metadata_repository as repo
+
+        source = inspect.getsource(repo)
+        inserts = re.findall(
+            r"INSERT INTO index_code_chunks\s*\((.*?)\)\s*VALUES\s*\((%s(?:,\s*%s)*)\)",
+            source,
+            re.DOTALL,
+        )
+        self.assertGreaterEqual(len(inserts), 2, "expected at least 2 chunk INSERT sites")
+        for columns, placeholders in inserts:
+            n_cols = len([c for c in columns.split(",") if c.strip()])
+            n_ph = placeholders.count("%s")
+            self.assertEqual(
+                n_cols, n_ph,
+                f"column/placeholder mismatch: {n_cols} columns vs {n_ph} placeholders in INSERT ({columns[:60]})",
+            )
+            self.assertIn("is_test", columns, "chunk INSERT must persist is_test")
+            self.assertIn("visibility", columns, "chunk INSERT must persist visibility")

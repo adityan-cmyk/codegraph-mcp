@@ -71,4 +71,18 @@ log "Triggering incremental reindex..."
 RESPONSE=$(curl -s --max-time 14400 -X POST -H "Authorization: Bearer ${API_AUTH_TOKEN:-}" "$API_URL/api/index/ingest" 2>&1) || true
 log "Reindex response: $RESPONSE"
 
+# an error response is a FAILED sync, not a completed one — the 2026-10-07
+# placeholder-mismatch bug logged "Nightly sync complete" over an error body
+# and nobody was alerted
+if echo "$RESPONSE" | grep -qE '"detail"|"error"'; then
+    log "INCREMENTAL REINDEX FAILED — error in response"
+    SAFE_RESP=$(echo "$RESPONSE" | head -c 400 | tr -d '"')
+    docker exec oncall-backend python -c "
+from app.core.notifications import send_email
+send_email(subject='[codegraph ALERT] Nightly incremental reindex FAILED',
+           body_html='<div>The incremental ingest returned an error — the index stays behind HEAD until fixed. Response: <pre>${SAFE_RESP}</pre></div>')
+" >> "$LOG" 2>&1 || true
+    exit 1
+fi
+
 log "Nightly sync complete"

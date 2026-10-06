@@ -238,8 +238,9 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                     cursor.executemany(
                         """
                         INSERT INTO index_code_chunks (
-                            snapshot_id, symbol_id, file_path, language, kind, content, start_line, end_line
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                            snapshot_id, symbol_id, file_path, language, kind, content, start_line, end_line,
+                            is_test, visibility
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         [
                             (
