@@ -1558,7 +1558,9 @@ _CLASSIFIER_VERSION = "3"
 # single source of truth for the live embedding model — hardcoded copies in
 # docs/tools drift (the README bge/MiniLM contradiction came from exactly that)
 try:
-    from app.rag.retrieval.weaviate_semantic import _EMBED_MODEL_NAME, _EMBED_DIMENSIONS as _EMBED_MODEL_REF
+    from app.rag.retrieval.weaviate_semantic import _EMBED_DIMENSIONS, _EMBED_MODEL_NAME
+
+    _EMBED_MODEL_REF = (_EMBED_MODEL_NAME, _EMBED_DIMENSIONS)
 except Exception:  # store-less contexts (tests) keep a sane default
     _EMBED_MODEL_REF = ("unknown", 0)
 

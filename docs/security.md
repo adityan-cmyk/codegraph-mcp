@@ -72,7 +72,10 @@ Tool calls are governed by a user-action model: every API key maps to a user wit
 | pro | 5,000 calls | viewer, reviewer, operator |
 | enterprise | unlimited | all + admin |
 
-Roles grant tool policies (`viewer` = read/search tools, `reviewer` = diff analysis + feedback, `operator` = + `make_decision`, `admin` = everything). Every `tools/call` is policy-checked, quota-counted, and audited (`uam_audit`). Manage via REST (`/api/uam/users`, admin token) or the admin console at `http://<host>:8000/admin`. Keys are stored hashed (SHA-256). The legacy `MCP_AUTH_TOKEN` is a **break-glass master key**: it bootstraps as an enterprise admin and still works when Postgres is down — so its use is audited to `uam_audit` when possible AND always appended to `logs/legacy_token_use.log`, with an email alert (rate-limited to 1/hour). Rotate it if an alert fires unexpectedly.
+Roles grant tool policies (`viewer` = read/search tools, `reviewer` = diff analysis + feedback, `operator` = + `make_decision`, `admin` = everything). Every `tools/call` is policy-checked, quota-counted, and audited (`uam_audit`). Manage via REST (`/api/uam/users`, admin token) or the admin console at `http://<host>:8000/admin`. Keys are stored hashed (SHA-256). The legacy `MCP_AUTH_TOKEN` is a **break-glass master key**, and its auditing is two-tier by design:
+
+- **Postgres up**: the token resolves to `bootstrap-admin` through normal UAM lookup — every call is policy-checked and audited to `uam_audit` like any user.
+- **Postgres down** (the case that would otherwise be unauditable): UAM lookup fails, the token still authenticates, and every tool call is appended to `logs/legacy_token_use.log` on the host (size-rotated) with an email alert (rate-limited to 1/hour). Rotate the token if that alert fires unexpectedly.
 
 ## Rate limiting
 

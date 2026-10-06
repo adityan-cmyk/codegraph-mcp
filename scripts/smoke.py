@@ -141,6 +141,11 @@ def main() -> int:
     check("index meta has coverage + commits_behind",
           "coverage" in im and "commits_behind" in im,
           f"commits_behind={im.get('commits_behind')}")
+    # a tuple-import bug shipped on 2026-10-06 and 500'd this tool while smoke
+    # stayed green — get_index_meta is the FIRST tool every agent calls
+    check("index meta returns embedding model + dims",
+          bool(im.get("embedding_model")) and isinstance(im.get("embedding_dimensions"), int) and im["embedding_dimensions"] > 0,
+          f"model={im.get('embedding_model')} dims={im.get('embedding_dimensions')} err={str(im.get('error'))[:60]}")
 
     # 7. Traverse summary_only returns a summary
     probe = _probe_symbol()
