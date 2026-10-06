@@ -258,6 +258,10 @@ Nightly cron job (`scripts/nightly-sync.sh`) runs at midnight:
 curl -s http://localhost:8000/api/index/stats | python3 -m json.tool
 ```
 
+### Startup behavior
+
+`INDEX_REPLAY_ON_STARTUP=false` (recommended): the backend resumes the persistent Neo4j generation and the active Weaviate collection at import time — restarts are instant and add no rebuild. The replay (`POST /api/index/replay`) re-derives everything into a fresh gen/collection (~100 min) and is only needed after wiping Weaviate or Neo4j; running it on every restart cycled generations needlessly (gen 9 → 14 in a day of deploys) and kept the deployer deferring behind embedding.
+
 ### Rebuild concurrency
 
 Full rebuilds, replays, and incremental syncs share a mutex — a second request while one runs returns HTTP 409 (`RebuildInProgressError`). Concurrent rebuilds corrupted each other live on 2026-10-06: build A's post-swap generation cleanup deleted build B's in-flight Neo4j nodes, leaving a half-built graph serving queries until a clean rebuild restored it.
