@@ -38,7 +38,17 @@ def build_golden_set() -> list[dict[str, str]]:
             continue
         if not graph_index.has_symbol(symbol):
             continue  # renamed or deleted since — not a fair label
-        pairs.setdefault((query, symbol), {"query": query, "symbol_id": symbol})
+        pairs.setdefault((query, symbol), {"query": query, "symbol_id": symbol, "provenance": "feedback_plus_one"})
+
+    # curated pairs: pipeline-independent, written from domain knowledge —
+    # counterweight to the feedback set's selection bias (+1 rows can only
+    # come from queries the CURRENT ranker already got right)
+    from app.rag.reinforcement.curated_queries import CURATED_GOLDEN_PAIRS
+
+    for pair in CURATED_GOLDEN_PAIRS:
+        if graph_index.has_symbol(pair["symbol_id"]):
+            pairs.setdefault((pair["query"], pair["symbol_id"]),
+                             {"query": pair["query"], "symbol_id": pair["symbol_id"], "provenance": "curated"})
     return list(pairs.values())
 
 
@@ -54,6 +64,7 @@ def run_eval(top_k: int = 10, limit: int = 200) -> dict[str, object]:
     hits10 = 0
     mrr_sum = 0.0
     misses: list[dict[str, str]] = []
+    _last_rank_by_query: dict[str, dict[str, int]] = {}
     for item in golden:
         try:
             result = semantic_search(item["query"], limit=top_k)
@@ -66,6 +77,7 @@ def run_eval(top_k: int = 10, limit: int = 200) -> dict[str, object]:
             if match.get("symbol_id") == item["symbol_id"]:
                 rank = idx
                 break
+        _last_rank_by_query.setdefault(item["query"], {})[item["symbol_id"]] = rank
         if rank:
             mrr_sum += 1.0 / rank
             if rank <= 5:
@@ -83,6 +95,33 @@ def run_eval(top_k: int = 10, limit: int = 200) -> dict[str, object]:
         "misses": misses[:20],
         "miss_count": len(misses),
     }
+
+    # per-provenance metrics: the feedback subset can only contain the
+    # current ranker's successes (selection bias); the curated subset is
+    # pipeline-independent. Report both so ranking experiments state WHICH
+    # population they moved.
+    by_prov: dict[str, list] = {}
+    for item in golden:
+        by_prov.setdefault(item.get("provenance", "feedback_plus_one"), []).append(item)
+    prov_metrics: dict[str, dict] = {}
+    for prov, items in by_prov.items():
+        p_h5 = p_h10 = 0
+        p_mrr = 0.0
+        for item in items:
+            result_rank = _last_rank_by_query.get(item["query"], {}).get(item["symbol_id"])
+            if result_rank:
+                p_mrr += 1.0 / result_rank
+                if result_rank <= 5:
+                    p_h5 += 1
+                p_h10 += 1
+        pn = len(items)
+        prov_metrics[prov] = {
+            "pairs": pn,
+            "hit_at_5": round(p_h5 / pn, 4),
+            "hit_at_10": round(p_h10 / pn, 4),
+            "mrr": round(p_mrr / pn, 4),
+        }
+    score["by_provenance"] = prov_metrics
 
     try:
         from app.rag.reinforcement import build_registry

@@ -16,12 +16,12 @@ Since gen-9 the graph is **SCIP-refined**: a rust-analyzer index supplies type-r
 ┌──────────────────┐     ┌──────────────────┐     ┌────────────────────┐
 │  opencode Agent  │────▶│  MCP Server      │────▶│  Neo4j             │  dependency graph (gen-tagged, SCIP-refined, provenance-labeled edges)
 │  (any machine)   │     │  :8002           │────▶│  Weaviate          │  semantic vector search (shadow collections)
-│                  │     │  token-bucket    │────▶│  PostgreSQL        │  snapshots, feedback, build registry
-    │  ollama            │  decision model (nimble, digest-pinned)
-│                  │────▶│  token buckets   │     │  Redis             │  query cache (tagged, compressed)
-└──────────────────┘     │  REST API :8000  │     └────────────────────┘
-                         │  (26 tools)      │
-                         └──────────────────┘
+│                  │     │  bearer auth +   │────▶│  PostgreSQL        │  snapshots, feedback, build registry
+│                  │────▶│  per-IP token    │     │  ollama            │  decision model (nimble, digest-pinned)
+│                  │     │  buckets         │     │  Redis             │  query cache (tagged, compressed)
+│                  │     │  REST API :8000  │     └────────────────────┘
+│                  │     │  (26 tools)      │
+└──────────────────┘     └──────────────────┘
 ```
 
 The backend embeds queries and chunks locally (`BAAI/bge-base-en-v1.5`, 768-dim); Weaviate collections use `Vectorizer.none()` and receive vectors directly — there is no external embedding sidecar.

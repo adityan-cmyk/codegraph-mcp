@@ -29,3 +29,4 @@ backend/.venv/
 scip-data/
 backups/
 logs/
+.DS_Store

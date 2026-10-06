@@ -19,11 +19,13 @@ Supply chain, hardening, access control, and admin surfaces for codegraph-mcp.
 | **pip hash-pinning** | `requirements.txt` generated with `pip-compile --generate-hashes`, installed with `--require-hashes` |
 | **Rustup checksum** | SHA256 checksum verification before executing rustup-init |
 | **Model pinning** | Embedding model `BAAI/bge-base-en-v1.5` preloaded at build time |
-| **SBOM** | Syft generates SPDX SBOM on every image build (CI) |
-| **Image signing** | Cosign keyless signing of built images (CI) |
-| **Dependency audit** | `pip-audit` in CI security-scans job |
-| **Secret scanning** | Gitleaks runs on every push/PR |
-| **Container scanning** | Trivy scans both filesystem and built images |
+| **SBOM** | Syft SPDX SBOM per image build — CI on the `oncall-assistant` branch only |
+| **Image signing** | Cosign keyless signing — CI on the `oncall-assistant` branch only |
+| **Dependency audit** | `pip-audit` — CI on the `oncall-assistant` branch only |
+| **Secret scanning** | Gitleaks on every push/PR — CI on the `oncall-assistant` branch only |
+| **Container scanning** | Trivy filesystem + image scans — CI on the `oncall-assistant` branch only |
+
+> **CI note**: `main` has no GitHub Actions — its quality gate is the on-prem pipeline (network-isolated unit suite in the deployer, functional smoke after every deploy, last-good only on pass). The SBOM/signing/audit rows above describe the `oncall-assistant` branch's CI, which does not run against this branch's commits.
 
 ### Container Hardening
 
@@ -52,7 +54,7 @@ Supply chain, hardening, access control, and admin surfaces for codegraph-mcp.
 
 ### Rate Limiting
 
-**MCP tool calls** — token buckets per authenticated user (default capacity 60 burst, 1/s sustained refill): no fixed-window boundary bursts, exact `Retry-After` on 429. Runtime-tunable without restart via `PUT /api/admin/rate-limit?capacity=&refill_per_sec=` (new calls within 30s).
+**MCP tool calls** — token buckets per client IP (default capacity 60 burst, 1/s sustained refill; with a single shared token, per-IP is the only meaningful identity): no fixed-window boundary bursts, exact `Retry-After` on 429. Runtime-tunable without restart via `PUT /api/admin/rate-limit?capacity=&refill_per_sec=` (new calls within 30s).
 
 **REST API** — per-IP, per-endpoint-class fixed limits (index/admin 5/min, mutations 20/min, default 100/min) plus per-IP auth-failure lockout (5 fails/min). 429 responses include `Retry-After`.
 
@@ -73,10 +75,6 @@ Single shared bearer token per surface — a deliberate choice for a small inter
 | Admin console + `/api/admin/*` | `ADMIN_PANEL_TOKEN` | separate scoped secret; brute-force bucket on the login path |
 
 Token hygiene: all tokens live in a 600-mode gitignored `.env`; rotate by changing the value and recreating the backend (`docker compose up -d backend`). Every failed auth attempt is logged with client IP.
-
-## Rate limiting
-
-Token buckets per client IP (capacity 60 burst, 1/s sustained refill) — no fixed-window boundary bursts, exact `Retry-After` on 429. Runtime-tunable via the admin console or `PUT /api/admin/rate-limit` (new calls within 30s).
 
 ## Query cache
 

@@ -109,7 +109,11 @@ Model C says: "blast_radius was great, semantic_search missed the trait impl"
 
 **What the auto-build actually does**: feedback only affects *query-time* reranking and query expansion — it never changes embeddings. At 5 accepted-but-unconsumed feedbacks, a rerank refresh re-sorts existing results. At 10, a full build runs as a **consolidation checkpoint**: it re-derives graph + semantic indexes from current source, creates a rollback point via the parent-chained build registry, and marks feedback consumed. If the parser or embedder was upgraded since the last build, this is where the new version takes effect.
 
-**Rollback quality scoring — known circularity**: the build-comparison score is derived from agent feedback quality ratings, the same signal that drives reinforcement. It catches gross regressions but cannot independently validate a build. The golden evaluation set is live: every +1 search-feedback row is a verified (query, symbol) pair (~90 pairs, growing with use), replayed through the full pipeline on every build — hit@5 / hit@10 / MRR recorded as the build's `quality_score` with a loud warning on >10% regression vs parent. It is independent of boost weights (never feeds them), though the pairs originate from feedback.
+**Rollback quality scoring — known circularity**: the build-comparison score is derived from agent feedback quality ratings, the same signal that drives reinforcement. It catches gross regressions but cannot independently validate a build. The golden evaluation set is live and **provenance-split**: every +1 search-feedback row is a verified (query, symbol) pair, replayed through the full pipeline on every build — hit@5 / hit@10 / MRR recorded as the build's `quality_score` with a loud warning on >10% regression vs parent. It never feeds boost weights.
+
+**Selection bias, made visible**: feedback pairs can only come from queries the *current* ranker already got right, so that subset flatters any incumbent ranking. The curated subset (`curated_queries.py`, hand-written from domain knowledge, deliberately not name-matching) is pipeline-independent. Measured split: feedback MRR 0.495 vs curated 0.371 / hit@5 71% vs 52% — the gap IS the bias, and the curated subset is the honest baseline for ranking experiments. Any reranker/embedding trial must report both populations.
+
+**Reranker caveat**: the measured-off cross-encoder (ms-marco-MiniLM) is a web-passage model; a code-trained reranker is the fair test — and it must win on the curated subset, not just the feedback subset, before it ships.
 
 ### Flow
 
@@ -126,25 +130,12 @@ External AI Agent ──submit_ai_feedback (MCP)──▶ [pending feedback in P
                            └── Triggers rollback if quality regresses
 ```
 
-### Quality Gating
-
-Not all feedback is consumed. Each entry is evaluated on:
-
-- **Tool usage** — did the agent actually call MCP tools?
-- **Specificity** — does it reference specific symbol_ids or file paths?
-- **Constructiveness** — does it provide actionable improvement suggestions?
-- **Expected results** — does it describe what was missing?
-- **Rating consistency** — does the rating match the feedback content?
-- **Length** — very short feedback (<50 chars) is rejected
-
-Score > 0.5 = accepted, below = rejected. Vague or generic feedback like "bad" or "good" is automatically rejected.
-
 ### Auto-Build Trigger
 
 When 10 or more accepted (but unconsumed) feedback entries accumulate, the reinforcement agent automatically triggers a zero-downtime rebuild:
 
 1. New Weaviate shadow collection created — old one keeps serving queries
-2. Semantic index rebuilt from the Postgres snapshot
+2. Semantic index re-derived from current source (not the stored snapshot — parser/embedder upgrades take effect here; see "What the auto-build actually does" above)
 3. Atomic swap — new collection becomes active
 4. Consumed feedback marked with the new `build_id`
 5. Build quality score tracked against parent build
@@ -402,6 +393,12 @@ ADRs are in `docs/adr/000-architecture-decisions.md`, covering:
 | `OUTBOUND_TIMEOUT_SECONDS` | `30` | Timeout for outbound HTTP calls |
 | `OUTBOUND_RETRY_COUNT` | `3` | Retry attempts for transient failures |
 | `SEMANTIC_SEARCH_TIMEOUT_SECONDS` | `30` | Weaviate query timeout before fallback |
+| `SCIP_REFINE_ENABLED` | `false` | Replace regex edges with rust-analyzer SCIP-resolved edges for covered files at graph build |
+| `SCIP_INDEX_PATH` | `/scip-data/index.scip` | Path to the generated SCIP index (see `scripts/generate-scip.sh`) |
+| `SYSTEMONE_URL` | — | Ollama systemone endpoint for the decision model (unset = heuristic gate fallback) |
+| `ADMIN_PANEL_TOKEN` | — | Scoped token for the admin console + `/api/admin/*` |
+| `OFFSITE_BACKUP_ENABLED` | `false` | Rsync the nightly dump off-host after the restore test passes |
+| `OFFSITE_BACKUP_TARGET` | — | rsync-compatible destination (`host:/path`) when off-site backups are enabled |
 
 ---
 
