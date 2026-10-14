@@ -44,6 +44,12 @@ async def lifespan(app: FastAPI):
     elif settings.index_replay_on_startup:
         replay_indexes_from_storage()
 
+    # Power-loss recovery email: if the host just booted (uptime < 30 min),
+    # this start follows a power event — notify with current index stats
+    # once the stack settles. Idempotent per boot.
+    from app.core.power_events import schedule_power_event_check
+    schedule_power_event_check()
+
     import threading
     import uvicorn
     from app.mcp.readonly_server import readonly_mcp_server

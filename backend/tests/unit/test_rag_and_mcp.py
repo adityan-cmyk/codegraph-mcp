@@ -1483,3 +1483,53 @@ class SnapshotSqlConsistencyTestCase(unittest.TestCase):
             )
             self.assertIn("is_test", columns, "chunk INSERT must persist is_test")
             self.assertIn("visibility", columns, "chunk INSERT must persist visibility")
+
+
+class PowerEventTestCase(unittest.TestCase):
+    """Power-event detection: only a recent host boot counts, deduped by
+    boot_id, and the recovery email carries live stats."""
+
+    def test_recent_boot_without_prior_alert_triggers(self):
+        from unittest.mock import patch
+
+        from app.core import power_events as pe
+
+        with patch.object(pe, "_host_uptime_seconds", return_value=300.0), \
+             patch.object(pe, "_boot_id", return_value="boot-1"), \
+             patch.object(pe, "_already_alerted_for_boot", return_value=False), \
+             patch.object(pe, "_mark_boot_alerted") as mark, \
+             patch.object(pe, "_collect_recovery_stats", return_value=[("graph nodes", "7,509")]), \
+             patch("app.core.notifications.send_email") as mail:
+            pe.check_and_notify_power_event()
+            mark.assert_called_once_with("boot-1")
+            mail.assert_called_once()
+            body = mail.call_args[0][1]
+            self.assertIn("graph nodes", body)
+            self.assertIn("power", mail.call_args[0][0].lower())
+
+    def test_old_boot_is_routine_start(self):
+        from unittest.mock import patch
+
+        from app.core import power_events as pe
+
+        with patch.object(pe, "_host_uptime_seconds", return_value=86400.0), \
+             patch.object(pe, "_boot_id", return_value="boot-2"), \
+             patch.object(pe, "_mark_boot_alerted") as mark, \
+             patch("app.core.notifications.send_email") as mail:
+            pe.check_and_notify_power_event()
+            mark.assert_not_called()
+            mail.assert_not_called()
+
+    def test_same_boot_never_alerts_twice(self):
+        from unittest.mock import patch
+
+        from app.core import power_events as pe
+
+        with patch.object(pe, "_host_uptime_seconds", return_value=120.0), \
+             patch.object(pe, "_boot_id", return_value="boot-3"), \
+             patch.object(pe, "_already_alerted_for_boot", return_value=True), \
+             patch.object(pe, "_mark_boot_alerted") as mark, \
+             patch("app.core.notifications.send_email") as mail:
+            pe.check_and_notify_power_event()
+            mark.assert_not_called()
+            mail.assert_not_called()

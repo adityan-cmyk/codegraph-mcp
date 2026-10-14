@@ -138,6 +138,7 @@ services:
       - ${CODEBASE_REPO_PATH}:/repos/codebase:ro
       - ./scip-data:/scip-data:ro
       - ./logs:/app/logs
+      - ./backups:/backups:ro
     environment:
       SCIP_REFINE_ENABLED: "${SCIP_REFINE_ENABLED:-false}"
       SCIP_INDEX_PATH: "/scip-data/index.scip"
