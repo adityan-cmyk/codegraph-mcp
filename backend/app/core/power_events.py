@@ -88,7 +88,10 @@ def _collect_recovery_stats() -> list[tuple[str, str]]:
     try:
         import neo4j as _n
 
-        driver = _n.GraphDatabase.driver(settings.neo4j_uri)
+        driver = _n.GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_username, settings.neo4j_password),
+        )
         driver.verify_connectivity()
         driver.close()
         rows.append(("neo4j", "reachable"))
