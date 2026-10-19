@@ -37,3 +37,4 @@ VERIFY.md
 manifest.*
 findings*.json
 sandbox/
+FIXSTATE.json
