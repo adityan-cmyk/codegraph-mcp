@@ -646,3 +646,23 @@ def get_tool_win_stats() -> dict[str, object]:
         "top_tool": ranked[0][0] if ranked else None,
         "sample_findings": sample_findings,
     }
+
+
+def get_recent_feedback(hours: int = 24, limit: int = 20) -> list[dict]:
+    """Every AI-feedback entry in the window regardless of gate status —
+    what agents actually sent, not just what passed the gate. Digest fuel."""
+    _ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT feedback_id, client_id, pr_context, quality_rating, status,
+                       results_expected, improvement_suggestions, created_at
+                FROM ai_feedback
+                WHERE created_at > NOW() - (%s || ' hours')::interval
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (str(hours), limit),
+            )
+            return cur.fetchall()

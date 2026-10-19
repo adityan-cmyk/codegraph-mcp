@@ -672,6 +672,7 @@ def notify_daily_digest() -> None:
         + _usage_section()
         + _index_health_section()
         + _reinforcement_section()
+        + _feedback_summary_section()
         + _feedback_suggestions_section()
         + _feedback_issues_section()
         + _recent_commits_section()
@@ -680,6 +681,74 @@ def notify_daily_digest() -> None:
     send_email(
         subject=f"[codegraph] Daily digest — {nodes:,} nodes, index {'current' if 'ok' in up_to_date else 'behind'}",
         body_html=body,
+    )
+
+
+def _feedback_summary_section() -> str:
+    """What feedback arrived in the last 24h — both channels, gate status
+    included. The suggestions/issues sections below show slices of this;
+    this is the overview agents want at a glance."""
+    try:
+        from app.rag.reinforcement.ai_feedback_store import (
+            get_recent_feedback,
+            get_tool_win_stats,
+        )
+        ai_rows = get_recent_feedback(hours=24, limit=20)
+    except Exception:
+        ai_rows = []
+    try:
+        from app.rag.reinforcement.feedback_store import get_search_feedback_window
+
+        search = get_search_feedback_window(hours=24, limit=10)
+    except Exception:
+        search = {"total": 0, "positive": 0, "negative": 0, "recent": []}
+
+    ai_count = len(ai_rows)
+    ratings = [r["quality_rating"] for r in ai_rows if r.get("quality_rating")]
+    avg_rating = f"{sum(ratings) / len(ratings):.1f} / 5" if ratings else "—"
+    status_counts: dict[str, int] = {}
+    for r in ai_rows:
+        status_counts[r.get("status", "?")] = status_counts.get(r.get("status", "?"), 0) + 1
+    status_line = ", ".join(f"{k}: {v}" for k, v in sorted(status_counts.items())) or "—"
+
+    try:
+        wins = get_tool_win_stats()
+        top_wins = wins.get("wins_by_tool") or {}
+        wins_line = (
+            ", ".join(f"{t} ({n})" for t, n in list(top_wins.items())[:3])
+            if top_wins else "—"
+        )
+    except Exception:
+        wins_line = "—"
+
+    summary = _kv_table([
+        ("AI reviews (24h)", f"{ai_count} — avg rating {avg_rating}"),
+        ("Gate status", status_line),
+        ("Search feedback (24h)", f"{search.get('total', 0)} "
+                                  f"(<span class='ok'>+{search.get('positive', 0)}</span> / "
+                                  f"<span class='fail'>-{search.get('negative', 0)}</span>)"),
+        ("Top tools by wins (all-time)", wins_line),
+    ])
+
+    rows = ""
+    for r in ai_rows[:8]:
+        gist = (r.get("results_expected") or r.get("improvement_suggestions")
+                or r.get("pr_context") or "")[:160].replace(chr(10), " ")
+        when = r["created_at"].strftime("%H:%M") if r.get("created_at") else ""
+        rating = f"{r['quality_rating']}/5" if r.get("quality_rating") else "—"
+        rows += (f"<tr><td>{when}</td><td>ai</td><td>{rating}</td>"
+                 f"<td>{r.get('status', '')}</td><td>{gist}</td></tr>")
+    for s in search.get("recent", [])[:5]:
+        when = s["created_at"].strftime("%H:%M") if s.get("created_at") else ""
+        mark = f"<span class='ok'>+1</span>" if s.get("feedback", 0) > 0 else "<span class='fail'>-1</span>"
+        gist = (s.get("reason") or s.get("query_text") or "")[:160].replace(chr(10), " ")
+        rows += f"<tr><td>{when}</td><td>search</td><td>{mark}</td><td>—</td><td>{gist}</td></tr>"
+
+    table = (f"<table><tr><th>Time</th><th>Source</th><th>Rating</th><th>Gate</th><th>Gist</th></tr>{rows}</table>"
+             if rows else "<div class='muted'>No feedback entries in the window.</div>")
+    return (
+        "<div class='section'>Feedback received (24h)</div>"
+        + summary + table
     )
 
 

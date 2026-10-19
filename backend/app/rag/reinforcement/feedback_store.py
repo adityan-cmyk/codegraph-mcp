@@ -351,3 +351,38 @@ def get_similar_query_boosts(query_text: str, limit: int = 5) -> dict[str, float
             )
             rows = cur.fetchall()
     return {row["symbol_id"]: min(0.1 * row["freq"], 0.3) for row in rows}
+
+
+def get_search_feedback_window(hours: int = 24, limit: int = 10) -> dict[str, object]:
+    """Search-quality feedback in the window — counts plus recent rows.
+    Positive = feedback > 0, negative = feedback < 0."""
+    _ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n,
+                       COUNT(*) FILTER (WHERE feedback > 0) AS positive,
+                       COUNT(*) FILTER (WHERE feedback < 0) AS negative
+                FROM search_feedback
+                WHERE created_at > NOW() - (%s || ' hours')::interval
+                """,
+                (str(hours),),
+            )
+            counts = cur.fetchone()
+            cur.execute(
+                """
+                SELECT query_text, symbol_id, feedback, reason, created_at
+                FROM search_feedback
+                WHERE created_at > NOW() - (%s || ' hours')::interval
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (str(hours), limit),
+            )
+            return {
+                "total": counts["n"],
+                "positive": counts["positive"],
+                "negative": counts["negative"],
+                "recent": cur.fetchall(),
+            }

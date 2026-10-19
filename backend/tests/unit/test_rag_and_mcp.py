@@ -1878,3 +1878,43 @@ class ToolWinStatsTestCase(unittest.TestCase):
         self.assertEqual(stats["reviews_with_tool_wins"], 2)
         self.assertEqual(stats["top_tool"], "find_warnings_in_blast_radius")
         self.assertEqual(stats["wins_by_tool"]["find_string_producers"], 1)
+
+
+class FeedbackDigestSectionTestCase(unittest.TestCase):
+    def test_feedback_summary_section_renders_both_channels(self):
+        from datetime import UTC, datetime
+
+        from app.core import notifications
+
+        ai_rows = [{
+            "feedback_id": "abc12345",
+            "client_id": "opencode-agent",
+            "pr_context": "PR 42 wallet",
+            "quality_rating": 4,
+            "status": "accepted",
+            "results_expected": "expected dormancy report anchor",
+            "improvement_suggestions": "search should match partial names",
+            "created_at": datetime(2026, 10, 19, 14, 30, tzinfo=UTC),
+        }]
+        search = {
+            "total": 2, "positive": 1, "negative": 1,
+            "recent": [{
+                "query_text": "dormancy report",
+                "symbol_id": "crates::x::y",
+                "feedback": -1,
+                "reason": "surfaced a rate limiter",
+                "created_at": datetime(2026, 10, 19, 15, 0, tzinfo=UTC),
+            }],
+        }
+        with patch("app.rag.reinforcement.ai_feedback_store.get_recent_feedback", return_value=ai_rows), \
+             patch("app.rag.reinforcement.feedback_store.get_search_feedback_window", return_value=search), \
+             patch("app.rag.reinforcement.ai_feedback_store.get_tool_win_stats",
+                   return_value={"wins_by_tool": {"find_warnings_in_blast_radius": 3}}):
+            html = notifications._feedback_summary_section()
+
+        self.assertIn("Feedback received (24h)", html)
+        self.assertIn("AI reviews (24h)", html)
+        self.assertIn("Search feedback (24h)", html)
+        self.assertIn("expected dormancy report anchor", html)
+        self.assertIn("surfaced a rate limiter", html)
+        self.assertIn("find_warnings_in_blast_radius", html)
