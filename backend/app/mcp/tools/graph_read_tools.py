@@ -2175,11 +2175,11 @@ def get_index_meta() -> dict[str, object]:
     except Exception:
         logger.debug("graph symbol-set hash unavailable", exc_info=True)
 
-    hashes_agree = (
-        bool(snapshot_hash)
-        and snapshot_hash == graph_hash
-        and (not stored_hash or stored_hash == snapshot_hash)
-    )
+    hashes_agree = bool(snapshot_hash) and snapshot_hash == graph_hash
+    # The stored ingest-time hash is advisory only: it used a different
+    # eligibility formula in older builds and would veto freshness forever
+    # after any formula change. Live graph-vs-snapshot is the drift detector.
+    stored_hash_stale = bool(stored_hash and snapshot_hash and stored_hash != snapshot_hash)
     commit_fresh = bool(last_commit) and head != "unknown" and last_commit == head
     symbol_set_drift = None
     if snapshot_hash and graph_hash and snapshot_hash != graph_hash:
@@ -2202,6 +2202,7 @@ def get_index_meta() -> dict[str, object]:
             "commit_matches_head": commit_fresh,
             "symbol_sets_match": hashes_agree,
             "symbol_set_hash": (stored_hash or snapshot_hash)[:16],
+            "stored_hash_stale": stored_hash_stale,
             "drift": symbol_set_drift,
         },
         "snapshot_created_at": snapshot.created_at.isoformat() if snapshot and snapshot.created_at else None,

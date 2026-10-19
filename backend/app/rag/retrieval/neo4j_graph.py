@@ -258,7 +258,11 @@ class Neo4jGraphIndex:
         )
 
     def get_blast_radius(self, symbol_id: str) -> GraphNeighborhood:
-        return self.get_neighbors(symbol_id, depth=2)
+        # DIRECT callers/callees only — depth must be 1. Delegating at
+        # depth=2 flattened callers-of-callers into the "direct" lists
+        # (fetch_transaction_id showed 8 'callers' of which 6 were 2-hop
+        # or siblings; count_semantics promises direct only).
+        return self.get_neighbors(symbol_id, depth=1)
 
     def traverse(self, symbol_id: str, depth: int = 2, max_neighborhoods: int = 100, exclude: set[str] | None = None) -> list[GraphNeighborhood]:
         neighborhoods: list[GraphNeighborhood] = []

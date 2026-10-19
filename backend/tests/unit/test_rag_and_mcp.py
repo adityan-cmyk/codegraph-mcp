@@ -1969,3 +1969,25 @@ class ScipPerRelationReplacementTestCase(unittest.TestCase):
 
         self.assertEqual(calls_by_source["m::fetch"], ["m::generate_ref_id", "m::find_by_ref_id"])
         self.assertEqual(uses_by_source["m::fetch"], [("m::UuidV7", ["reference"])])
+
+
+class BlastRadiusDirectnessTestCase(unittest.TestCase):
+    """get_blast_radius promised DIRECT callers but delegated at depth=2,
+    flattening callers-of-callers into the list (2026-10-19: 8 'direct
+    callers' of which 6 were 2-hop or siblings)."""
+
+    def test_neo4j_blast_radius_queries_at_depth_1(self):
+        from app.rag.retrieval.neo4j_graph import Neo4jGraphIndex
+
+        captured = {}
+        backend = Neo4jGraphIndex.__new__(Neo4jGraphIndex)
+
+        def fake_neighbors(symbol_id, depth=1):
+            captured["depth"] = depth
+            from app.schemas.codebase import GraphNeighborhood
+
+            return GraphNeighborhood(symbol_id=symbol_id)
+
+        backend.get_neighbors = fake_neighbors
+        backend.get_blast_radius("m::fn")
+        self.assertEqual(captured["depth"], 1)
