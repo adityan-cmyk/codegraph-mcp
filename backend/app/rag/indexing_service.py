@@ -17,6 +17,7 @@ from app.schemas.codebase import (
     IndexSnapshot,
     IndexingResult,
     compute_symbol_set_hash,
+    is_graph_eligible,
 )
 
 logger = logging.getLogger(__name__)
@@ -364,13 +365,9 @@ EDGE_EXTRACTION_SKIP_KINDS = GRAPH_SKIP_KINDS | frozenset({"sql_table", "sql_col
 
 
 def _should_skip_for_graph(chunk: CodeChunk) -> bool:
-    if chunk.kind in GRAPH_SKIP_KINDS:
+    if not is_graph_eligible(chunk):
         return True
     short_name = _symbol_name(chunk.symbol_id)
-    if short_name in ("Relation",):
-        return True
-    if short_name in ("fn", "let", "match", "if"):
-        return True  # parser artifacts — no symbol is legitimately named these
     if short_name == "new" and chunk.kind == "fn" and len(chunk.content.strip()) < 50:
         return True
     return False
@@ -549,25 +546,47 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
     covered_files: set[str] = set()
     if scip_refinement is not None:
         scip_edges, covered_files, scip_stats = scip_refinement
-        replaced_sources = 0
-        for chunk in snapshot.chunks:
-            if chunk.file_path in covered_files:
-                sid = chunk.symbol_id
-                if sid in calls_by_source or sid in uses_with_modes_by_source:
+        # A stale index that key-mismatches current symbols is strictly worse
+        # than regex: it strips edges and re-adds nothing. Two guards:
+        # (1) if under half the covered sources match the index, skip the
+        #     refinement entirely — the index predates the code too far;
+        # (2) per source, only replace regex edges when the index actually
+        #     HAS edges for it. fetch_transaction_id went 3 callees -> 0 on
+        #     exactly this hole (gen 16, 2026-10-19).
+        covered_sources = [
+            c.symbol_id for c in snapshot.chunks
+            if c.file_path in covered_files and (c.symbol_id in calls_by_source or c.symbol_id in uses_with_modes_by_source)
+        ]
+        matched_sources = [sid for sid in covered_sources if scip_edges.get(sid)]
+        if covered_sources and len(matched_sources) < len(covered_sources) * 0.5:
+            logger.warning(
+                "SCIP refinement SKIPPED: only %d/%d covered sources match the index — "
+                "index is too stale for this tree; keeping regex edges",
+                len(matched_sources), len(covered_sources),
+            )
+            covered_files = set()
+        else:
+            replaced_sources = 0
+            for chunk in snapshot.chunks:
+                if chunk.file_path in covered_files:
+                    sid = chunk.symbol_id
+                    replacement = scip_edges.get(sid) or []
+                    if not replacement:
+                        continue  # nothing to swap in — regex edges stay
+                    calls_by_source.pop(sid, None)
+                    uses_with_modes_by_source.pop(sid, None)
                     replaced_sources += 1
-                calls_by_source.pop(sid, None)
-                uses_with_modes_by_source.pop(sid, None)
-                for target_id, relation in scip_edges.get(sid, []):
-                    if relation == "calls":
-                        calls_by_source.setdefault(sid, []).append(target_id)
-                    else:
-                        uses_with_modes_by_source.setdefault(sid, []).append((target_id, ["reference"]))
-        logger.info(
-            "SCIP refinement: %d files covered, %d sources switched to type-resolved edges "
-            "(%d calls, %d uses from SCIP)",
-            len(covered_files), replaced_sources, scip_stats.get("edges_calls", 0),
-            scip_stats.get("edges_uses", 0),
-        )
+                    for target_id, relation in replacement:
+                        if relation == "calls":
+                            calls_by_source.setdefault(sid, []).append(target_id)
+                        else:
+                            uses_with_modes_by_source.setdefault(sid, []).append((target_id, ["reference"]))
+            logger.info(
+                "SCIP refinement: %d files covered, %d sources switched to type-resolved edges "
+                "(%d calls, %d uses from SCIP)",
+                len(covered_files), replaced_sources, scip_stats.get("edges_calls", 0),
+                scip_stats.get("edges_uses", 0),
+            )
 
     chunk_meta: dict[str, dict] = {}
     for chunk in snapshot.chunks:

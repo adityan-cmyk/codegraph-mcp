@@ -7,6 +7,26 @@ from pydantic import BaseModel, Field
 # nodes. The symbol-set hash counts only graph-eligible symbols so the
 # snapshot and the live graph hash the same universe.
 GRAPH_SKIP_KINDS = frozenset({"file_summary", "module_exports", "mod"})
+# Name-based graph exclusions (parser artifacts and trivial constructors) —
+# must ALSO be hash-excluded or the two sides drift by their count (the
+# 54-symbol permanent drift in symbol_sets_match).
+_NAME_SKIP = frozenset({"Relation", "fn", "let", "match", "if"})
+
+
+def is_graph_eligible(symbol_or_chunk) -> bool:
+    """Exactly the graph-node eligibility predicate — hash and index share it."""
+    if hasattr(symbol_or_chunk, "kind"):
+        if symbol_or_chunk.kind in GRAPH_SKIP_KINDS:
+            return False
+    sid = getattr(symbol_or_chunk, "symbol_id", None) or str(symbol_or_chunk)
+    short = sid.split("::")[-1]
+    if short in _NAME_SKIP:
+        return False
+    if short == "new" and getattr(symbol_or_chunk, "kind", None) == "fn":
+        content = (getattr(symbol_or_chunk, "content", "") or "").strip()
+        if content and len(content) < 50:
+            return False
+    return True
 
 
 def compute_symbol_set_hash(symbols) -> str:
@@ -14,13 +34,13 @@ def compute_symbol_set_hash(symbols) -> str:
 
     The fingerprint get_index_meta compares across the snapshot and the live
     graph: the commit pointer alone claimed freshness while incremental
-    updates left deleted symbols behind. Skip-kind chunks are excluded so
-    both sides hash real symbols only.
+    updates left deleted symbols behind. Uses is_graph_eligible on both sides
+    so skip-kind chunks and name-based exclusions can't fake drift.
     """
     ids = sorted({
         (s.symbol_id if hasattr(s, "symbol_id") else str(s))
         for s in symbols
-        if getattr(s, "kind", None) not in GRAPH_SKIP_KINDS
+        if is_graph_eligible(s)
     })
     return hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()
 

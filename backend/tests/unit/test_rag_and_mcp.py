@@ -1918,3 +1918,32 @@ class FeedbackDigestSectionTestCase(unittest.TestCase):
         self.assertIn("expected dormancy report anchor", html)
         self.assertIn("surfaced a rate limiter", html)
         self.assertIn("find_warnings_in_blast_radius", html)
+
+
+class SymbolSetHashUniverseTestCase(unittest.TestCase):
+    """The 54-symbol drift: name-based graph exclusions (trivial `new` fns,
+    parser artifacts) must be hash-excluded too, or symbol_sets_match is
+    permanently false."""
+
+    def test_hash_excludes_name_based_skips(self):
+        from app.schemas.codebase import CodeChunk, compute_symbol_set_hash, is_graph_eligible
+
+        chunks = [
+            CodeChunk(symbol_id="m::real_fn", file_path="a.rs", kind="fn",
+                      content="pub fn real_fn() { do_work() }", start_line=1, end_line=1),
+            CodeChunk(symbol_id="m::new", file_path="a.rs", kind="fn",
+                      content="fn new() {}", start_line=2, end_line=2),
+            CodeChunk(symbol_id="m::match", file_path="a.rs", kind="fn",
+                      content="fn match() { x() }", start_line=3, end_line=3),
+            CodeChunk(symbol_id="a.rs::file_summary", file_path="a.rs", kind="file_summary",
+                      content="summary", start_line=1, end_line=1),
+        ]
+        self.assertTrue(is_graph_eligible(chunks[0]))
+        self.assertFalse(is_graph_eligible(chunks[1]))  # trivial new
+        self.assertFalse(is_graph_eligible(chunks[2]))  # parser artifact name
+        self.assertFalse(is_graph_eligible(chunks[3]))  # skip kind
+
+        # graph side = only eligible ids upserted; hashes must agree
+        eligible_ids = [c.symbol_id for c in chunks if is_graph_eligible(c)]
+        self.assertEqual(compute_symbol_set_hash(chunks), compute_symbol_set_hash(eligible_ids))
+        self.assertEqual(compute_symbol_set_hash(chunks), compute_symbol_set_hash(["m::real_fn"]))

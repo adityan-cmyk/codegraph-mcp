@@ -2183,10 +2183,10 @@ def get_index_meta() -> dict[str, object]:
     commit_fresh = bool(last_commit) and head != "unknown" and last_commit == head
     symbol_set_drift = None
     if snapshot_hash and graph_hash and snapshot_hash != graph_hash:
-        from app.schemas.codebase import GRAPH_SKIP_KINDS
+        from app.schemas.codebase import is_graph_eligible
 
         symbol_set_drift = {
-            "snapshot_symbols": len({c.symbol_id for c in snapshot.chunks if c.kind not in GRAPH_SKIP_KINDS}) if snapshot else 0,
+            "snapshot_symbols": len({c.symbol_id for c in snapshot.chunks if is_graph_eligible(c)}) if snapshot else 0,
             "graph_symbols": graph_symbol_count,
             "hint": "graph and snapshot disagree — stale symbols on one side; run POST /api/index/rebuild to resync",
         }

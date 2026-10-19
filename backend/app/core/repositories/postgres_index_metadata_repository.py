@@ -318,7 +318,8 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                         """
                         UPDATE index_snapshots
                         SET last_indexed_commit = COALESCE(NULLIF(%s, ''), last_indexed_commit),
-                            symbol_set_hash = COALESCE(NULLIF(%s, ''), symbol_set_hash)
+                            symbol_set_hash = COALESCE(NULLIF(%s, ''), symbol_set_hash),
+                            created_at = NOW()
                         WHERE snapshot_id = %s
                         """,
                         (last_indexed_commit, symbol_set_hash, snapshot_id),

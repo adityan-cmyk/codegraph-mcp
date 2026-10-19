@@ -44,9 +44,14 @@ class InMemoryIndexMetadataRepository(IndexMetadataRepository):
                 if (e.source_symbol_id, e.target_symbol_id) not in removed_edge_set
             ] + modified_edges
             if last_indexed_commit or symbol_set_hash:
+                from datetime import UTC, datetime
+
                 self._snapshot = self._snapshot.model_copy(
                     update={
                         "last_indexed_commit": last_indexed_commit or self._snapshot.last_indexed_commit,
                         "symbol_set_hash": symbol_set_hash or self._snapshot.symbol_set_hash,
+                        # incremental writes stamp time too — a frozen
+                        # created_at hid mutating updates behind a stale label
+                        "created_at": datetime.now(UTC),
                     }
                 )
