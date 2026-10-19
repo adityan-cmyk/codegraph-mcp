@@ -126,6 +126,23 @@ The full workflow (including the server-side `pr_review` prompt) is described in
 
 ---
 
+## Autofix agent (findings → verified PR)
+
+Agent feedback doesn't just tune rankings — tool-behavior findings become code fixes automatically. Weekly (Mon 06:00, or `scripts/findings-to-pr.sh` on demand), a headless coding agent (`opencode run`) fixes accepted findings and delivers a **verified PR** that a human only reviews and merges.
+
+**Sandbox** — the agent's entire world is a fresh disposable clone under `/home/adi/sandbox/`, deleted after every run. It never touches this checkout, other repos, backups, ssh keys, or `.env` — *reading* `.env` is tracked and forbidden the same as writing it (integrity manifest with atime). Any touch outside the sandbox: alert email, no PR.
+
+**Five gates before a PR exists**:
+1. Full unit suite green (host-enforced)
+2. **Core contracts** green — contract drift, snapshot round-trip, auth paths, rate limits, registry pin. A core failure means a main-app entity changed → escalation email, no auto-PR, human verifies
+3. **Red→green proof** — every `test_fix_*` regression test the agent added must fail on the base commit and pass on the branch
+4. **Verifier agent** re-reproduces each finding's reported scenario → `FIXED / STILL BROKEN` verdicts in the PR body
+5. Integrity manifest unchanged outside the sandbox
+
+**Hygiene** — the agent cannot push or open PRs (the orchestrator does, after gates); branches are `autofix/<date>`; commits carry code only (agent artifacts stay in local `logs/autofix/`); the PR description is secret-scrubbed, with any config needs under **"Proposed .env additions"** for manual application. Full design: [docs/operations.md](docs/operations.md#autofix-agent-findings--verified-pr).
+
+---
+
 ## Operating the stack
 
 Day-to-day operation is automated: `git push origin main` is the entire deploy command (gitops pull → SHA-tagged image build → test-gated deploy → functional smoke suite → `last-good` tagging). Nightly: incremental git sync, backup with restore-test, digest email. The reinforcement loop gates feedback with a local decision model, applies boosts, and rebuilds indexes zero-downtime.
