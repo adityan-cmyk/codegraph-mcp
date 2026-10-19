@@ -573,14 +573,21 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
                     replacement = scip_edges.get(sid) or []
                     if not replacement:
                         continue  # nothing to swap in — regex edges stay
-                    calls_by_source.pop(sid, None)
-                    uses_with_modes_by_source.pop(sid, None)
-                    replaced_sources += 1
-                    for target_id, relation in replacement:
-                        if relation == "calls":
-                            calls_by_source.setdefault(sid, []).append(target_id)
-                        else:
-                            uses_with_modes_by_source.setdefault(sid, []).append((target_id, ["reference"]))
+                    # PER-RELATION replacement: a uses-only scip entry (type
+                    # refs) must not erase the regex CALLS (fetch_transaction_id
+                    # lost its 3 callees exactly this way). Each side swaps
+                    # only when the index actually provides that side.
+                    scip_calls = [t for t, r in replacement if r == "calls"]
+                    scip_uses = [t for t, r in replacement if r != "calls"]
+                    swapped = False
+                    if scip_calls:
+                        calls_by_source[sid] = scip_calls
+                        swapped = True
+                    if scip_uses:
+                        uses_with_modes_by_source[sid] = [(t, ["reference"]) for t in scip_uses]
+                        swapped = True
+                    if swapped:
+                        replaced_sources += 1
             logger.info(
                 "SCIP refinement: %d files covered, %d sources switched to type-resolved edges "
                 "(%d calls, %d uses from SCIP)",

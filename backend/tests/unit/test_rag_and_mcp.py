@@ -1947,3 +1947,25 @@ class SymbolSetHashUniverseTestCase(unittest.TestCase):
         eligible_ids = [c.symbol_id for c in chunks if is_graph_eligible(c)]
         self.assertEqual(compute_symbol_set_hash(chunks), compute_symbol_set_hash(eligible_ids))
         self.assertEqual(compute_symbol_set_hash(chunks), compute_symbol_set_hash(["m::real_fn"]))
+
+
+class ScipPerRelationReplacementTestCase(unittest.TestCase):
+    """A uses-only scip entry must not erase regex CALLS — fetch_transaction_id
+    lost its 3 callees exactly that way (gen 16, 2026-10-19)."""
+
+    def test_uses_only_scip_entry_keeps_regex_calls(self):
+        calls_by_source = {"m::fetch": ["m::generate_ref_id", "m::find_by_ref_id"]}
+        uses_by_source = {"m::fetch": [("m::DbConn", ["reference"])]}
+        scip_edges = {"m::fetch": [("m::UuidV7", "uses")]}  # uses-only replacement
+
+        sid = "m::fetch"
+        replacement = scip_edges.get(sid) or []
+        scip_calls = [t for t, r in replacement if r == "calls"]
+        scip_uses = [t for t, r in replacement if r != "calls"]
+        if scip_calls:
+            calls_by_source[sid] = scip_calls
+        if scip_uses:
+            uses_by_source[sid] = [(t, ["reference"]) for t in scip_uses]
+
+        self.assertEqual(calls_by_source["m::fetch"], ["m::generate_ref_id", "m::find_by_ref_id"])
+        self.assertEqual(uses_by_source["m::fetch"], [("m::UuidV7", ["reference"])])

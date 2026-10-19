@@ -53,6 +53,24 @@ def rebuild_semantic_index() -> IndexingResult:
     return result
 
 
+@router.post("/replay", response_model=IndexingResult)
+def replay_indexes() -> IndexingResult:
+    """Rebuild graph (+ semantic if stale) from the persisted snapshot, IN the
+    server process so the graph proxy swaps to the new gen atomically.
+
+    Never rebuild via docker exec python — a side process swaps its own proxy,
+    cleanup_other_gens then deletes the gen the live server is reading, and
+    every query returns empty (2026-10-19). This endpoint is the supported
+    graph-only repair path (semantic is skipped when its collection is current)."""
+    try:
+        result = replay_indexes_from_storage()
+    except RebuildInProgressError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No persisted index snapshot was found.")
+    return result
+
+
 @router.get("/stats", response_model=IndexStats)
 def get_index_stats() -> IndexStats:
     semantic_stats = semantic_index.get_stats()

@@ -67,14 +67,26 @@ done
 log "Git pull complete"
 
 # Step 2: Trigger incremental reindex via API (git diff based, not full rebuild)
+# A rebuild already running is a WAIT, not a failure — _REBUILD_MUTEX
+# serializes builds and answers 409; racing it must not fail the night.
 log "Triggering incremental reindex..."
-RESPONSE=$(curl -s --max-time 14400 -X POST -H "Authorization: Bearer ${API_AUTH_TOKEN:-}" "$API_URL/api/index/ingest" 2>&1) || true
-log "Reindex response: $RESPONSE"
+MAX_WAITS=10
+for attempt in $(seq 1 "$MAX_WAITS"); do
+    RESPONSE=$(curl -s --max-time 14400 -X POST -H "Authorization: Bearer ${API_AUTH_TOKEN:-}" "$API_URL/api/index/ingest" 2>&1) || true
+    log "Reindex response (attempt $attempt/$MAX_WAITS): $RESPONSE"
 
-# an error response is a FAILED sync, not a completed one — the 2026-10-07
-# placeholder-mismatch bug logged "Nightly sync complete" over an error body
-# and nobody was alerted
-if echo "$RESPONSE" | grep -qE '"detail"|"error"'; then
+    if ! echo "$RESPONSE" | grep -qE '"detail"|"error"'; then
+        break
+    fi
+    if echo "$RESPONSE" | grep -qiE 'rebuild is already in progress|RebuildInProgress'; then
+        log "Another rebuild is running — waiting 3 min before retry"
+        sleep 180
+        continue
+    fi
+
+    # an error response is a FAILED sync, not a completed one — the 2026-10-07
+    # placeholder-mismatch bug logged "Nightly sync complete" over an error body
+    # and nobody was alerted
     log "INCREMENTAL REINDEX FAILED — error in response"
     SAFE_RESP=$(echo "$RESPONSE" | head -c 400 | tr -d '"')
     docker exec oncall-backend python -c "
@@ -83,6 +95,13 @@ send_email(subject='[codegraph ALERT] Nightly incremental reindex FAILED',
            body_html='<div>The incremental ingest returned an error — the index stays behind HEAD until fixed. Response: <pre>${SAFE_RESP}</pre></div>')
 " >> "$LOG" 2>&1 || true
     exit 1
+done
+
+# Exhausted the waits and the rebuild is still running: deferred, not failed.
+# Ingest is commit-pointer based — the next run catches up automatically.
+if echo "$RESPONSE" | grep -qiE 'rebuild is already in progress|RebuildInProgress'; then
+    log "Deferred: a rebuild ran all night — skipping (not a failure, next run catches up)"
+    exit 0
 fi
 
 log "Nightly sync complete"
