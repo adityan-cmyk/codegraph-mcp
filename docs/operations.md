@@ -471,17 +471,20 @@ on migration-heavy PRs should show that, not disappear into a mean.
 ### Autofix agent (findings → verified PR)
 
 `scripts/findings-to-pr.sh` (cron Mon 06:00, flock-guarded) closes the
-findings loop: accepted feedback issues are fixed by a headless `opencode run`
-coding agent and delivered as a PR a human only has to review.
+findings loop: accepted feedback issues are fixed by a headless coding agent
+(`opencode run` by default — `claude -p` or any CLI via `CODEGRAPH_AGENT_BIN`
+/ `CODEGRAPH_AGENT_ARGS`) and delivered as a PR a human only has to review.
+All paths and the agent CLI are overridable per machine — see the env table
+in the README.
 
 **Sandbox** — the agent's entire world is a fresh disposable clone under
-`/home/adi/sandbox/`. It never touches the live checkout, walton, backups,
-`ssh`, or any other repo. A host-side integrity manifest (with `.env`
-**atime** — reading it is as forbidden as writing it) is swept before and
-after; any change outside the sandbox is an integrity violation, an alert
-email, and no PR. The sandbox is deleted on every exit — evidence (PR body,
-verifier report, manifests) is kept only in `logs/autofix/<date>/`
-(local, gitignored, never pushed).
+`CODEGRAPH_SANDBOX` (default `~/.cache/codegraph-autofix`), deleted after
+every run. It never touches the live checkout, the analyzed codebase,
+backups, `ssh`, or any other repo. A host-side integrity manifest (with
+`.env` **atime** — reading it is as forbidden as writing it) is swept before
+and after; any change outside the sandbox is an integrity violation, an alert
+email, and no PR. Evidence (PR body, verifier report, manifests) is kept
+only in `logs/autofix/<date>/` (local, gitignored, never pushed).
 
 **Gates before a PR exists**
 1. Full unit suite green (host-enforced; the agent iterating is advisory)

@@ -141,6 +141,18 @@ Agent feedback doesn't just tune rankings — tool-behavior findings become code
 
 **Hygiene** — the agent cannot push or open PRs (the orchestrator does, after gates); branches are `autofix/<date>`; commits carry code only (agent artifacts stay in local `logs/autofix/`); the PR description is secret-scrubbed, with any config needs under **"Proposed .env additions"** for manual application. Full design: [docs/operations.md](docs/operations.md#autofix-agent-findings--verified-pr).
 
+**Bring your own machine/agent** — nothing about a specific user or agent is hardcoded. Defaults are portable; override per machine:
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `CODEGRAPH_AGENT_BIN` | `opencode` | coding agent CLI — `claude`, etc. work |
+| `CODEGRAPH_AGENT_ARGS` | `run` | args before the prompt (`claude`: `-p`) |
+| `CODEGRAPH_SANDBOX` | `~/.cache/codegraph-autofix` | disposable clones live here |
+| `CODEGRAPH_REPO` | the repo containing the script | the repo to fix |
+| `CODEGRAPH_PROTECTED_PATHS` | repo, `.env`, `backups`, `~/.ssh` | integrity-tracked paths (colon-separated) |
+| `CODEGRAPH_CODEBASE_ROOT` | *(unset)* | extra protected path (e.g. the analyzed codebase) |
+| `BACKEND_CONTAINER` | `oncall-backend` | findings/email docker container |
+
 ---
 
 ## Operating the stack

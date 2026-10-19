@@ -21,10 +21,23 @@
 # Usage:
 #   scripts/findings-to-pr.sh            # run against accepted findings
 #   scripts/findings-to-pr.sh --dry-run  # show findings, build nothing
+#
+# Everything is overridable per machine (defaults are portable):
+#   CODEGRAPH_REPO       repo to fix (default: the repo this script lives in)
+#   CODEGRAPH_SANDBOX    where disposable clones live (default: ~/.cache/codegraph-autofix)
+#   CODEGRAPH_AGENT_BIN  coding agent CLI (default: opencode — also: claude, …)
+#   CODEGRAPH_AGENT_ARGS args before the prompt (default: 'run' — claude: '-p')
+#   CODEGRAPH_PROTECTED_PATHS  colon-separated paths the manifest tracks
+#                        (default: repo, repo/.env, repo/backups, ~/.ssh)
+#   CODEGRAPH_CODEBASE_ROOT    extra protected path: the analyzed codebase
+#   BACKEND_CONTAINER    docker container for findings/email (default: oncall-backend)
 set -euo pipefail
 
-REAL_REPO="${CODEGRAPH_REPO:-/home/adi/repos/on-call-assistance}"
-SANDBOX_ROOT="${CODEGRAPH_SANDBOX:-/home/adi/sandbox}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REAL_REPO="${CODEGRAPH_REPO:-$(dirname "$SCRIPT_DIR")}"
+SANDBOX_ROOT="${CODEGRAPH_SANDBOX:-${XDG_CACHE_HOME:-$HOME/.cache}/codegraph-autofix}"
+AGENT_BIN="${CODEGRAPH_AGENT_BIN:-opencode}"
+AGENT_ARGS="${CODEGRAPH_AGENT_ARGS:-run}"
 BACKEND_CONTAINER="${BACKEND_CONTAINER:-oncall-backend}"
 RUN_DATE="$(date +%F)"
 BRANCH="autofix/${RUN_DATE}"
@@ -38,10 +51,15 @@ die() { log "FATAL: $*"; exit 1; }
 # ---------------------------------------------------------------------------
 # 0. Locate things (gh is optional — see PR step for the fallback)
 # ---------------------------------------------------------------------------
-command -v opencode >/dev/null || die "opencode not on PATH"
+command -v "$AGENT_BIN" >/dev/null || die "agent CLI '$AGENT_BIN' not on PATH (set CODEGRAPH_AGENT_BIN)"
 [ -d "$REAL_REPO/.git" ] || die "real repo not found at $REAL_REPO"
 ORIGIN_URL="$(git -C "$REAL_REPO" remote get-url origin)"
 GH_BIN="$(command -v gh || true)"
+
+run_agent() {
+  # $1 = prompt (single argument — works for `opencode run` and `claude -p`)
+  ( cd "$RUN_DIR/repo" && "$AGENT_BIN" $AGENT_ARGS "$1" )
+}
 
 # Evidence trail: LOCAL ONLY. logs/ is gitignored — nothing here ever
 # reaches git. The sandbox itself is deleted on exit (see trap below).
@@ -62,14 +80,10 @@ trap cleanup EXIT
 # 1. Integrity manifest — the "did the agent fuck around" proof.
 #    .env is tracked by ATIME too: reading it is as forbidden as writing it.
 # ---------------------------------------------------------------------------
-PROTECTED_PATHS=(
-  "$REAL_REPO"
-  /home/adi/repos/walton
-  "$REAL_REPO/backups"
-  "$REAL_REPO/.env"
-  /home/adi/.ssh
-  /repos/codebase
-)
+IFS=':' read -r -a PROTECTED_PATHS <<< "${CODEGRAPH_PROTECTED_PATHS:-$REAL_REPO:$REAL_REPO/.env:$REAL_REPO/backups:$HOME/.ssh}"
+if [ -n "${CODEGRAPH_CODEBASE_ROOT:-}" ]; then
+  PROTECTED_PATHS+=("$CODEGRAPH_CODEBASE_ROOT")
+fi
 manifest() {
   # $1 = output file. Sandbox dir is the only place allowed to change.
   : > "$1"
@@ -81,7 +95,7 @@ manifest() {
       find "$p" -xdev -printf='%p mtime=%T@ atime=%A@ size=%s\n' 2>/dev/null | sort >> "$1" || true
     fi
   done
-  find /home/adi/sandbox -mindepth 1 -maxdepth 1 -not -name "$(basename "$RUN_DIR")" -printf='%p mtime=%T@\n' 2>/dev/null | sort >> "$1" || true
+  find "$SANDBOX_ROOT" -mindepth 1 -maxdepth 1 -not -name "$(basename "$RUN_DIR")" -printf='%p mtime=%T@\n' 2>/dev/null | sort >> "$1" || true
 }
 
 assert_manifest_unchanged() {
@@ -177,7 +191,7 @@ read -r -d '' BUILDER_CONSTRAINTS <<EOF || true
 You are fixing findings in THIS repository only (codegraph-mcp, the on-call graph MCP server). Your working directory IS the repository.
 
 HARD RULES — violating any of these voids the work:
-1. Edit and create files ONLY under the current working directory. Never touch /home/adi/repos/**, /repos/**, /home/adi/.ssh/**, /home/adi/sandbox/** outside this clone, or any path outside this clone. No other repo exists for you.
+1. Edit and create files ONLY under the current working directory. Never touch any path outside this clone — no other repository exists for you, and protected paths ($(IFS=, ; echo "${PROTECTED_PATHS[*]}")) are tracked and off-limits.
 2. NEVER read, write, print, grep, or reference .env or any secrets file — not even to 'check what is set'. If a fix needs a new env var or a changed value, do NOT edit .env; describe it in PR_BODY.md under a section titled "## Proposed .env additions".
 3. Do NOT push, do NOT create branches, do NOT open PRs, do NOT run gh. Commit locally on the current branch only.
 4. Do NOT modify or delete existing tests to make them pass. Existing tests encode core contracts of the main app. If an existing test seems wrong, say so in PR_BODY.md under "## Needs human verification" and leave it failing.
@@ -224,7 +238,7 @@ EOF
 )"
   fi
 
-  ( cd "$RUN_DIR/repo" && opencode run "$PROMPT" ) || log "agent exited non-zero (continuing to gates)"
+  ( cd "$RUN_DIR/repo" && run_agent "$PROMPT" ) || log "agent exited non-zero (continuing to gates)"
 
   # --- Gate 1: full suite (host-enforced, this is the law) ---------------
   log "Gate 1/5: full unit suite"
@@ -356,7 +370,7 @@ Verdicts must be honest. STILL BROKEN and UNCERTAIN are valuable answers.
 $(git -C "$RUN_DIR/repo" diff main...HEAD | head -400)
 EOF
 )"
-( cd "$RUN_DIR/repo" && opencode run "$VERIFY_PROMPT" ) || log "verifier exited non-zero (continuing)"
+( cd "$RUN_DIR/repo" && run_agent "$VERIFY_PROMPT" ) || log "verifier exited non-zero (continuing)"
 [ -f "$VERIFY_FILE" ] || echo "| (all) | UNCERTAIN | verifier produced no report |" > "$VERIFY_FILE"
 
 # ---------------------------------------------------------------------------
