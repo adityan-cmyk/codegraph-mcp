@@ -468,6 +468,46 @@ the tools help (or which tool wins), run the paired benchmark:
 Report the paired deltas per PR, not pooled averages — a tool that only helps
 on migration-heavy PRs should show that, not disappear into a mean.
 
+### Autofix agent (findings → verified PR)
+
+`scripts/findings-to-pr.sh` (cron Mon 06:00, flock-guarded) closes the
+findings loop: accepted feedback issues are fixed by a headless `opencode run`
+coding agent and delivered as a PR a human only has to review.
+
+**Sandbox** — the agent's entire world is a fresh disposable clone under
+`/home/adi/sandbox/`. It never touches the live checkout, walton, backups,
+`ssh`, or any other repo. A host-side integrity manifest (with `.env`
+**atime** — reading it is as forbidden as writing it) is swept before and
+after; any change outside the sandbox is an integrity violation, an alert
+email, and no PR. The sandbox is deleted on every exit — evidence (PR body,
+verifier report, manifests) is kept only in `logs/autofix/<date>/`
+(local, gitignored, never pushed).
+
+**Gates before a PR exists**
+1. Full unit suite green (host-enforced; the agent iterating is advisory)
+2. **Core contracts** green — contract drift, snapshot round-trip, auth
+   paths, rate limits, registry pin. A core failure means a main-app entity
+   changed → escalation email, no PR, human verifies
+3. **Red→green proof** — every `test_fix_*` the agent added must FAIL on the
+   base commit and PASS on the branch; a test that passes both ways proves
+   nothing and is rejected
+4. **Verifier agent** — a second `opencode run` re-reproduces each finding's
+   reported scenario and writes `FIXED / STILL BROKEN / UNCERTAIN` verdicts
+5. Integrity manifest unchanged
+
+**Hygiene** — the agent cannot push or open PRs (the orchestrator does, after
+gates). `.env` is never read or written; config needs land in the PR
+description under "Proposed .env additions" for manual application. Agent
+artifacts (`PR_BODY.md`, `VERIFY.md`, manifests) are gitignored and stripped
+before commit — the branch carries code only. The PR body is secret-scrubbed
+(token/password/hex patterns redacted) before it leaves the machine. PRs use
+branch `autofix/<date>` and the sandbox clone gets the same pre-push
+secret-blocker hook as every other push.
+
+**PR creation** — `gh` when installed, else `GITHUB_TOKEN` API, else the
+email carries a compare-link and the scrubbed body to paste (current state
+of this machine: the last path).
+
 ### Other docs
 
 - `docs/tools.md` — the full MCP tool reference (generated table + usage guide)

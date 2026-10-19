@@ -30,3 +30,10 @@ scip-data/
 backups/
 logs/
 .DS_Store
+
+# autofix agent artifacts — evidence is local-only (logs/autofix/), never git
+PR_BODY.md
+VERIFY.md
+manifest.*
+findings*.json
+sandbox/
