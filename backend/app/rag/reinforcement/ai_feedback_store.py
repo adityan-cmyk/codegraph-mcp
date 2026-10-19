@@ -610,3 +610,39 @@ def get_recent_issues(hours: int = 24) -> list[dict]:
                 (str(hours),),
             )
             return cur.fetchall()
+
+
+def get_tool_win_stats() -> dict[str, object]:
+    """Per-tool win aggregation across accepted feedback — which tool directly
+    produced each finding, so value is measured per tool instead of one overall
+    rating per review."""
+    _ensure_schema()
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT tool_wins FROM ai_feedback WHERE status = 'accepted' AND tool_wins IS NOT NULL"
+            )
+            counts: dict[str, int] = {}
+            sample_findings: dict[str, list[str]] = {}
+            reviews_with_wins = 0
+            for row in cur.fetchall():
+                wins = row["tool_wins"] or []
+                if not wins:
+                    continue
+                reviews_with_wins += 1
+                for win in wins:
+                    if not isinstance(win, dict):
+                        continue
+                    tool = str(win.get("tool") or "unknown")
+                    counts[tool] = counts.get(tool, 0) + 1
+                    finding = str(win.get("finding") or "")[:120]
+                    if finding and len(sample_findings.setdefault(tool, [])) < 3:
+                        sample_findings[tool].append(finding)
+    ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    return {
+        "reviews_with_tool_wins": reviews_with_wins,
+        "total_wins": sum(counts.values()),
+        "wins_by_tool": dict(ranked),
+        "top_tool": ranked[0][0] if ranked else None,
+        "sample_findings": sample_findings,
+    }

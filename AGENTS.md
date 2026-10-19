@@ -117,5 +117,5 @@ Shows how many symbols are boosted/penalized from accumulated feedback.
 
 - The MCP server is **stateless** — no session required. You can call `tools/list` and `tools/call` directly.
 - The graph indexes a Rust codebase. Symbol IDs use `::` paths (e.g. `crates::inventory::client::InventoryClient`).
-- All 26 tools are available at `http://<host-ip>:8002/mcp` via MCP JSON-RPC.
+- All 29 tools are available at `http://<host-ip>:8002/mcp` via MCP JSON-RPC.
 - The feedback API is at `http://<host-ip>:8000/api/feedback/`.

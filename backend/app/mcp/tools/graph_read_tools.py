@@ -876,10 +876,17 @@ def submit_search_feedback(query_text: str, symbol_id: str = "", feedback: int =
 
 
 def get_reinforcement_stats() -> dict[str, object]:
-    """Get statistics about the reinforcement learning system — how much feedback has been collected, which symbols are boosted or penalized, and query expansion count. Read-only, safe to call anytime."""
+    """Get statistics about the reinforcement learning system — how much feedback has been collected, which symbols are boosted or penalized, query expansion count, and per-tool win attribution (which tool directly produced each finding across accepted reviews). Read-only, safe to call anytime."""
     try:
         from app.rag.reinforcement import feedback_store
-        return feedback_store.get_reinforcement_stats()
+        stats = feedback_store.get_reinforcement_stats()
+        try:
+            from app.rag.reinforcement.ai_feedback_store import get_tool_win_stats
+
+            stats["tool_wins"] = get_tool_win_stats()
+        except Exception:
+            stats["tool_wins"] = {"error": "tool win stats unavailable"}
+        return stats
     except Exception as exc:
         return {"error": str(exc)}
 

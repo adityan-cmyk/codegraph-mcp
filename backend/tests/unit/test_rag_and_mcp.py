@@ -1850,3 +1850,31 @@ class BatchAndTransitiveToolsTestCase(unittest.TestCase):
             self.assertGreaterEqual(deep["test_count"], 1, deep)
             self.assertTrue(deep["tests_transitive"], deep)
             self.assertTrue(any("assert" in a.get("code", "") for a in deep["assertions"]), deep["assertions"])
+
+
+class ToolWinStatsTestCase(unittest.TestCase):
+    def test_tool_win_aggregation_ranks_tools(self):
+        from unittest.mock import MagicMock
+
+        from app.rag.reinforcement import ai_feedback_store
+
+        rows = [
+            {"tool_wins": [
+                {"tool": "find_warnings_in_blast_radius", "finding": "stub fn always true"},
+                {"tool": "find_string_producers", "finding": "UT-TXN vs TXN-"},
+            ]},
+            {"tool_wins": [{"tool": "find_warnings_in_blast_radius", "finding": "swallowed error"}]},
+        ]
+        cursor = MagicMock()
+        cursor.fetchall.return_value = rows
+        conn = MagicMock()
+        conn.__enter__.return_value = conn
+        conn.cursor.return_value.__enter__.return_value = cursor
+        with patch.object(ai_feedback_store, "_ensure_schema"), \
+             patch.object(ai_feedback_store, "_connect", return_value=conn):
+            stats = ai_feedback_store.get_tool_win_stats()
+
+        self.assertEqual(stats["total_wins"], 3)
+        self.assertEqual(stats["reviews_with_tool_wins"], 2)
+        self.assertEqual(stats["top_tool"], "find_warnings_in_blast_radius")
+        self.assertEqual(stats["wins_by_tool"]["find_string_producers"], 1)

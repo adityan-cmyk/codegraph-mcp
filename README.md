@@ -1,6 +1,6 @@
 # codegraph-mcp
 
-A stateless **MCP server** for code dependency graph analysis of Rust codebases — blast radius, semantic search, PR diff analysis, a metal detector for bugs hiding in comments and dead code (TODOs, swallowed errors, stubs), and a reinforcement loop that improves search quality from AI agent feedback. **26 tools: 24 read-only analysis (including a local decision-model tool); the two feedback tools write only to feedback tables.**
+A stateless **MCP server** for code dependency graph analysis of Rust codebases — blast radius, semantic search, PR diff analysis, a metal detector for bugs hiding in comments and dead code (TODOs, swallowed errors, stubs), and a reinforcement loop that improves search quality from AI agent feedback. **29 tools: 27 read-only analysis (including a local decision-model tool); the two feedback tools write only to feedback tables.**
 
 Since gen-9 the graph is **SCIP-refined**: a rust-analyzer index supplies type-resolved edges (trait dispatch, imports, cross-module calls) wherever available, and every edge carries its provenance (`scip` vs `regex`).
 
@@ -20,7 +20,7 @@ Since gen-9 the graph is **SCIP-refined**: a rust-analyzer index supplies type-r
 │                  │────▶│  per-IP token    │     │  ollama            │  decision model (nimble, digest-pinned)
 │                  │     │  buckets         │     │  Redis             │  query cache (tagged, compressed)
 │                  │     │  REST API :8000  │     └────────────────────┘
-│                  │     │  (26 tools)      │
+│                  │     │  (29 tools)      │
 └──────────────────┘     └──────────────────┘
 ```
 
@@ -106,7 +106,7 @@ Add this to your `opencode.json`:
 }
 ```
 
-All 26 tools, their arguments, and usage guidance: **[docs/tools.md](docs/tools.md)** — the tool table there is generated from the live registry and contract-tested, so it cannot drift from the server.
+All 29 tools, their arguments, and usage guidance: **[docs/tools.md](docs/tools.md)** — the tool table there is generated from the live registry and contract-tested, so it cannot drift from the server.
 
 ---
 
