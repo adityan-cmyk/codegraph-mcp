@@ -124,6 +124,11 @@ out = {"issues": [], "feedback": []}
 try:
     with psycopg.connect(settings.postgres_dsn, row_factory=dict_row) as conn:
         with conn.cursor() as cur:
+            # The autofix_state columns gate future selection — create them
+            # BEFORE filtering on them (a missing column used to error the
+            # SELECT silently into an empty backlog).
+            cur.execute("ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS autofix_state TEXT")
+            cur.execute("ALTER TABLE feedback_issues ADD COLUMN IF NOT EXISTS autofix_state TEXT")
             try:
                 cur.execute(
                     """SELECT id, issue_type, summary, created_at FROM feedback_issues
