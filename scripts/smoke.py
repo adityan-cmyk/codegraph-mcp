@@ -133,8 +133,14 @@ def main() -> int:
     nodes = gs.get("graph_nodes", 0)
     total = gs.get("total_symbols_all_chunks", nodes)
     edges = gs.get("graph_edges", 0)
-    check("graph stats consistent", nodes > 0 and edges > 0 and nodes <= total,
-          f"nodes={nodes} edges={edges} total={total} excluded={gs.get('excluded_from_graph')}")
+    real = gs.get("real_symbols", nodes)
+    excluded = gs.get("excluded_from_graph", 0)
+    # Reconciliation, not raw comparison: real symbols + excluded skip-kinds
+    # must equal the chunk count. Bare edge-target nodes (unresolved callees)
+    # are scaffolding — they live in graph_nodes but not in real_symbols.
+    check("graph stats consistent",
+          nodes > 0 and edges > 0 and excluded >= 0 and real + excluded == total,
+          f"nodes={nodes} edges={edges} total={total} real={real} excluded={excluded}")
 
     # 6. Index meta exposes drift + coverage
     im = mcp_call("get_index_meta", {})

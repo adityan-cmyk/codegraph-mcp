@@ -174,9 +174,12 @@ class InMemoryGraphIndex:
             sum(len(targets) for targets in self._downstream.values()) +
             sum(len(targets) for targets in self._uses.values())
         )
+        real = len(self._metadata)
         return {
             "graph_nodes": len(node_ids),
             "graph_edges": edge_count,
+            "real_symbols": real,
+            "bare_target_nodes": len(node_ids) - real,
         }
 
     def has_symbol(self, symbol_id: str) -> bool:

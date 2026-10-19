@@ -1216,14 +1216,16 @@ def traverse_graph(symbol_id: str, depth: int = 1, summary_only: bool = False, e
 
 
 def get_graph_stats() -> dict[str, object]:
-    """Get current graph index statistics — total nodes and edges. Read-only, safe to call anytime. Note: graph_nodes counts only symbols eligible for the dependency graph (file summaries, module exports, and trivial constants are excluded) — get_index_meta's total_symbols counts every indexed chunk, so graph_nodes < total_symbols is expected, not drift."""
+    """Get current graph index statistics — total nodes and edges. Read-only, safe to call anytime. graph_nodes = real symbols + bare edge-target nodes (unresolved callees — scaffolding); real_symbols counts only extracted symbols (file summaries, module exports, and trivial constants excluded), and excluded_from_graph reconciles those against get_index_meta's total_symbols chunk count."""
     stats = dict(graph_index.get_stats())
     try:
         from app.core.index_store import index_metadata_store
         snapshot = index_metadata_store.load_snapshot()
         if snapshot:
             stats["total_symbols_all_chunks"] = len(snapshot.chunks)
-            stats["excluded_from_graph"] = len(snapshot.chunks) - stats.get("graph_nodes", len(snapshot.chunks))
+            # Reconcile against REAL symbols only — bare edge-target nodes
+            # would push the naive subtraction negative (smoke caught this).
+            stats["excluded_from_graph"] = len(snapshot.chunks) - stats.get("real_symbols", stats.get("graph_nodes", len(snapshot.chunks)))
             stats["exclusion_note"] = "file summaries, module exports, trivial constants, keyword-named parser artifacts"
     except Exception:
         pass

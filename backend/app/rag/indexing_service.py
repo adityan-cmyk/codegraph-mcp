@@ -823,14 +823,16 @@ def _index_rust_repository_locked(repository_path: str | None = None) -> Indexin
         )
 
     # SQL structure: migration touches table, column belongs to table, and
-    # sea-orm entity fields map to same-named columns.
-    graph_edges.extend(sql_edges)
+    # sea-orm entity fields map to same-named columns. Edges targeting nothing
+    # that exists are dropped — a phantom target becomes a bare graph node.
     try:
         from app.rag.ingestion.sql_schema import link_sql_to_entities
 
-        graph_edges.extend(link_sql_to_entities(all_chunks))
+        sql_edges = list(sql_edges) + link_sql_to_entities(all_chunks)
     except Exception:
         logger.warning("SQL entity linking failed", exc_info=True)
+    known_ids = {c.symbol_id for c in all_chunks}
+    graph_edges.extend(e for e in sql_edges if e.target_symbol_id in known_ids)
 
     head_commit = ""
     try:
@@ -1064,7 +1066,12 @@ def _incremental_update_symbols_locked(
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=sid, relation="uses", usage_modes=modes)
             for sid, modes in uses_with_modes
         )
-    new_edges.extend(incremental_sql_edges)
+    # Phantom-target guard for SQL extractor edges only — an edge to a
+    # non-existent sql::column::t::c would become a bare graph node. Rust
+    # call edges to unresolved callees are legitimate scaffolding and keep
+    # their bare targets.
+    all_known_ids = {c.symbol_id for c in all_chunks}
+    new_edges.extend(e for e in incremental_sql_edges if e.target_symbol_id in all_known_ids)
 
     removed_edge_keys = [
         (e.source_symbol_id, e.target_symbol_id)

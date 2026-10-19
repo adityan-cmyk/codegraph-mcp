@@ -403,10 +403,16 @@ class Neo4jGraphIndex:
     def get_stats(self) -> dict[str, int]:
         with self._get_driver().session() as session:
             node_result = session.run(
-                "MATCH (n:Symbol {gen: $gen}) RETURN count(n) AS count",
+                """
+                MATCH (n:Symbol {gen: $gen})
+                RETURN count(n) AS total,
+                       count(CASE WHEN n.kind IS NOT NULL THEN 1 END) AS real,
+                       count(CASE WHEN n.kind IS NULL THEN 1 END) AS bare
+                """,
                 gen=self._gen,
             )
-            node_count = node_result.single()["count"]
+            counts = node_result.single()
+            node_count = counts["total"]
 
             edge_result = session.run(
                 """
@@ -429,6 +435,8 @@ class Neo4jGraphIndex:
         return {
             "graph_nodes": node_count,
             "graph_edges": edge_count,
+            "real_symbols": counts["real"],
+            "bare_target_nodes": counts["bare"],
             "scip_edges": provenance.get("scip", 0),
             "regex_edges": provenance.get("regex", 0),
         }

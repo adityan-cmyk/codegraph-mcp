@@ -126,13 +126,20 @@ def _migration_block(
     cols = set(_COLUMN_REF.findall(body))
     for _, new_col in _COLUMN_RENAME.findall(body):
         cols.add(new_col)
-    targets = {f"sql::table::{t}" for t in tables} | {
-        f"sql::column::{t}::{c}"
-        for t in tables
-        for c in table_columns.get(t, set())
-        if re.search(rf"\b{re.escape(c)}\b", body)
-    }
-    targets |= {f"sql::column::{t}::{c}" for t, c in ((t, c) for t in tables for c in cols)}
+    # Table targets: the migration touches these tables.
+    targets = {f"sql::table::{t}" for t in tables}
+    # Column targets only for GENUINE pairs — same-file declared columns the
+    # body mentions, or explicit column refs when the statement names exactly
+    # one table. A table×column cross-product manufactured phantom
+    # sql::column::t::c nodes for every combo (smoke caught the inflation).
+    for t in tables:
+        for c in table_columns.get(t, set()):
+            if re.search(rf"\b{re.escape(c)}\b", body):
+                targets.add(f"sql::column::{t}::{c}")
+    if len(tables) == 1:
+        (t,) = tables
+        for c in cols:
+            targets.add(f"sql::column::{t}::{c}")
     for target in sorted(targets):
         edges.append(GraphEdge(source_symbol_id=sym, target_symbol_id=target, relation="uses"))
     return [CodeChunk(

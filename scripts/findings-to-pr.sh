@@ -126,10 +126,11 @@ try:
         with conn.cursor() as cur:
             try:
                 cur.execute(
-                    """SELECT issue_type, summary, created_at FROM feedback_issues
-                       WHERE created_at > NOW() - interval '30 days' ORDER BY created_at DESC"""
+                    """SELECT id, issue_type, summary, created_at FROM feedback_issues
+                       WHERE (autofix_state IS NULL) AND created_at > NOW() - interval '30 days'
+                       ORDER BY created_at DESC"""
                 )
-                out["issues"] = [{"type": r["issue_type"], "summary": (r["summary"] or "")[:400], "when": str(r["created_at"])} for r in cur.fetchall()]
+                out["issues"] = [{"id": f"issue-{r['id']}", "type": r["issue_type"], "summary": (r["summary"] or "")[:400], "when": str(r["created_at"])} for r in cur.fetchall()]
             except Exception:
                 pass
             cur.execute(
@@ -137,6 +138,7 @@ try:
                           improvement_suggestions, created_at
                    FROM ai_feedback
                    WHERE status = 'accepted'
+                     AND (autofix_state IS NULL)
                      AND created_at > NOW() - interval '30 days'
                    ORDER BY created_at DESC LIMIT 100"""
             )
@@ -146,7 +148,7 @@ try:
                 if not text and not expected:
                     continue
                 out["feedback"].append({
-                    "id": (r.get("feedback_id") or "")[:8],
+                    "id": r.get("feedback_id") or "",
                     "pr_context": r.get("pr_context") or "",
                     "rating": r.get("quality_rating"),
                     "expected": expected[:800],
@@ -210,6 +212,16 @@ When done, write PR_BODY.md at the repo root with:
 (yes/no — values never go here, just names and reasons)
 ## Needs human verification
 (anything you could not fully fix or any contract tension)
+
+Also write FIXSTATE.json at the repo root — machine-readable outcome so the
+next run does not re-pick stale findings. Every finding id from the input
+MUST appear in exactly one list:
+{
+  "addressed": ["<finding id>", "issue-<n>"],
+  "skipped": [{"id": "<finding id>", "reason": "already fixed"}]
+}
+"addressed" = you fixed it and a test_fix_* proves it. "skipped" = stale,
+already fixed, or impossible (one-line reason required).
 EOF
 
 ITER=1
@@ -291,6 +303,14 @@ if [ "${ESCALATION:-0}" = "1" ]; then
   exit 2
 fi
 
+# Preserve the agent's work in evidence BEFORE any gate can reject it —
+# a failed gate must never lose the patch (the sandbox is deleted on exit).
+if [ "$(git -C "$RUN_DIR/repo" log --oneline main..HEAD | wc -l)" -gt 0 ]; then
+  git -C "$RUN_DIR/repo" format-patch main..HEAD --stdout > "$EVIDENCE_DIR/agent-work.patch" 2>/dev/null || true
+  git -C "$RUN_DIR/repo" diff main...HEAD > "$EVIDENCE_DIR/agent-work.diff" 2>/dev/null || true
+  log "Agent work preserved at $EVIDENCE_DIR/agent-work.patch"
+fi
+
 # Gate 1 exit: suite never went green
 if [ "$SUITE_RC" -ne 0 ]; then
   printf '%s' "$TEST_OUTPUT" > "$EVIDENCE_DIR/test-failure.log"
@@ -313,7 +333,7 @@ log "Gate 3/5: red->green proof for added regression tests"
 BASE_SHA="$(git -C "$RUN_DIR/repo" rev-parse main)"
 PROOF_ROWS=""
 PROOF_OK=1
-NEW_TESTS="$(git -C "$RUN_DIR/repo" diff main...HEAD | grep -E '^\+def test_fix_' | sed 's/^+def //; s/(.*//' || true)"
+NEW_TESTS="$(git -C "$RUN_DIR/repo" diff main...HEAD | grep -E '^\+[[:space:]]*def test_fix_' | sed 's/^+[[:space:]]*def //; s/(.*//' || true)"
 if [ -z "$NEW_TESTS" ]; then
   log "No test_fix_* regression tests added — a fix without a reproducing test is not accepted."
   PROOF_OK=0
@@ -396,7 +416,48 @@ log "Integrity clean — nothing outside the sandbox was touched."
 log "Preparing code-only commit"
 [ -f "$PR_BODY_DRAFT" ] && cp "$PR_BODY_DRAFT" "$EVIDENCE_DIR/PR_BODY.md" || true
 [ -f "$VERIFY_FILE" ] && cp "$VERIFY_FILE" "$EVIDENCE_DIR/VERIFY.md" || true
-rm -f "$RUN_DIR/repo/PR_BODY.md" "$RUN_DIR/repo/VERIFY.md" "$RUN_DIR/repo"/manifest.* "$RUN_DIR/repo"/findings*.json 2>/dev/null || true
+[ -f "$RUN_DIR/repo/FIXSTATE.json" ] && cp "$RUN_DIR/repo/FIXSTATE.json" "$EVIDENCE_DIR/FIXSTATE.json" || true
+rm -f "$RUN_DIR/repo/PR_BODY.md" "$RUN_DIR/repo/VERIFY.md" "$RUN_DIR/repo/FIXSTATE.json" \
+      "$RUN_DIR/repo"/manifest.* "$RUN_DIR/repo"/findings*.json 2>/dev/null || true
+
+# Mark findings addressed/skipped so the next run picks only fresh work.
+# Direct SQL — stable across deploys. Only a fully-gated run marks anything:
+# a red-gate or escalation run leaves state NULL and retries next time.
+if [ -f "$EVIDENCE_DIR/FIXSTATE.json" ]; then
+  log "Recording per-finding autofix state"
+  FIXSTATE_B64="$(base64 -w0 "$EVIDENCE_DIR/FIXSTATE.json")"
+  docker exec -i "$BACKEND_CONTAINER" python - "$FIXSTATE_B64" <<'PY' || log "state marking failed (non-fatal)"
+import base64, json, sys
+import psycopg
+from app.core.config import settings
+
+state = json.loads(base64.b64decode(sys.argv[1]).decode("utf-8"))
+addressed = [str(x) for x in state.get("addressed", [])]
+skipped = {str(s.get("id")): str(s.get("reason", ""))[:200] for s in state.get("skipped", []) if isinstance(s, dict) and s.get("id")}
+
+def split(ids):
+    fb = [i for i in ids if not i.startswith("issue-")]
+    isu = [int(i[6:]) for i in ids if i.startswith("issue-") and i[6:].isdigit()]
+    return fb, isu
+
+with psycopg.connect(settings.postgres_dsn) as conn:
+    with conn.cursor() as cur:
+        cur.execute("ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS autofix_state TEXT")
+        cur.execute("ALTER TABLE feedback_issues ADD COLUMN IF NOT EXISTS autofix_state TEXT")
+        fb_a, isu_a = split(addressed)
+        if fb_a:
+            cur.execute("UPDATE ai_feedback SET autofix_state = 'addressed' WHERE feedback_id = ANY(%s)", (fb_a,))
+        if isu_a:
+            cur.execute("UPDATE feedback_issues SET autofix_state = 'addressed', resolved_at = NOW() WHERE id = ANY(%s)", (isu_a,))
+        fb_s, isu_s = split(list(skipped))
+        if fb_s:
+            cur.execute("UPDATE ai_feedback SET autofix_state = 'skipped' WHERE feedback_id = ANY(%s)", (fb_s,))
+        if isu_s:
+            cur.execute("UPDATE feedback_issues SET autofix_state = 'skipped', resolved_at = NOW() WHERE id = ANY(%s)", (isu_s,))
+    conn.commit()
+print(f"marked addressed={len(addressed)} skipped={len(skipped)}")
+PY
+fi
 
 git -C "$RUN_DIR/repo" add -A
 git -C "$RUN_DIR/repo" reset -q -- PR_BODY.md VERIFY.md 2>/dev/null || true
