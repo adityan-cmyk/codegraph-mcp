@@ -60,6 +60,27 @@ class Neo4jGraphIndex:
                 gen=self._gen,
             )
 
+    def remove_symbols(self, symbol_ids: list[str]) -> None:
+        """Delete symbols deleted from source and every edge touching them."""
+        if not symbol_ids:
+            return
+        with self._get_driver().session() as session:
+            session.run(
+                "MATCH (n:Symbol {gen: $gen}) WHERE n.id IN $ids DETACH DELETE n",
+                gen=self._gen,
+                ids=list(symbol_ids),
+            )
+
+    def get_symbol_ids(self) -> set[str]:
+        with self._get_driver().session() as session:
+            result = session.run(
+                # kind IS NOT NULL = real extracted symbols; bare edge-target
+                # MERGE nodes would poison the symbol-set hash.
+                "MATCH (n:Symbol {gen: $gen}) WHERE n.kind IS NOT NULL RETURN n.id AS id",
+                gen=self._gen,
+            )
+            return {row["id"] for row in result}
+
     def upsert_symbol(self, symbol_id: str, calls: list[str] | None = None, uses: list[str] | None = None, uses_with_modes: list[tuple[str, list[str]]] | None = None, metadata: dict | None = None, edge_source: str = "regex") -> None:
         gen = self._gen
         with self._get_driver().session() as session:

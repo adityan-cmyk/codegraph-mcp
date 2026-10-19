@@ -1,6 +1,28 @@
 from datetime import datetime
+import hashlib
 
 from pydantic import BaseModel, Field
+
+# Synthetic enrichment chunks — indexed for semantic search but never graph
+# nodes. The symbol-set hash counts only graph-eligible symbols so the
+# snapshot and the live graph hash the same universe.
+GRAPH_SKIP_KINDS = frozenset({"file_summary", "module_exports", "mod"})
+
+
+def compute_symbol_set_hash(symbols) -> str:
+    """sha256 over sorted unique symbol_ids — accepts chunks or plain ids.
+
+    The fingerprint get_index_meta compares across the snapshot and the live
+    graph: the commit pointer alone claimed freshness while incremental
+    updates left deleted symbols behind. Skip-kind chunks are excluded so
+    both sides hash real symbols only.
+    """
+    ids = sorted({
+        (s.symbol_id if hasattr(s, "symbol_id") else str(s))
+        for s in symbols
+        if getattr(s, "kind", None) not in GRAPH_SKIP_KINDS
+    })
+    return hashlib.sha256("\n".join(ids).encode("utf-8")).hexdigest()
 
 
 class CodeChunk(BaseModel):
@@ -81,5 +103,9 @@ class IndexSnapshot(BaseModel):
     files_indexed: int = Field(ge=0)
     created_at: datetime | None = None
     last_indexed_commit: str = ""
+    # sha256 over sorted unique symbol_ids at ingest time — get_index_meta
+    # compares it against the live graph + snapshot so "up to date" can't
+    # claim freshness while deleted symbols linger (commit pointer alone lied).
+    symbol_set_hash: str = ""
     chunks: list[CodeChunk] = Field(default_factory=list)
     graph_edges: list[GraphEdge] = Field(default_factory=list)

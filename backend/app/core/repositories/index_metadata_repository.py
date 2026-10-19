@@ -19,9 +19,10 @@ class IndexMetadataRepository(ABC):
     def update_incremental(
         self,
         modified_chunks: list[CodeChunk],
-        removed_symbol_ids: list[str],
+        removed_symbols: list[tuple[str, str]],
         modified_edges: list[GraphEdge],
         removed_edge_keys: list[tuple[str, str]],
         last_indexed_commit: str = "",
+        symbol_set_hash: str = "",
     ) -> None:
         raise NotImplementedError

@@ -129,6 +129,149 @@ def search_symbols(query: str, limit: int = 20) -> dict[str, object]:
     }
 
 
+def search_symbols_batch(queries: list[str], limit: int = 5) -> dict[str, object]:
+    """Resolve many partial names in ONE call — same per-name results as search_symbols, but one round trip instead of N. Use this whenever you have a list of names (imports from a diff, field names, call targets). Provide queries: list of partial names (e.g. ['lookup_txn', 'check_if_txn', 'find_by_ref_id']). Optional: limit per query (default 5, max 20)."""
+    if not queries or not isinstance(queries, list):
+        return {"error": "queries must be a non-empty list of name fragments"}
+    limit = max(1, min(int(limit or 5), 20))
+    results: dict[str, list] = {}
+    unresolved: list[str] = []
+    for q in queries[:40]:
+        q = str(q).strip()
+        if not q:
+            continue
+        hits = _filter_noise(graph_index.search_symbols(q, limit=max(limit * 2, 30)))[:limit]
+        results[q] = hits
+        if not hits:
+            unresolved.append(q)
+    return {
+        "queries_resolved": len(results),
+        "results": results,
+        "unresolved": unresolved,
+        "calls_saved": max(0, len(results) - 1),
+    }
+
+
+def find_field_access(struct_name: str, field: str) -> dict[str, object]:
+    """Find readers and writers of a struct field — 'who reads ChargebackTxn.transaction_ref_id' without grep. Scans every indexed symbol body for field accesses: readers touch `.field`, writers assign `.field =` or construct `field: value`. Provide struct_name (e.g. 'ChargebackTxn' — '' to scan all structs) and field (e.g. 'transaction_ref_id'). Returns per-site symbol_id/file/line/snippet so you can jump to the exact access. Read-only, safe to call anytime."""
+    field = (field or "").strip()
+    if not field:
+        return {"error": "field is required"}
+    struct_name = (struct_name or "").strip()
+
+    import re as _re
+
+    reader_re = _re.compile(rf"\.\s*{_re.escape(field)}\b(?!\s*[:=])")
+    writer_re = _re.compile(rf"\.\s*{_re.escape(field)}\s*=")
+    # struct-literal init `field: value` — but NOT a type-annotation decl
+    # (`field: String`), which is the field declaration itself.
+    init_re = _re.compile(rf"\b{_re.escape(field)}\s*:\s*(?:self\b|&[a-z]|[a-z0-9_\"'{{])")
+    decl_re = _re.compile(rf"\b{_re.escape(field)}\s*:\s*(?:[A-Z]|&[A-Z]|Option<|Vec<|Box<|HashMap|HashSet|dyn )")
+
+    readers: list[dict[str, object]] = []
+    writers: list[dict[str, object]] = []
+    for chunk in _iter_snapshot_chunks():
+        if struct_name and struct_name not in chunk.symbol_id and struct_name not in chunk.content[:2000]:
+            continue
+        lines = chunk.content.split("\n")
+        for offset, line in enumerate(lines):
+            if field not in line:
+                continue
+            lineno = chunk.start_line + offset
+            base = {
+                "symbol_id": chunk.symbol_id,
+                "file_path": chunk.file_path,
+                "line": lineno,
+                "snippet": line.strip()[:200],
+            }
+            if writer_re.search(line):
+                writers.append({**base, "access": "write"})
+            elif decl_re.search(line) and not init_re.search(line):
+                continue  # the field declaration itself
+            elif init_re.search(line):
+                writers.append({**base, "access": "construct"})
+            elif reader_re.search(line):
+                readers.append({**base, "access": "read"})
+
+    return {
+        "struct_name": struct_name or "(any)",
+        "field": field,
+        "readers_count": len(readers),
+        "writers_count": len(writers),
+        "readers": readers[:40],
+        "writers": writers[:40],
+        "truncated": max(0, len(readers) + len(writers) - 80),
+    }
+
+
+def find_string_producers(pattern: str, limit: int = 30) -> dict[str, object]:
+    """Find every symbol that produces a string literal containing the given prefix/fragment — catches two producers of the same format disagreeing (a Rust format!("UT-TXN-…") vs a SQL 'TXN-…' literal is exactly the bug class that ships). Searches Rust format!/string literals AND SQL chunks (tables, migrations). Provide pattern (e.g. 'TXN-', 'UT-TXN'). Returns producing symbol_id, the literal, and whether it sits inside format!. Read-only, safe to call anytime."""
+    pattern = (pattern or "").strip()
+    if not pattern:
+        return {"error": "pattern is required"}
+    import re as _re
+
+    # Double-quoted literals FIRST, single-quoted only outside their spans —
+    # a Rust &'static lifetime otherwise swallows the string that follows it
+    # (`-> &'static str { "…TXN-…" }` matched as one bogus '…' literal).
+    dq_re = _re.compile(r"b?\"(?:[^\"\\]|\\.)*\"")
+    sq_re = _re.compile(r"'(?:[^'\\]|\\.)*'")
+
+    def _literals(content: str) -> list[tuple[int, str]]:
+        spans: list[tuple[int, str]] = []
+        covered: list[tuple[int, int]] = []
+        for m in dq_re.finditer(content):
+            spans.append((m.start(), m.group(0)))
+            covered.append((m.start(), m.end()))
+        for m in sq_re.finditer(content):
+            if any(s <= m.start() < e for s, e in covered):
+                continue
+            spans.append((m.start(), m.group(0)))
+        return spans
+
+    producers: list[dict[str, object]] = []
+    limit = max(1, min(int(limit or 30), 100))
+    for chunk in _iter_snapshot_chunks():
+        for start, literal in _literals(chunk.content):
+            if pattern not in literal:
+                continue
+            line = chunk.start_line + chunk.content[:start].count("\n")
+            prefix = chunk.content[max(0, start - 120): start]
+            producers.append({
+                "symbol_id": chunk.symbol_id,
+                "kind": chunk.kind,
+                "file_path": chunk.file_path,
+                "line": line,
+                "literal": literal[:160],
+                "in_format_macro": "format!" in prefix,
+            })
+            if len(producers) >= limit:
+                break
+        if len(producers) >= limit:
+            break
+
+    distinct = {(p["symbol_id"], p["literal"]) for p in producers}
+    return {
+        "pattern": pattern,
+        "producers_count": len(producers),
+        "distinct_symbol_literal_pairs": len(distinct),
+        "producers": producers,
+        "note": (
+            "multiple distinct literals for one prefix usually means two producers disagree — "
+            "compare them before shipping"
+            if len({p["literal"] for p in producers}) > 1
+            else "single literal form across all producers"
+        ),
+    }
+
+
+def _iter_snapshot_chunks():
+    from app.core.index_store import index_metadata_store
+
+    snap = index_metadata_store.load_snapshot()
+    return snap.chunks if snap else []
+
+
 _FRESHNESS_CACHE: tuple[float, dict | None] = (0.0, None)
 _FRESHNESS_TTL = 300  # seconds
 
@@ -219,29 +362,150 @@ def _test_symbol_ids() -> set[str]:
     return _TEST_SYMBOLS_CACHE[1]
 
 
-def get_tests_for_symbol(symbol_id: str) -> dict[str, object]:
-    """Find the tests that cover a symbol — test fns that CALL it or reference its type (USES), from symbols flagged is_test (#[test]/#[tokio::test]/#[cfg(test)] modules). Use this before changing a symbol to see if existing tests will catch regressions. Provide the full symbol_id (e.g. 'crates::wallet::settle::process_payment'). Read-only, safe to call anytime."""
+def get_tests_for_symbol(symbol_id: str, depth: int = 1, include_assertions: bool = True) -> dict[str, object]:
+    """Find the tests that cover a symbol — test fns that CALL it or reference its type (USES), from symbols flagged is_test (#[test]/#[tokio::test]/#[cfg(test)] modules). Use this before changing a symbol to see if existing tests will catch regressions. Transitive coverage matters: a symbol may only be exercised through a wrapper (depth=2 finds tests of its callers). Assertion lines from each matched test are returned so you can see WHAT is verified, not just that a test exists. Provide the full symbol_id (e.g. 'crates::wallet::settle::process_payment'). Optional: depth=1..3 (default 1 — direct tests only; 2 includes tests of direct callers, 3 one more hop), include_assertions=false to skip reading test bodies. Read-only, safe to call anytime."""
     symbol_id = symbol_id.strip()
     if not symbol_id:
         return {"error": "symbol_id is required"}
+    depth = max(1, min(int(depth or 1), 3))
 
     test_rows = graph_index.get_tests_for(symbol_id)
     direct = [t for t in test_rows if t["relation"] == "calls"]
     mention_only = [t for t in test_rows if t["relation"] == "type_reference"]
 
-    files = sorted({t["file_path"] for t in direct + mention_only if t["file_path"]})
+    # Transitive coverage: tests that exercise this symbol through a caller
+    # (vehicle_registration_tests -> process_transaction -> fetch_transaction_id
+    # showed zero tests at depth 1 while the suite DID cover it).
+    transitive: list[dict[str, object]] = []
+    seen_targets = {symbol_id}
+    frontier = set(_callers_of(symbol_id))
+    for hop in range(2, depth + 1):
+        if not frontier:
+            break
+        next_frontier: set[str] = set()
+        for mid in sorted(frontier):
+            for t in graph_index.get_tests_for(mid):
+                if t["relation"] != "calls":
+                    continue
+                transitive.append({
+                    "symbol_id": t["symbol_id"],
+                    "relation": "calls",
+                    "file_path": t.get("file_path", ""),
+                    "start_line": t.get("start_line", 0),
+                    "end_line": t.get("end_line", 0),
+                    "depth": hop,
+                    "via_chain": [mid],
+                })
+            next_frontier |= _callers_of(mid)
+        seen_targets |= frontier
+        frontier = next_frontier - seen_targets
+
+    matched = direct + mention_only + transitive
+    files = sorted({t["file_path"] for t in matched if t["file_path"]})
+
+    # Assertion lines: the no-MCP reviewer beat the graph run because it READ
+    # the assertion (RefId.eq(&unsettled_txn.ref_id)) — surface them here.
+    assertions: list[dict[str, object]] = []
+    if include_assertions:
+        chain_names = _short_name(symbol_id)
+        for m in transitive:
+            for mid in m.get("via_chain", []):
+                chain_names |= _short_name(mid)
+        for t in matched:
+            for line_info in _extract_assertions(t):
+                mentions = any(name and name in line_info["code"] for name in chain_names)
+                line_info["mentions_chain"] = mentions
+                line_info["test_symbol_id"] = t["symbol_id"]
+                assertions.append(line_info)
+
+    all_direct = len(direct) > 0
+    any_transitive = len(transitive) > 0
+    if all_direct:
+        note = "direct test callers exist — regressions here are likely caught"
+    elif any_transitive:
+        note = (
+            "no test calls this symbol directly, but tests exercise it through its callers "
+            f"(depth<= {depth}) — read the assertions to confirm they cover your change"
+        )
+    else:
+        note = "no test directly calls this symbol — changes are unverified by the suite"
+
     return {
         "symbol_id": symbol_id,
+        "depth_used": depth,
         "tests_calling": direct,
         "tests_referencing_type": mention_only,
-        "test_count": len(direct) + len(mention_only),
+        "tests_transitive": transitive,
+        "test_count": len(matched),
         "test_files": files,
-        "coverage_note": (
-            "direct test callers exist — regressions here are likely caught"
-            if direct
-            else "no test directly calls this symbol — changes are unverified by the suite"
-        ),
+        "assertions": assertions[:30],
+        "assertions_truncated": max(0, len(assertions) - 30),
+        "coverage_note": note,
     }
+
+
+def _callers_of(symbol_id: str) -> set[str]:
+    neighborhood = (
+        graph_index.get_blast_radius(symbol_id)
+        if hasattr(graph_index, "get_blast_radius")
+        else graph_index.get_neighbors(symbol_id)
+    )
+    result = neighborhood.model_dump() if hasattr(neighborhood, "model_dump") else neighborhood
+    return {
+        e["symbol_id"] if isinstance(e, dict) else e
+        for e in result.get("upstream", [])
+        if (e["symbol_id"] if isinstance(e, dict) else e)
+    }
+
+
+def _short_name(symbol_id: str) -> set[str]:
+    parts = symbol_id.split("::")
+    names = {parts[-1]} if parts else set()
+    if len(parts) >= 2:
+        names.add(f"{parts[-2]}::{parts[-1]}")
+    return names
+
+
+_ASSERT_RE = None
+
+
+def _extract_assertions(test_row: dict) -> list[dict[str, object]]:
+    """assert/expect/panic lines from a test symbol's source span on disk."""
+    global _ASSERT_RE
+    if _ASSERT_RE is None:
+        import re as _re
+
+        _ASSERT_RE = _re.compile(
+            r"\b(assert!|assert_eq!|assert_ne!|assert_matches!|debug_assert|should_panic|expect\(|\.unwrap\(|panic!)"
+        )
+
+    meta = _get_symbol_metadata(test_row["symbol_id"]) or {}
+    file_path = meta.get("file_path") or test_row.get("file_path") or ""
+    start = int(meta.get("start_line") or test_row.get("start_line") or 0)
+    end = int(meta.get("end_line") or test_row.get("end_line") or 0)
+    if not file_path or not start:
+        return []
+
+    from pathlib import Path
+
+    from app.core.config import settings
+
+    root = Path(settings.codebase_root_path or "/repos/codebase")
+    try:
+        lines = (root / file_path).read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+
+    out: list[dict[str, object]] = []
+    for lineno in range(max(start, 1), min(end, len(lines)) + 1):
+        raw = lines[lineno - 1]
+        if _ASSERT_RE.search(raw):
+            out.append({
+                "file_path": file_path,
+                "line": lineno,
+                "code": raw.strip()[:240],
+            })
+    return out
 
 
 def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None, summary_only: bool = False, exclude_shared_state_types: bool = True) -> dict[str, object]:
@@ -398,15 +662,21 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
     return final
 
 
-def batch_blast_radius(symbol_ids: list[str]) -> dict[str, object]:
-    """Get blast radius for multiple symbols in a single call. Use this when a PR changes several symbols and you need the combined impact. Provide a list of symbol_ids (e.g. ['crates::wallet::transfer', 'crates::wallet::validate'])."""
+def batch_blast_radius(symbol_ids: list[str], summary_only: bool = False, resolve_names: bool = False) -> dict[str, object]:
+    """Get blast radius for multiple symbols in a single call. Use this when a PR changes several symbols and you need the combined impact. Provide a list of symbol_ids (e.g. ['crates::wallet::transfer', 'crates::wallet::validate']). Optional: summary_only=true returns counts + risk per symbol WITHOUT the full neighbor lists (use when you only need sizes — full lists for 15+ symbols are huge); resolve_names=true accepts partial names and resolves each via search first (saves a separate search_symbols call per name)."""
     results: list[dict[str, object]] = []
     all_downstream: set[str] = set()
     all_upstream: set[str] = set()
     all_uses: set[str] = set()
     all_used_by: set[str] = set()
+    resolved_names: dict[str, str] = {}
 
     for sid in symbol_ids:
+        if resolve_names and not graph_index.has_symbol(sid):
+            hits = _filter_noise(graph_index.search_symbols(sid, limit=10))
+            if hits:
+                resolved_names[sid] = hits[0]["symbol_id"]
+                sid = hits[0]["symbol_id"]
         br = get_blast_radius(sid)
         if "error" in br:
             results.append(br)
@@ -419,42 +689,61 @@ def batch_blast_radius(symbol_ids: list[str]) -> dict[str, object]:
                     continue
                 target_set = {"upstream": all_upstream, "downstream": all_downstream, "uses": all_uses, "used_by": all_used_by}[direction_key]
                 target_set.add(edge_sid)
-        results.append({
-            "symbol_id": br["symbol_id"],
-            "risk_score": br["risk_score"],
-            "risk_factors": br.get("risk_factors", {}),
-            "total_connections": br["total_connections"],
-            "usage_mode_summary": br.get("usage_mode_summary", {}),
-            "upstream": br["upstream"],
-            "downstream": br["downstream"],
-            "used_by": br["used_by"],
-            "uses": br["uses"],
-        })
+        if summary_only:
+            results.append({
+                "symbol_id": br["symbol_id"],
+                "risk_score": br["risk_score"],
+                "risk_factors": br.get("risk_factors", {}),
+                "total_connections": br["total_connections"],
+                "connection_breakdown": br.get("connection_breakdown", {}),
+                "usage_mode_summary": br.get("usage_mode_summary", {}),
+            })
+        else:
+            results.append({
+                "symbol_id": br["symbol_id"],
+                "risk_score": br["risk_score"],
+                "risk_factors": br.get("risk_factors", {}),
+                "total_connections": br["total_connections"],
+                "usage_mode_summary": br.get("usage_mode_summary", {}),
+                "upstream": br["upstream"],
+                "downstream": br["downstream"],
+                "used_by": br["used_by"],
+                "uses": br["uses"],
+            })
 
-    changed_set = set(symbol_ids)
+    changed_set = set(symbol_ids) | set(resolved_names.values())
     combined_downstream = all_downstream - changed_set
     combined_upstream = all_upstream - changed_set
     combined_uses = all_uses - changed_set
     combined_used_by = all_used_by - changed_set
 
-    return {
-        "queried_symbols": len(symbol_ids),
-        "results": results,
-        "combined_impact": {
-            "total_unique_callers": len(combined_upstream),
-            "total_unique_callees": len(combined_downstream),
-            "total_unique_type_users": len(combined_used_by),
-            "total_unique_types_used": len(combined_uses),
-            "combined_risk_score": _compute_risk_score(
-                list(combined_upstream), list(combined_downstream),
-                list(combined_used_by), list(combined_uses),
-            ),
+    combined: dict[str, object] = {
+        "total_unique_callers": len(combined_upstream),
+        "total_unique_callees": len(combined_downstream),
+        "total_unique_type_users": len(combined_used_by),
+        "total_unique_types_used": len(combined_uses),
+        "combined_risk_score": _compute_risk_score(
+            list(combined_upstream), list(combined_downstream),
+            list(combined_used_by), list(combined_uses),
+        ),
+    }
+    if not summary_only:
+        combined.update({
             "all_callers": sorted(combined_upstream)[:_MAX_PER_DIRECTION],
             "all_callees": sorted(combined_downstream)[:_MAX_PER_DIRECTION],
             "all_type_users": sorted(combined_used_by)[:_MAX_PER_DIRECTION],
             "all_types_used": sorted(combined_uses)[:_MAX_PER_DIRECTION],
-        },
+        })
+
+    out: dict[str, object] = {
+        "queried_symbols": len(symbol_ids),
+        "summary_only": summary_only,
+        "results": results,
+        "combined_impact": combined,
     }
+    if resolved_names:
+        out["resolved_names"] = resolved_names
+    return out
 
 
 _RECENT_SEARCHES: dict[str, dict] = {}
@@ -603,8 +892,9 @@ def submit_ai_feedback(
     results_expected: str = "",
     quality_rating: int = 0,
     improvement_suggestions: str = "",
+    tool_wins: list[dict] | None = None,
 ) -> dict[str, object]:
-    """Submit a full post-analysis feedback summary after completing a PR review. This is the PRIMARY feedback mechanism — call this after your entire review is done with all tools you called, which results were helpful, what you expected but didn't find, a quality rating (1-5), and improvement suggestions. The feedback goes through a quality gate (only specific, actionable feedback is accepted) and at 10 accepted feedbacks, a new build is auto-triggered. This tool replaces the HTTP POST to /api/feedback/ai — use this MCP tool instead."""
+    """Submit a full post-analysis feedback summary after completing a PR review. This is the PRIMARY feedback mechanism — call this after your entire review is done with all tools you called, which results were helpful, what you expected but didn't find, a quality rating (1-5), and improvement suggestions. Also pass tool_wins: [{tool, finding, symbol_id?}] — attribute each review finding to the tool that directly produced it, so per-tool value can be measured across reviews (an overall rating can't tell which tool earned it). The feedback goes through a quality gate (only specific, actionable feedback is accepted) and at 10 accepted feedbacks, a new build is auto-triggered. This tool replaces the HTTP POST to /api/feedback/ai — use this MCP tool instead."""
     try:
         from app.rag.reinforcement import ai_feedback_store
         return ai_feedback_store.submit_feedback(
@@ -615,6 +905,7 @@ def submit_ai_feedback(
             results_expected=results_expected or None,
             quality_rating=quality_rating if 1 <= quality_rating <= 5 else None,
             improvement_suggestions=improvement_suggestions or None,
+            tool_wins=tool_wins or [],
         )
     except Exception as exc:
         return {"error": str(exc)}
@@ -1619,12 +1910,13 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
 # Idea 6: MCP tool chaining — analyze_pr_diff
 # ============================================================================
 
-def analyze_pr_diff(diff_text: str, max_symbols: int = 10) -> dict[str, object]:
-    """Analyze a git diff and return changed symbols with blast radius in one call. This is a chained tool that: (1) parses the diff for function/struct/trait names, (2) resolves them against the graph, (3) gets blast radius for each resolved symbol, (4) returns a combined impact report. Use this instead of calling search_symbols + get_blast_radius separately. Provide the full git diff text."""
+def analyze_pr_diff(diff_text: str, max_symbols: int = 10, pr_mode: bool = True) -> dict[str, object]:
+    """Analyze a git diff and return changed symbols with blast radius in one call. This is a chained tool that: (1) parses the diff for function/struct/trait names, (2) resolves them against the graph, (3) gets blast radius for each resolved symbol, (4) returns a combined impact report. PR mode (default) classifies every symbol as removed/added/renamed/modified: removed and renamed symbols are resolved against the master index (renames report old_symbol_id + renamed_to so you query callers of the OLD name), added symbols are listed as 'not in index'. Use this instead of calling search_symbols + get_blast_radius separately. Provide the full git diff text."""
     from app.rag.diff_parser import resolve_diff_symbols
 
     resolved = resolve_diff_symbols(diff_text, graph_index)
 
+    renamed = resolved.get("renamed_symbols", [])
     blast_radius_results: list[dict] = []
     for sym in resolved["changed_symbols"][:max_symbols]:
         sid = sym["symbol_id"]
@@ -1645,15 +1937,65 @@ def analyze_pr_diff(diff_text: str, max_symbols: int = 10) -> dict[str, object]:
                 "file_path": br.get("file_path", ""),
             })
 
+    # Renamed symbols: the blast radius lives on the OLD id — that's what
+    # callers still reference until this PR merges.
+    renamed_blast: list[dict] = []
+    for sym in renamed[:max_symbols]:
+        sid = sym.get("symbol_id", "")
+        if not sid:
+            renamed_blast.append({**sym, "risk_score": "unknown"})
+            continue
+        br = get_blast_radius(sid)
+        renamed_blast.append({
+            **sym,
+            "risk_score": br.get("risk_score", "unknown"),
+            "total_connections": br.get("total_connections", 0),
+            "upstream_count": br.get("total_upstream", 0),
+        })
+
+    pr_breakdown = None
+    if pr_mode:
+        pr_breakdown = {
+            "removed_from_master": [
+                {"symbol_id": s.get("symbol_id"), "short_name": s.get("short_name"),
+                 "upstream_count": _upstream_count_for(s.get("symbol_id", ""))}
+                for s in resolved.get("deleted_symbols", [])
+            ],
+            "renamed": [
+                {"old_symbol_id": s.get("symbol_id"), "renamed_to": s.get("renamed_to"),
+                 "found_in_master": s.get("found_in_graph", False),
+                 "upstream_count": _upstream_count_for(s.get("symbol_id", ""))}
+                for s in renamed
+            ],
+            "added_not_in_index": [
+                {"short_name": s.get("short_name"), "note": "new symbol — no callers in master"}
+                for s in resolved.get("new_symbols", [])
+            ],
+            "modified_in_master": [
+                {"symbol_id": r.get("symbol_id"), "short_name": r.get("short_name"),
+                 "change_type": r.get("change_type")}
+                for r in blast_radius_results
+            ],
+        }
+
     return _attach_stale_warning({
         "changed_files": resolved["changed_files"],
         "resolved_symbols": blast_radius_results,
+        "renamed_symbols": renamed_blast,
         "new_symbols_not_in_index": resolved["new_symbols"],
         "deleted_symbols": resolved["deleted_symbols"],
+        "pr_breakdown": pr_breakdown,
         "summary": resolved["summary"],
         "high_risk_symbols": [r for r in blast_radius_results if r.get("risk_score") in ("high", "critical")],
         "change_type_breakdown": resolved.get("summary", {}).get("change_type_breakdown", {}),
     })
+
+
+def _upstream_count_for(symbol_id: str) -> int:
+    if not symbol_id:
+        return 0
+    br = get_blast_radius(symbol_id, summary_only=True)
+    return int(br.get("total_upstream", 0)) if "error" not in br else 0
 
 
 # ============================================================================
@@ -1807,13 +2149,50 @@ def get_index_meta() -> dict[str, object]:
         except Exception:
             pass
 
+    # Symbol-set fingerprint: the commit pointer alone claimed freshness while
+    # deleted symbols lingered from another revision. Three-way agreement —
+    # stored hash (end of ingest), snapshot rows, live graph — makes "up to
+    # date" mean the symbol set really matches.
+    from app.schemas.codebase import compute_symbol_set_hash
+
+    snapshot_hash = compute_symbol_set_hash(snapshot.chunks) if snapshot else ""
+    stored_hash = (snapshot.symbol_set_hash if snapshot else "") or ""
+    graph_hash = ""
+    graph_symbol_count = None
+    try:
+        graph_ids = graph_index.get_symbol_ids()
+        graph_symbol_count = len(graph_ids)
+        graph_hash = compute_symbol_set_hash(graph_ids)
+    except Exception:
+        logger.debug("graph symbol-set hash unavailable", exc_info=True)
+
+    hashes_agree = (
+        bool(snapshot_hash)
+        and snapshot_hash == graph_hash
+        and (not stored_hash or stored_hash == snapshot_hash)
+    )
+    commit_fresh = bool(last_commit) and head != "unknown" and last_commit == head
+    symbol_set_drift = None
+    if snapshot_hash and graph_hash and snapshot_hash != graph_hash:
+        symbol_set_drift = {
+            "snapshot_symbols": len({c.symbol_id for c in snapshot.chunks}) if snapshot else 0,
+            "graph_symbols": graph_symbol_count,
+            "hint": "graph and snapshot disagree — stale symbols on one side; run POST /api/index/rebuild to resync",
+        }
+
     return {
         "graph_gen": gen,
         "classifier_version": _CLASSIFIER_VERSION,
         "last_indexed_commit": last_commit[:12],
         "current_head": head[:12],
         "commits_behind": commits_behind,
-        "up_to_date": last_commit == head if last_commit and head != "unknown" else False,
+        "up_to_date": commit_fresh and hashes_agree,
+        "up_to_date_detail": {
+            "commit_matches_head": commit_fresh,
+            "symbol_sets_match": hashes_agree,
+            "symbol_set_hash": (stored_hash or snapshot_hash)[:16],
+            "drift": symbol_set_drift,
+        },
         "snapshot_created_at": snapshot.created_at.isoformat() if snapshot and snapshot.created_at else None,
         "files_indexed": snapshot.files_indexed if snapshot else 0,
         "total_symbols": len(snapshot.chunks) if snapshot else 0,
@@ -2040,7 +2419,7 @@ def diff_modules(module_a: str, module_b: str) -> dict[str, object]:
 
 
 def find_warnings_in_blast_radius(symbol_id: str, radius: int = 2, kinds: list[str] | None = None) -> dict[str, object]:
-    """Find code warnings (TODO/FIXME/HACK comments, swallowed errors, stub functions, commented-out code, fail-open defaults) in a symbol's blast radius. This is the metal detector: bugs live in comments, dead code, and discarded Results — none visible in the dependency graph. Use during PR review or incident triage on hotspots. Provide the full symbol_id. Optional: radius (default 2, max 3 — how many dependency hops to include), kinds=['todo','fixme','hack','xxx','commented_code','error_swallow','fail_open','stub_fn','unsafe_block','ffi_boundary','panic_path','unwrap_density'] to filter."""
+    """Find code warnings (TODO/FIXME/HACK comments, swallowed errors, stub functions, commented-out code, fail-open defaults) in a symbol's blast radius. This is the metal detector: bugs live in comments, dead code, and discarded Results — none visible in the dependency graph. Use during PR review or incident triage on hotspots. Detector kinds include 'dropped_future' (let _ = …await — result discarded), 'error_mask' (map_err(|_e| …) — the error is erased), and 'constant_return' (decision fns that always return the same value, like should_deduct_for_unsettled_transaction -> true). Provide the full symbol_id. Optional: radius (default 2, max 3 — how many dependency hops to include), kinds=['todo','fixme','hack','xxx','commented_code','error_swallow','fail_open','stub_fn','unsafe_block','ffi_boundary','panic_path','unwrap_density','dropped_future','error_mask','constant_return'] to filter."""
     if not graph_index.has_symbol(symbol_id):
         return {"error": f"Symbol '{symbol_id}' not found in the graph index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
     radius = max(1, min(int(radius), 3))

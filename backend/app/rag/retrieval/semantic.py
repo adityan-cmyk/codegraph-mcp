@@ -18,6 +18,12 @@ class InMemorySemanticIndex:
             self._documents = [item for item in self._documents if item[0].symbol_id != chunk.symbol_id]
             self._documents.append((chunk, embed_text(chunk.content)))
 
+    def delete_chunks(self, symbol_ids: list[str]) -> None:
+        if not symbol_ids:
+            return
+        gone = set(symbol_ids)
+        self._documents = [item for item in self._documents if item[0].symbol_id not in gone]
+
     def get_stats(self) -> dict[str, int]:
         return {
             "semantic_documents": len(self._documents),

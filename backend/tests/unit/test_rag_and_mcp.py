@@ -1004,7 +1004,9 @@ class ContractDriftTestCase(unittest.TestCase):
         deliberate (bump TOOL_SCHEMA_VERSION), never accidental."""
         from app.mcp import readonly_server
         expected = {
-            "search_symbols", "search_symbols_enhanced", "get_blast_radius",
+            "search_symbols", "search_symbols_enhanced", "search_symbols_batch",
+            "find_field_access", "find_string_producers",
+            "get_blast_radius",
             "get_blast_radius_detailed", "batch_blast_radius", "get_symbol_content",
             "get_symbols_in_file", "semantic_search", "analyze_pr_diff",
             "find_dependency_path", "traverse_graph", "get_graph_stats",
@@ -1369,7 +1371,7 @@ class ToolsDocContractTestCase(unittest.TestCase):
         from app.mcp.readonly_server import _TOOLS
         from app.mcp.tools_doc import MUTATING_TOOLS
 
-        self.assertEqual(len(_TOOLS), 26)
+        self.assertEqual(len(_TOOLS), 29)
         self.assertTrue(MUTATING_TOOLS.issubset(_TOOLS))
         self.assertEqual(len(MUTATING_TOOLS), 2)
 
@@ -1533,3 +1535,318 @@ class PowerEventTestCase(unittest.TestCase):
             pe.check_and_notify_power_event()
             mark.assert_not_called()
             mail.assert_not_called()
+
+
+class StaleSymbolRemovalTestCase(unittest.TestCase):
+    """Incremental updates left deleted symbols in the graph, the snapshot
+    DB, and Weaviate forever — lookup_txn_for_advice survived every nightly
+    sync while get_index_meta claimed the index was current."""
+
+    def setUp(self) -> None:
+        semantic_index.reset()
+        graph_index.reset()
+        index_metadata_store.reset()
+
+    def test_incremental_drops_symbols_deleted_from_file(self) -> None:
+        from app.rag.indexing_service import incremental_update_symbols
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            lib = root / "src" / "lib.rs"
+            lib.write_text("pub fn kept_fn() {}\npub fn doomed_fn() {}\n")
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+                self.assertTrue(graph_index.has_symbol(
+                    next(iter(graph_index.search_symbols("doomed_fn")), {}).get("symbol_id", "")))
+
+                lib.write_text("pub fn kept_fn() {}\n")
+                incremental_update_symbols(["src/lib.rs"], temp_dir)
+
+            ids = graph_index.get_symbol_ids()
+            self.assertTrue(any("kept_fn" in s for s in ids))
+            self.assertFalse(any("doom" in s.lower() for s in ids),
+                             f"stale symbol survived: {[s for s in ids if 'doom' in s.lower()]}")
+
+            snapshot = index_metadata_store.load_snapshot()
+            snap_ids = {c.symbol_id for c in snapshot.chunks}
+            self.assertFalse(any("doom" in s.lower() for s in snap_ids))
+            doomed = next((s for s in snap_ids if "doom" in s.lower()), None)
+            if doomed:
+                self.fail(f"snapshot kept removed symbol {doomed}")
+
+    def test_incremental_drops_deleted_files(self) -> None:
+        from app.rag.indexing_service import incremental_update_symbols
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "gone.rs").write_text("pub fn vanishing_fn() {}\n")
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+                (root / "src" / "gone.rs").unlink()
+                incremental_update_symbols(["src/gone.rs"], temp_dir)
+
+            self.assertFalse(any("vanishing" in s for s in graph_index.get_symbol_ids()))
+
+    def test_removal_is_file_scoped_for_shared_ids(self) -> None:
+        from app.core.repositories.in_memory_index_metadata_repository import (
+            InMemoryIndexMetadataRepository,
+        )
+        from app.schemas.codebase import CodeChunk, IndexSnapshot
+
+        repo = InMemoryIndexMetadataRepository()
+        shared = CodeChunk(symbol_id="close_tag", file_path="a.rs", kind="fn",
+                           content="fn close_tag() {}", start_line=1, end_line=1)
+        other = CodeChunk(symbol_id="close_tag", file_path="b.rs", kind="fn",
+                          content="fn close_tag() {}", start_line=1, end_line=1)
+        repo.replace_snapshot(IndexSnapshot(
+            repository_path="/x", files_indexed=2, chunks=[shared, other]))
+        repo.update_incremental(
+            modified_chunks=[], removed_symbols=[("close_tag", "a.rs")],
+            modified_edges=[], removed_edge_keys=[],
+        )
+        remaining = {c.file_path for c in repo.load_snapshot().chunks}
+        self.assertEqual(remaining, {"b.rs"})
+
+    def test_symbol_set_hash_agrees_across_stores(self) -> None:
+        from app.schemas.codebase import compute_symbol_set_hash
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text("pub fn alpha_fn() {}\npub fn beta_fn() {}\n")
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+
+            snapshot = index_metadata_store.load_snapshot()
+            self.assertEqual(snapshot.symbol_set_hash, compute_symbol_set_hash(snapshot.chunks))
+            self.assertEqual(snapshot.symbol_set_hash,
+                             compute_symbol_set_hash(graph_index.get_symbol_ids()))
+
+
+class DiffRenameDetectionTestCase(unittest.TestCase):
+    def test_fn_rename_pairs_old_and_new(self) -> None:
+        from app.rag.diff_parser import extract_symbols_from_diff
+
+        diff = (
+            "--- a/crates/x/src/lib.rs\n+++ b/crates/x/src/lib.rs\n"
+            "@@ -1,3 +1,3 @@\n"
+            "-pub fn lookup_txn_for_advice(id: i64) -> Option<Txn> {\n"
+            "-    db.find(id)\n"
+            "-}\n"
+            "+pub fn find_advised_txn(id: i64) -> Option<Txn> {\n"
+            "+    db.find(id)\n"
+            "+}\n"
+        )
+        result = extract_symbols_from_diff(diff)
+        self.assertIn("lookup_txn_for_advice", result["renamed_symbols"])
+        self.assertEqual(result["renamed_symbols"]["lookup_txn_for_advice"], "find_advised_txn")
+        self.assertNotIn("lookup_txn_for_advice", result["deleted_symbols"])
+        self.assertNotIn("find_advised_txn", result["added_symbols"])
+
+    def test_file_rename_recorded(self) -> None:
+        from app.rag.diff_parser import extract_symbols_from_diff
+
+        diff = (
+            "diff --git a/old/mod.rs b/new/mod.rs\n"
+            "similarity index 90%\n"
+            "rename from old/mod.rs\n"
+            "rename to new/mod.rs\n"
+            "--- a/old/mod.rs\n+++ b/new/mod.rs\n"
+            "@@ -1 +1 @@\n- pub fn f() {}\n+ pub fn f() { let x = 1; }\n"
+        )
+        result = extract_symbols_from_diff(diff)
+        self.assertEqual(result["renamed_files"].get("old/mod.rs"), "new/mod.rs")
+
+    def test_pr_breakdown_buckets(self) -> None:
+        from app.mcp.tools.graph_read_tools import analyze_pr_diff
+
+        diff = (
+            "--- a/src/lib.rs\n+++ b/src/lib.rs\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-fn removed_helper() { a() }\n"
+            "+fn added_helper() { a() }\n"
+        )
+        out = analyze_pr_diff(diff)
+        self.assertIn("pr_breakdown", out)
+        breakdown = out["pr_breakdown"]
+        self.assertIn("removed_from_master", breakdown)
+        self.assertIn("added_not_in_index", breakdown)
+
+
+class NewDetectorKindsTestCase(unittest.TestCase):
+    def test_dropped_future_error_mask_constant_return(self) -> None:
+        from app.rag.ingestion.observations import extract_observations
+
+        source = (
+            "async fn fire_forget(job: Job) {\n"
+            "    let _ = job.run().await;\n"
+            "}\n"
+            "fn hide_error(r: Result<u8, E>) -> Result<u8, ()> {\n"
+            "    r.map_err(|_e| ())\n"
+            "}\n"
+            "fn should_deduct_for_unsettled_transaction() -> bool {\n"
+            "    true\n"
+            "}\n"
+        )
+        chunks = extract_rust_chunks("src/lib.rs", source)
+        obs = extract_observations(source, "src/lib.rs", chunks)
+        kinds = {o.kind for o in obs}
+        self.assertIn("dropped_future", kinds)
+        self.assertIn("error_mask", kinds)
+        self.assertIn("constant_return", kinds)
+        stub = next(o for o in obs if o.kind == "constant_return")
+        self.assertIn("hard-coded", stub.detail)
+
+
+class SqlSchemaExtractionTestCase(unittest.TestCase):
+    def test_tables_columns_and_migration_blocks(self) -> None:
+        from app.rag.ingestion.sql_schema import extract_sql_chunks
+
+        sql = (
+            "CREATE TABLE disputes (\n"
+            "    id BIGSERIAL PRIMARY KEY,\n"
+            "    transaction_ref_id TEXT NOT NULL\n"
+            ");\n"
+            "-- COMMIT: 2025 change ref_id to underscore format\n"
+            "ALTER TABLE disputes RENAME COLUMN transaction_ref_id TO transaction_ref_id_legacy;\n"
+            "-- COMMIT: 2026 restore dash format\n"
+            "ALTER TABLE disputes DROP COLUMN transaction_ref_id_legacy;\n"
+        )
+        chunks, edges = extract_sql_chunks("db/schemas/disputes.sql", sql)
+        kinds = {c.kind for c in chunks}
+        self.assertIn("sql_table", kinds)
+        self.assertIn("sql_column", kinds)
+        self.assertIn("migration_block", kinds)
+        migrations = [c for c in chunks if c.kind == "migration_block"]
+        self.assertEqual(len(migrations), 2)
+        self.assertIn("underscore", migrations[0].symbol_id)
+        table_ids = {e.target_symbol_id for e in edges}
+        self.assertIn("sql::table::disputes", table_ids)
+
+
+class FieldAccessAndStringProducersTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        semantic_index.reset()
+        graph_index.reset()
+        index_metadata_store.reset()
+
+    def test_field_readers_and_writers(self) -> None:
+        from app.mcp.tools.graph_read_tools import find_field_access
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text(
+                "pub struct ChargebackTxn {\n"
+                "    pub transaction_ref_id: String,\n"
+                "}\n"
+                "pub fn read_it(t: &ChargebackTxn) -> &str {\n"
+                "    &t.transaction_ref_id\n"
+                "}\n"
+                "pub fn write_it(t: &mut ChargebackTxn) {\n"
+                "    t.transaction_ref_id = String::new();\n"
+                "}\n"
+            )
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+
+            out = find_field_access("ChargebackTxn", "transaction_ref_id")
+            self.assertGreaterEqual(out["readers_count"], 1)
+            self.assertGreaterEqual(out["writers_count"], 1)
+            self.assertTrue(any("read_it" in r["symbol_id"] for r in out["readers"]))
+
+    def test_string_producers_flag_disagreement(self) -> None:
+        from app.mcp.tools.graph_read_tools import find_string_producers
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text(
+                'pub fn rust_side() -> String {\n'
+                '    format!("UT-TXN-{}", 1)\n'
+                '}\n'
+                "pub fn sql_side() -> &'static str {\n"
+                "    \"SELECT * FROM t WHERE ref LIKE 'TXN-%'\"\n"
+                "}\n"
+            )
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+
+            out = find_string_producers("TXN-")
+            self.assertGreaterEqual(out["producers_count"], 2)
+            self.assertIn("disagree", out["note"])
+
+
+class BatchAndTransitiveToolsTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        semantic_index.reset()
+        graph_index.reset()
+        index_metadata_store.reset()
+
+    def test_search_symbols_batch_resolves_many(self) -> None:
+        from app.mcp.tools.graph_read_tools import search_symbols_batch
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text(
+                "pub fn alpha_fn() {}\n"
+                "pub fn beta_fn() {}\n"
+            )
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+
+            out = search_symbols_batch(["alpha_fn", "beta_fn", "missing_fn"])
+            self.assertEqual(out["queries_resolved"], 3)
+            self.assertTrue(out["results"]["alpha_fn"])
+            self.assertIn("missing_fn", out["unresolved"])
+            self.assertEqual(out["calls_saved"], 2)
+
+    def test_batch_blast_radius_summary_only(self) -> None:
+        from app.mcp.tools.graph_read_tools import batch_blast_radius
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text(
+                "pub fn inner_fn() {}\n"
+                "pub fn outer_fn() { inner_fn(); }\n"
+            )
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+
+            out = batch_blast_radius(["outer_fn"], summary_only=True, resolve_names=True)
+            self.assertTrue(out["summary_only"])
+            self.assertNotIn("upstream", out["results"][0])
+            self.assertIn("total_connections", out["results"][0])
+
+    def test_get_tests_for_symbol_transitive_depth(self) -> None:
+        from app.mcp.tools.graph_read_tools import get_tests_for_symbol, search_symbols
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            # The test exercises fetch_transaction_id ONLY through
+            # process_transaction — depth=1 must report zero, depth=2 finds it
+            # (the vehicle_registration_tests case from the reviewer).
+            (root / "src" / "lib.rs").write_text(
+                "pub fn fetch_transaction_id() -> i64 { 1 }\n"
+                "pub fn process_transaction() -> i64 { fetch_transaction_id() }\n"
+                "\n#[cfg(test)]\nmod vehicle_registration_tests {\n"
+                "    #[test]\n    fn exercises_it() {\n"
+                "        let v = process_transaction();\n"
+                "        assert_eq!(v, 1);\n"
+                "    }\n}\n"
+            )
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+
+                hit = search_symbols("fetch_transaction_id")["symbols"][0]["symbol_id"]
+                shallow = get_tests_for_symbol(hit, depth=1)
+                deep = get_tests_for_symbol(hit, depth=2)
+            self.assertEqual(deep["test_count"], shallow["test_count"] + len(deep["tests_transitive"]))
+            self.assertGreaterEqual(deep["test_count"], 1, deep)
+            self.assertTrue(deep["tests_transitive"], deep)
+            self.assertTrue(any("assert" in a.get("code", "") for a in deep["assertions"]), deep["assertions"])

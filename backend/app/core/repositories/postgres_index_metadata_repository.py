@@ -6,7 +6,12 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.core.repositories.index_metadata_repository import IndexMetadataRepository
-from app.schemas.codebase import CodeChunk, GraphEdge, IndexSnapshot
+from app.schemas.codebase import (
+    CodeChunk,
+    GraphEdge,
+    IndexSnapshot,
+    compute_symbol_set_hash,
+)
 
 
 class PostgresIndexMetadataRepository(IndexMetadataRepository):
@@ -65,6 +70,14 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                 cursor.execute(
                     "CREATE INDEX IF NOT EXISTS index_graph_edges_snapshot_idx ON index_graph_edges(snapshot_id)"
                 )
+                # Columns the INSERT/SELECT sites rely on. CREATE TABLE IF NOT
+                # EXISTS never adds columns to an existing table, so a DB
+                # created by an older schema silently missed these and every
+                # INSERT failed on fresh deploys.
+                cursor.execute("ALTER TABLE index_snapshots ADD COLUMN IF NOT EXISTS last_indexed_commit TEXT NOT NULL DEFAULT ''")
+                cursor.execute("ALTER TABLE index_snapshots ADD COLUMN IF NOT EXISTS symbol_set_hash TEXT NOT NULL DEFAULT ''")
+                cursor.execute("ALTER TABLE index_code_chunks ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE")
+                cursor.execute("ALTER TABLE index_code_chunks ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'private'")
             connection.commit()
 
     def reset(self) -> None:
@@ -102,10 +115,17 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                 cursor.execute("UPDATE index_snapshots SET is_active = FALSE WHERE is_active = TRUE")
                 cursor.execute(
                     """
-                    INSERT INTO index_snapshots (snapshot_id, repository_path, files_indexed, created_at, is_active, last_indexed_commit)
-                    VALUES (%s, %s, %s, %s, TRUE, %s)
+                    INSERT INTO index_snapshots (snapshot_id, repository_path, files_indexed, created_at, is_active, last_indexed_commit, symbol_set_hash)
+                    VALUES (%s, %s, %s, %s, TRUE, %s, %s)
                     """,
-                    (snapshot_id, snapshot.repository_path, snapshot.files_indexed, created_at, snapshot.last_indexed_commit),
+                    (
+                        snapshot_id,
+                        snapshot.repository_path,
+                        snapshot.files_indexed,
+                        created_at,
+                        snapshot.last_indexed_commit,
+                        snapshot.symbol_set_hash or compute_symbol_set_hash(snapshot.chunks),
+                    ),
                 )
                 cursor.executemany(
                     """
@@ -147,7 +167,7 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT snapshot_id, repository_path, files_indexed, created_at, last_indexed_commit
+                    SELECT snapshot_id, repository_path, files_indexed, created_at, last_indexed_commit, symbol_set_hash
                     FROM index_snapshots
                     WHERE is_active = TRUE
                     ORDER BY created_at DESC
@@ -180,24 +200,32 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                 )
                 edge_rows = cursor.fetchall()
 
-        return IndexSnapshot(
-            repository_path=snapshot_row["repository_path"],
-            files_indexed=int(snapshot_row["files_indexed"]),
-            created_at=snapshot_row["created_at"],
-            last_indexed_commit=snapshot_row["last_indexed_commit"] or "",
-            chunks=[CodeChunk.model_validate(row) for row in chunk_rows],
-            graph_edges=[GraphEdge.model_validate(row) for row in edge_rows],
-        )
+            return IndexSnapshot(
+                repository_path=snapshot_row["repository_path"],
+                files_indexed=int(snapshot_row["files_indexed"]),
+                created_at=snapshot_row["created_at"],
+                last_indexed_commit=snapshot_row["last_indexed_commit"] or "",
+                symbol_set_hash=snapshot_row.get("symbol_set_hash") or "",
+                chunks=[CodeChunk.model_validate(row) for row in chunk_rows],
+                graph_edges=[GraphEdge.model_validate(row) for row in edge_rows],
+            )
 
     def update_incremental(
         self,
         modified_chunks: list[CodeChunk],
-        removed_symbol_ids: list[str],
+        removed_symbols: list[tuple[str, str]],
         modified_edges: list[GraphEdge],
         removed_edge_keys: list[tuple[str, str]],
         last_indexed_commit: str = "",
+        symbol_set_hash: str = "",
     ) -> None:
-        """Update the active snapshot in-place without full re-insert."""
+        """Update the active snapshot in-place without full re-insert.
+
+        removed_symbols are (symbol_id, file_path) pairs DELETED from source —
+        scoped by file so a pathless id shared by two files loses only the row
+        for the file it was removed from. Modified chunks replace themselves
+        via the (symbol_id, file_path) delete before insert.
+        """
         with self._connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
@@ -208,10 +236,10 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                     return
                 snapshot_id = row["snapshot_id"]
 
-                if removed_symbol_ids:
+                if removed_symbols:
                     cursor.executemany(
-                        "DELETE FROM index_code_chunks WHERE snapshot_id = %s AND symbol_id = %s",
-                        [(snapshot_id, sid) for sid in removed_symbol_ids],
+                        "DELETE FROM index_code_chunks WHERE snapshot_id = %s AND symbol_id = %s AND file_path = %s",
+                        [(snapshot_id, sid, fp) for sid, fp in removed_symbols],
                     )
 
                 if removed_edge_keys:
@@ -285,9 +313,14 @@ class PostgresIndexMetadataRepository(IndexMetadataRepository):
                         ],
                     )
 
-                if last_indexed_commit:
+                if last_indexed_commit or symbol_set_hash:
                     cursor.execute(
-                        "UPDATE index_snapshots SET last_indexed_commit = %s WHERE snapshot_id = %s",
-                        (last_indexed_commit, snapshot_id),
+                        """
+                        UPDATE index_snapshots
+                        SET last_indexed_commit = COALESCE(NULLIF(%s, ''), last_indexed_commit),
+                            symbol_set_hash = COALESCE(NULLIF(%s, ''), symbol_set_hash)
+                        WHERE snapshot_id = %s
+                        """,
+                        (last_indexed_commit, symbol_set_hash, snapshot_id),
                     )
             connection.commit()

@@ -35,6 +35,17 @@ _CODE_IN_COMMENT = re.compile(
 _ATTR_LINE = re.compile(r"^\s*#!?\[")
 _BRACE_ONLY = re.compile(r"^\s*[{}()]*\s*$")
 _STUB_MACROS = re.compile(r"^\s*(todo!|unimplemented!)\s*\(\s*\)\s*;?\s*$")
+# let _ = …await — the Future runs and its result (or failure) is dropped on
+# the floor: fire-and-forget work with no join, no error path.
+_DROPPED_FUTURE = re.compile(r"let\s+_\s*=\s*.*\.await")
+# map_err(|_e| …) whose body can't carry the error — the diagnostic is
+# discarded before anyone sees it.
+_ERROR_MASK = re.compile(
+    r"map_err\s*\(\s*\|[^|]*\|\s*(?:\(\)|Ok\(\s*\(\s*\)\s*\)|Default::default\(\)|\{\s*\}|String::new\(\)|\"\"\.to_string\(\))\s*\)"
+)
+_CONSTANT_RETURN = re.compile(
+    r"^(?:true|false|Ok\(\s*(?:true|false|\(\))\s*\)|None|Some\(\s*(?:true|false)\s*\)|0|1|-1|Default::default\(\))\s*;?$"
+)
 
 
 @dataclass
@@ -60,6 +71,10 @@ def extract_observations(source: str, file_path: str, chunks: list[CodeChunk]) -
             continue
         if _ERROR_SWALLOW.match(line):
             out.append(Observation(file_path, i, "error_swallow", line.strip()[:200]))
+        if _DROPPED_FUTURE.search(line):
+            out.append(Observation(file_path, i, "dropped_future", line.strip()[:200]))
+        if _ERROR_MASK.search(line):
+            out.append(Observation(file_path, i, "error_mask", line.strip()[:200]))
         if _FAIL_OPEN.search(line) and _auth_context(lines, i):
             out.append(Observation(file_path, i, "fail_open", line.strip()[:200]))
         if _UNSAFE_BLOCK.match(line):
@@ -152,6 +167,15 @@ def _stub_functions(chunks: list[CodeChunk], file_path: str) -> list[Observation
             out.append(
                 Observation(file_path, chunk.start_line, "stub_fn",
                             f"body is only logging: {body_lines[0][:120]}")
+            )
+            continue
+        # Decision stubs: should_deduct_for_unsettled_transaction() style —
+        # the body always returns the same constant, so every caller takes
+        # the same branch no matter the input.
+        if len(body_lines) == 1 and _CONSTANT_RETURN.match(body_lines[0]):
+            out.append(
+                Observation(file_path, chunk.start_line, "constant_return",
+                            f"body always returns {body_lines[0][:60]} — decision is hard-coded")
             )
     return out
 

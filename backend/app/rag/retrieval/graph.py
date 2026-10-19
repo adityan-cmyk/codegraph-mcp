@@ -27,6 +27,37 @@ class InMemoryGraphIndex:
     def reset_documents(self) -> None:
         self.reset()
 
+    def remove_symbols(self, symbol_ids: list[str]) -> None:
+        """Delete symbols and every edge touching them.
+
+        Incremental updates used to upsert only — symbols deleted from source
+        lingered in the graph forever (lookup_txn_for_advice et al. survived
+        every sync while get_index_meta claimed the index was current).
+        """
+        if not symbol_ids:
+            return
+        gone = set(symbol_ids)
+        for sid in gone:
+            self._downstream.pop(sid, None)
+            self._uses.pop(sid, None)
+            self._upstream.pop(sid, None)
+            self._used_by.pop(sid, None)
+            self._metadata.pop(sid, None)
+            self._edge_source.pop(sid, None)
+        for targets in self._downstream.values():
+            targets -= gone
+        for targets in self._uses.values():
+            targets -= gone
+        for sources in self._upstream.values():
+            sources -= gone
+        for sources in self._used_by.values():
+            sources -= gone
+
+    def get_symbol_ids(self) -> set[str]:
+        # Metadata-bearing symbols only — bare edge-target nodes (MERGE
+        # scaffolding for unresolved callees) would poison the hash.
+        return set(self._metadata)
+
     def upsert_symbol(self, symbol_id: str, *, calls: list[str] | None = None, called_by: list[str] | None = None, uses: list[str] | None = None, used_by: list[str] | None = None, uses_with_modes: list[tuple[str, list[str]]] | None = None, metadata: dict | None = None, edge_source: str = "regex") -> None:
         self._downstream.setdefault(symbol_id, set()).update(calls or [])
         # Mirror CALLS into the callee's upstream, same as USES below —
@@ -250,6 +281,12 @@ class GraphIndexProxy:
 
     def upsert_symbol(self, *args, **kwargs) -> None:
         self._active().upsert_symbol(*args, **kwargs)
+
+    def remove_symbols(self, symbol_ids: list[str]) -> None:
+        self._active().remove_symbols(symbol_ids)
+
+    def get_symbol_ids(self) -> set[str]:
+        return self._active().get_symbol_ids()
 
     def get_blast_radius(self, symbol_id: str) -> GraphNeighborhood:
         return self._active().get_blast_radius(symbol_id)

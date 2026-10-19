@@ -449,6 +449,25 @@ When enabled, the nightly dump is rsynced to the target after the restore test p
 
 **Never** run pytest with the compose environment attached — test setup resets index singletons and will wipe live backends.
 
+### Measuring MCP value (benchmark protocol)
+
+A single review run with and without the MCP can't separate the tool's effect
+from run-to-run variance — LLM reviews vary that much on their own. To claim
+the tools help (or which tool wins), run the paired benchmark:
+
+1. Pick **3 real PRs** with known ground truth (a merged PR with a bug that
+   shipped, one with a subtle regression caught in review, one clean).
+2. For each PR run **3 reviews with MCP access** and **3 without** (same model,
+   same prompt skeleton, fresh context each time).
+3. Score each run against ground truth: findings recalled, false positives,
+   time-to-first-correct-finding, tokens used.
+4. Attribute per-tool wins via `submit_ai_feedback.tool_wins` —
+   `[{tool, finding, symbol_id}]` — so "which tool earned the finding" is
+   measured across reviews instead of inferred from one overall rating.
+
+Report the paired deltas per PR, not pooled averages — a tool that only helps
+on migration-heavy PRs should show that, not disappear into a mean.
+
 ### Other docs
 
 - `docs/tools.md` — the full MCP tool reference (generated table + usage guide)

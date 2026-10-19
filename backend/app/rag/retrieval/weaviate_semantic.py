@@ -348,6 +348,20 @@ class WeaviateSemanticIndex:
             logger.info("Embedded and inserted %d/%d chunks (collection: %s)", min(i + embed_batch_size, len(chunks)), len(chunks), write_name)
             self._progress_done = min(i + embed_batch_size, len(chunks))
 
+    def delete_chunks(self, symbol_ids: list[str]) -> None:
+        """Remove chunks for symbols deleted from source — incremental updates
+        used to upsert only, leaving deleted symbols searchable forever."""
+        if not symbol_ids:
+            return
+        write_name = self._shadow_collection or self._active_collection
+        collection = self._get_collection(write_name)
+        for sid in symbol_ids:
+            obj_uuid = str(uuid.uuid5(_UUID_NAMESPACE, sid))
+            try:
+                collection.data.delete_by_id(obj_uuid)
+            except Exception:
+                logger.debug("delete_chunks: %s not in %s", sid, write_name, exc_info=True)
+
     def get_rebuild_progress(self) -> dict | None:
         """Embedding progress for an in-flight rebuild, else None."""
         total = getattr(self, "_progress_total", 0)

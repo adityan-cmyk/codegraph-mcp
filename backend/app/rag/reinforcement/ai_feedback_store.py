@@ -69,6 +69,11 @@ def _ensure_schema():
                 cur.execute(
                     "ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS boost_applied_at TIMESTAMPTZ"
                 )
+                # Per-tool win attribution: which tool directly produced each
+                # finding — per-tool value, not just one overall rating.
+                cur.execute(
+                    "ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS tool_wins JSONB NOT NULL DEFAULT '[]'"
+                )
                 cur.execute(
                     "ALTER TABLE ai_feedback ADD COLUMN IF NOT EXISTS feedback_type TEXT"
                 )
@@ -124,8 +129,13 @@ def submit_feedback(
     results_expected: str | None,
     quality_rating: int | None,
     improvement_suggestions: str | None,
+    tool_wins: list[dict] | None = None,
 ) -> dict[str, object]:
-    """Store a new AI feedback entry with status='pending'."""
+    """Store a new AI feedback entry with status='pending'.
+
+    tool_wins: [{tool, finding, symbol_id?}] — attribute each finding to the
+    tool that produced it so per-tool value can be measured across reviews.
+    """
     fabricated = _validate_results_used(results_used)
     if fabricated:
         return {
@@ -148,8 +158,8 @@ def submit_feedback(
                 INSERT INTO ai_feedback (
                     feedback_id, client_id, pr_context, tools_called,
                     results_used, results_expected, quality_rating,
-                    improvement_suggestions, status, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)
+                    improvement_suggestions, status, created_at, tool_wins
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
                 RETURNING id
                 """,
                 (
@@ -162,6 +172,7 @@ def submit_feedback(
                     quality_rating,
                     improvement_suggestions,
                     datetime.now(UTC),
+                    json.dumps(tool_wins or []),
                 ),
             )
             row = cur.fetchone()

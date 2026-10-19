@@ -34,6 +34,9 @@ from app.mcp.tools.graph_read_tools import (
     traverse_graph,
     get_graph_stats,
     search_symbols,
+    search_symbols_batch,
+    find_field_access,
+    find_string_producers,
     batch_blast_radius,
     get_symbol_content,
     semantic_search,
@@ -68,7 +71,7 @@ _CAPABILITIES = {"tools": {"listChanged": True}, "prompts": {"listChanged": Fals
 
 # Bump on ANY breaking response-shape change (field removed/renamed, type
 # changed). Additive changes bump the minor. Agents can pin against this.
-TOOL_SCHEMA_VERSION = "1.1.0"
+TOOL_SCHEMA_VERSION = "1.2.0"
 
 _PR_REVIEW_PROMPT = """You are reviewing a pull request against a Rust codebase using the oncall-graph MCP tools. Work through this sequence and report findings with file:line references:
 
@@ -194,6 +197,68 @@ _TOOLS: dict[str, Any] = {
             "required": ["query"],
         },
     },
+    "search_symbols_batch": {
+        "handler": search_symbols_batch,
+        "description": inspect.getdoc(search_symbols_batch) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Partial names to resolve in one call (max 40)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results per query (default 5, max 20)",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 20,
+                },
+            },
+            "required": ["queries"],
+        },
+    },
+    "find_field_access": {
+        "handler": find_field_access,
+        "description": inspect.getdoc(find_field_access) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "struct_name": {
+                    "type": "string",
+                    "description": "Struct name, e.g. 'ChargebackTxn' ('' scans all structs)",
+                    "default": "",
+                },
+                "field": {
+                    "type": "string",
+                    "description": "Field name, e.g. 'transaction_ref_id'",
+                },
+            },
+            "required": ["field"],
+        },
+    },
+    "find_string_producers": {
+        "handler": find_string_producers,
+        "description": inspect.getdoc(find_string_producers) or "",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "String fragment, e.g. 'TXN-', 'UT-TXN'",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max producer sites (default 30, max 100)",
+                    "default": 30,
+                    "minimum": 1,
+                    "maximum": 100,
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
     "batch_blast_radius": {
         "handler": batch_blast_radius,
         "description": inspect.getdoc(batch_blast_radius) or "",
@@ -203,7 +268,17 @@ _TOOLS: dict[str, Any] = {
                 "symbol_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of full symbol_ids to query",
+                    "description": "List of full symbol_ids (or partial names with resolve_names=true)",
+                },
+                "summary_only": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Counts + risk only, no full neighbor lists",
+                },
+                "resolve_names": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Accept partial names and resolve each via search first",
                 },
             },
             "required": ["symbol_ids"],
@@ -359,6 +434,19 @@ _TOOLS: dict[str, Any] = {
                 "results_expected": {"type": "string", "description": "What you expected to find but didn't", "default": ""},
                 "quality_rating": {"type": "integer", "description": "1-5 overall rating of MCP tool output quality", "minimum": 1, "maximum": 5, "default": 0},
                 "improvement_suggestions": {"type": "string", "description": "What could be better about the MCP tools or search results", "default": ""},
+                "tool_wins": {
+                    "type": "array",
+                    "description": "Attribute each review finding to the tool that produced it — per-tool value, not just one overall rating",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": {"type": "string"},
+                            "finding": {"type": "string"},
+                            "symbol_id": {"type": "string"},
+                        },
+                    },
+                    "default": [],
+                },
             },
             "required": [],
         },
@@ -385,6 +473,7 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "diff_text": {"type": "string", "description": "Full git diff text"},
                 "max_symbols": {"type": "integer", "default": 10, "minimum": 1, "maximum": 30},
+                "pr_mode": {"type": "boolean", "default": True, "description": "Classify removed/added/renamed/modified and resolve removed+renamed against master"},
             },
             "required": ["diff_text"],
         },
@@ -572,6 +661,18 @@ _TOOLS: dict[str, Any] = {
                     "type": "string",
                     "description": "Full symbol id, e.g. 'crates::wallet::settle::process_payment'",
                 },
+                "depth": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1,
+                    "maximum": 3,
+                    "description": "1 = direct tests; 2 = also tests of direct callers (transitive coverage); 3 = one more hop",
+                },
+                "include_assertions": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Return assert/expect/panic lines from matched tests",
+                },
             },
             "required": ["symbol_id"],
         },
@@ -632,6 +733,53 @@ _DIRECTORY = {
                 "query": "string",
                 "matches": "int",
                 "symbols": [{"symbol_id": "string", "short_name": "string", "has_calls": "bool", "has_uses": "bool", "has_callers": "bool", "has_users": "bool"}],
+            },
+        },
+        {
+            "name": "search_symbols_batch",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Resolve many partial names in ONE call — same per-name results as search_symbols, one round trip instead of N.",
+            "arguments": {
+                "queries": "string[] (required) — partial names, max 40",
+                "limit": "int (optional, default 5, max 20 per query)",
+            },
+            "response_shape": {
+                "queries_resolved": "int",
+                "results": {"query": "symbol[]"},
+                "unresolved": "string[]",
+                "calls_saved": "int",
+            },
+        },
+        {
+            "name": "find_field_access",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Readers and writers of a struct field without grep — 'who reads ChargebackTxn.transaction_ref_id'.",
+            "arguments": {
+                "struct_name": "string (optional, '' scans all)",
+                "field": "string (required), e.g. 'transaction_ref_id'",
+            },
+            "response_shape": {
+                "readers_count": "int",
+                "writers_count": "int",
+                "readers": [{"symbol_id", "file_path", "line", "snippet", "access"}],
+                "writers": [{"symbol_id", "file_path", "line", "snippet", "access"}],
+            },
+        },
+        {
+            "name": "find_string_producers",
+            "endpoint": "/mcp",
+            "method": "POST (MCP tools/call)",
+            "description": "Every symbol producing a string literal with the given fragment — catches two producers of one format disagreeing (Rust 'UT-TXN-' vs SQL 'TXN-').",
+            "arguments": {
+                "pattern": "string (required), e.g. 'TXN-'",
+                "limit": "int (optional, default 30, max 100)",
+            },
+            "response_shape": {
+                "producers_count": "int",
+                "producers": [{"symbol_id", "kind", "file_path", "line", "literal", "in_format_macro"}],
+                "note": "warns when multiple distinct literals share one prefix",
             },
         },
         {

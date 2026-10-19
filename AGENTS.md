@@ -8,11 +8,12 @@ You have access to a read-only code dependency graph via the `oncall-graph` MCP 
 
 Always use: `./scripts/run-tests.sh` — runs pytest in a `--network none` container (no network path to any backend). Protection layers: (1) `tests/unit/conftest.py` forces in-memory backends, (2) `app/core/test_guard.py` makes real-backend reset() raise under pytest, (3) the script cuts the network entirely.
 
-## Available MCP Tools (26)
+## Available MCP Tools (29)
 
 | Tool | When to use |
 |---|---|
 | `search_symbols` | FIRST — find exact symbol_ids by partial name (e.g. "InventoryClient") |
+| `search_symbols_batch` | Resolve many names in ONE call (imports, call targets) — cuts round trips |
 | `search_symbols_enhanced` | When search_symbols returns 0 — searches file paths, short names, fuzzy matching |
 | `get_blast_radius` | Get callers, callees, type-users, used-types for a symbol + risk score + usage modes + optional usage_modes_filter |
 | `get_blast_radius_detailed` | Same as blast_radius but with confidence scores AND usage modes per edge (high/medium/low) |
@@ -29,6 +30,8 @@ Always use: `./scripts/run-tests.sh` — runs pytest in a `--network none` conta
 | `submit_ai_feedback` | After completing PR review — submit full analysis summary (tools called, results used, expected, rating, suggestions) |
 | `get_reinforcement_stats` | See which symbols are boosted/penalized from past feedback |
 | `find_warnings_in_blast_radius` | Metal detector — TODO/FIXME comments, swallowed errors, stub fns, commented-out code, fail-open defaults within a symbol's blast radius |
+| `find_field_access` | Readers/writers of a struct field — "who reads ChargebackTxn.transaction_ref_id" without grep |
+| `find_string_producers` | Symbols producing a string literal — catches two producers disagreeing (Rust "UT-TXN-" vs SQL 'TXN-') |
 | `diff_modules` | Symbol-set drift between counterpart modules (sync vs async generators, handler mirrors) |
 | `find_cycles` | Circular dependencies in the module graph |
 | `get_crate_graph` | Workspace crate dependency graph, dependents, cross-crate risk |

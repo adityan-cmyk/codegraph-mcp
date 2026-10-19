@@ -8,6 +8,7 @@ Takes a unified git diff and extracts:
 - Returns categorized lists: changed_symbols, new_symbols, deleted_symbols
 """
 
+import difflib
 import re
 import logging
 
@@ -160,18 +161,49 @@ def extract_symbols_from_diff(diff_text: str) -> dict[str, object]:
     deleted_symbols: set[str] = set()
     modified_symbols: set[str] = set()
     body_modified: set[str] = set()
+    # File-level renames (git 'rename from/to' headers) and fn-level renames
+    # (similar signature, one old + one new name) — the PR-mode reviewer hit:
+    # "you have to know to query the old names".
+    renamed_files: dict[str, str] = {}
+    renamed_by_file: dict[str, dict[str, str]] = {}
+    decl_lines: dict[tuple[str, str], str] = {}
+    added_by_file: dict[str, set[str]] = {}
+    deleted_by_file: dict[str, set[str]] = {}
 
     lines = diff_text.split("\n")
     current_file = None
     in_hunk = False
     hunk_context_fn: str | None = None
+    pending_rename_from: str | None = None
 
     added_lines_by_file: dict[str, list[str]] = {}
     deleted_lines_by_file: dict[str, list[str]] = {}
 
     for line in lines:
+        if line.startswith("--- a/"):
+            pending_rename_from = line[6:]
+            continue
+        if line.startswith("rename from "):
+            pending_rename_from = line[len("rename from "):]
+            continue
+        if line.startswith("rename to "):
+            new_path = line[len("rename to "):]
+            if pending_rename_from:
+                renamed_files[pending_rename_from] = new_path
+            pending_rename_from = None
+            continue
+        if line.startswith("+++ /dev/null"):
+            # Pure deletion — the pending --- a/ path IS the file.
+            current_file = pending_rename_from
+            pending_rename_from = None
+            in_hunk = False
+            continue
         if line.startswith("+++ b/"):
-            current_file = line[6:]
+            new_path = line[6:]
+            if pending_rename_from and new_path not in ("/dev/null",) and pending_rename_from != new_path and pending_rename_from.endswith(".rs"):
+                renamed_files[pending_rename_from] = new_path
+            pending_rename_from = None
+            current_file = new_path
             in_hunk = False
             continue
         if line.startswith("@@"):
@@ -204,6 +236,8 @@ def extract_symbols_from_diff(diff_text: str) -> dict[str, object]:
                 for match in pattern.finditer(content):
                     name = match.group(1).strip()
                     added_symbols.add(name)
+                    added_by_file.setdefault(current_file, set()).add(name)
+                    decl_lines.setdefault((current_file, name), content.strip())
 
         elif _DELETED_LINE.match(line):
             content = line[1:]
@@ -212,10 +246,45 @@ def extract_symbols_from_diff(diff_text: str) -> dict[str, object]:
                 for match in pattern.finditer(content):
                     name = match.group(1).strip()
                     deleted_symbols.add(name)
+                    deleted_by_file.setdefault(current_file, set()).add(name)
+                    decl_lines.setdefault((current_file, name), content.strip())
 
     modified_symbols = added_symbols & deleted_symbols
     added_symbols -= modified_symbols
     deleted_symbols -= modified_symbols
+
+    # Fn-level renames: pair a deleted decl with an added decl in the same
+    # file — one-old-one-new is the common case; otherwise greedily match by
+    # signature similarity.
+    for f, del_names in deleted_by_file.items():
+        add_names = added_by_file.get(f, set()) - modified_symbols
+        del_names = del_names - modified_symbols
+        if not del_names or not add_names:
+            continue
+        pairs: list[tuple[float, str, str]] = []
+        for d in del_names:
+            for a in add_names:
+                dsig = decl_lines.get((f, d), d)
+                asig = decl_lines.get((f, a), a)
+                ratio = difflib.SequenceMatcher(None, dsig, asig).ratio()
+                name_tie = sorted(d.split("_")) == sorted(a.split("_"))
+                if name_tie:
+                    ratio = max(ratio, 0.75)
+                if ratio > 0.55:
+                    pairs.append((ratio, d, a))
+        used_d: set[str] = set()
+        used_a: set[str] = set()
+        for ratio, d, a in sorted(pairs, reverse=True):
+            if d in used_d or a in used_a:
+                continue
+            used_d.add(d)
+            used_a.add(a)
+            renamed_by_file.setdefault(f, {})[d] = a
+        for d in used_d:
+            deleted_symbols.discard(d)
+        for a in used_a:
+            added_symbols.discard(a)
+
     # in-body changes (signature untouched) — detected via hunk headers
     modified_symbols |= body_modified
 
@@ -250,11 +319,25 @@ def extract_symbols_from_diff(diff_text: str) -> dict[str, object]:
             "details": f"Symbol '{name}' appears to be fully removed from the diff",
         }
 
+    renamed_symbols: dict[str, str] = {}
+    for f, mapping in renamed_by_file.items():
+        for old_name, new_name in mapping.items():
+            renamed_symbols[old_name] = new_name
+            change_details[old_name] = {
+                "change_type": "renamed",
+                "symbol_type": "function",
+                "details": f"'{old_name}' renamed to '{new_name}' in {f} — resolve callers against the OLD name",
+                "renamed_to": new_name,
+                "file_path": f,
+            }
+
     return {
         "changed_files": changed_files,
         "added_symbols": sorted(added_symbols),
         "modified_symbols": sorted(modified_symbols),
         "deleted_symbols": sorted(deleted_symbols),
+        "renamed_symbols": renamed_symbols,
+        "renamed_files": renamed_files,
         "change_details": change_details,
     }
 
@@ -284,6 +367,12 @@ def resolve_diff_symbols(diff_text: str, graph_index) -> dict[str, object]:
     changed_modules_set = {
         _file_to_module(f) for f in extraction.get("changed_files", []) if f.endswith(".rs")
     }
+    # Renamed files: the index holds the OLD path's symbol ids — scope to
+    # both modules so resolution hits master, not phantom "new" symbols.
+    renamed_files = extraction.get("renamed_files", {}) or {}
+    for old_path in renamed_files:
+        if old_path.endswith(".rs"):
+            changed_modules_set.add(_file_to_module(old_path))
 
     def _in_changed_module(symbol_id: str) -> bool:
         return any(
@@ -339,16 +428,50 @@ def resolve_diff_symbols(diff_text: str, graph_index) -> dict[str, object]:
                 "change_details": cd["details"],
             })
 
+    # Renames: resolve the OLD name against master (it lives in the index),
+    # attach the new name — callers of the old id are the blast radius.
+    renamed_out: list[dict] = []
+    for old_name, new_name in (extraction.get("renamed_symbols") or {}).items():
+        results = _diff_scoped(old_name, 3)
+        cd = change_details.get(old_name, {})
+        if results:
+            for r in results:
+                renamed_out.append({
+                    "symbol_id": r["symbol_id"],
+                    "short_name": old_name,
+                    "renamed_to": new_name,
+                    "status": "renamed",
+                    "found_in_graph": True,
+                    "change_type": "renamed",
+                    "symbol_type": cd.get("symbol_type", "function"),
+                    "change_details": cd.get("details", ""),
+                })
+        else:
+            renamed_out.append({
+                "short_name": old_name,
+                "renamed_to": new_name,
+                "status": "renamed",
+                "found_in_graph": False,
+                "change_type": "renamed",
+                "symbol_type": cd.get("symbol_type", "function"),
+                "change_details": cd.get("details", ""),
+                "note": "old name not in master index either — rename of a branch-only symbol",
+            })
+
     return {
         "changed_files": extraction["changed_files"],
         "changed_symbols": changed_symbols,
         "new_symbols": new_symbols,
         "deleted_symbols": deleted_symbols,
+        "renamed_symbols": renamed_out,
+        "renamed_files": renamed_files,
         "summary": {
             "files_changed": len(extraction["changed_files"]),
+            "files_renamed": len(renamed_files),
             "symbols_resolved": len(changed_symbols),
             "new_symbols_not_in_index": len(new_symbols),
             "deleted_symbols": len(deleted_symbols),
+            "renamed_symbols": len(renamed_out),
             "change_type_breakdown": _count_change_types(changed_symbols + new_symbols),
         },
     }

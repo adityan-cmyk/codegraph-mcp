@@ -16,8 +16,11 @@ if [ ! -f "$DOC" ]; then
     exit 1
 fi
 
-# render from the running container's registry (always the deployed truth)
-NEW_TABLE="$(docker exec oncall-backend python -c "from app.mcp.tools_doc import render_tools_table; print(render_tools_table())")"
+# render from the LOCAL registry in a one-off container (the drift test
+# compares against local source — rendering the deployed registry would
+# write yesterday's table and fail every pre-deploy commit)
+IMAGE="$(docker inspect oncall-backend --format '{{.Image}}' 2>/dev/null || echo on-call-assistance-backend:latest)"
+NEW_TABLE="$(docker run --rm -v "$PROJECT_ROOT/backend/app:/app/app:ro" --entrypoint python "$IMAGE" -c "from app.mcp.tools_doc import render_tools_table; print(render_tools_table())")"
 
 python3 - "$DOC" "$NEW_TABLE" <<'EOF'
 import sys

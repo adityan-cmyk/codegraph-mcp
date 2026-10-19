@@ -10,7 +10,14 @@ from app.core.config import ROOT_DIR, settings
 from app.rag.ingestion.tree_sitter import extract_rust_chunks, generate_file_summary_chunk, generate_module_exports_chunk, DERIVE_TRAIT_NAMES, _extract_use_statements
 from app.rag.retrieval.graph import graph_index
 from app.rag.retrieval.semantic import semantic_index
-from app.schemas.codebase import CodeChunk, GraphEdge, IndexSnapshot, IndexingResult
+from app.schemas.codebase import (
+    GRAPH_SKIP_KINDS as _SCHEMA_GRAPH_SKIP_KINDS,
+    CodeChunk,
+    GraphEdge,
+    IndexSnapshot,
+    IndexingResult,
+    compute_symbol_set_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +249,47 @@ def _discover_rust_files(repository_path: Path) -> list[Path]:
     )
 
 
+def _discover_sql_files(repository_path: Path) -> list[Path]:
+    """db/schemas/*.sql + any alter_schema.sql — the DDL and the migration
+    history the graph couldn't see (column drops, ref_id format changes)."""
+    out: list[Path] = []
+    schemas_dir = repository_path / "db" / "schemas"
+    if schemas_dir.is_dir():
+        out.extend(sorted(p for p in schemas_dir.glob("*.sql") if p.is_file()))
+    out.extend(sorted(
+        p for p in repository_path.rglob("alter_schema.sql")
+        if p.is_file() and ".git" not in p.parts
+    ))
+    seen = set()
+    unique = []
+    for p in out:
+        rp = p.resolve()
+        if rp not in seen:
+            seen.add(rp)
+            unique.append(p)
+    return unique
+
+
+def _extract_chunks_for_file(relative_path: str, source: str) -> tuple[list[CodeChunk], list[GraphEdge]]:
+    """Per-file extraction dispatcher — Rust via tree-sitter, SQL via
+    sql_schema (tables, columns, migration blocks). Returns (chunks, edges):
+    edges are extractor-declared relations (migration touches table, column
+    belongs to table) — call/type edges are computed separately."""
+    if relative_path.endswith(".sql"):
+        from app.rag.ingestion.sql_schema import extract_sql_chunks
+
+        return extract_sql_chunks(relative_path, source)
+
+    chunks = extract_rust_chunks(relative_path, source)
+    file_summary = generate_file_summary_chunk(relative_path, source, chunks)
+    if file_summary:
+        chunks.append(file_summary)
+    module_exports = generate_module_exports_chunk(relative_path, source)
+    if module_exports:
+        chunks.append(module_exports)
+    return chunks, []
+
+
 def _build_directory_tree(repository_path: Path, max_depth: int = 3) -> str:
     lines: list[str] = []
     skip_dirs = {".git", "target", "node_modules", "__pycache__"}
@@ -308,7 +356,11 @@ def _build_import_map(use_statements: list[str]) -> dict[str, str]:
 # Mod chunks are containers, not callable units — their content duplicates
 # every inner symbol's code, so edges from a mod node are pure phantoms (a
 # mod re-export once showed 25 callers and a CRITICAL risk score).
-GRAPH_SKIP_KINDS = frozenset({"file_summary", "module_exports", "mod"})
+GRAPH_SKIP_KINDS = _SCHEMA_GRAPH_SKIP_KINDS
+# SQL symbols ARE graph nodes (searchable, blast-radiused) but their edges are
+# declared by the SQL extractor — regex call/type extraction would fabricate
+# nonsense from DDL text.
+EDGE_EXTRACTION_SKIP_KINDS = GRAPH_SKIP_KINDS | frozenset({"sql_table", "sql_column", "migration_block"})
 
 
 def _should_skip_for_graph(chunk: CodeChunk) -> bool:
@@ -322,6 +374,10 @@ def _should_skip_for_graph(chunk: CodeChunk) -> bool:
     if short_name == "new" and chunk.kind == "fn" and len(chunk.content.strip()) < 50:
         return True
     return False
+
+
+def _should_skip_edge_extraction(chunk: CodeChunk) -> bool:
+    return chunk.kind in EDGE_EXTRACTION_SKIP_KINDS or _should_skip_for_graph(chunk)
 
 
 def _extract_call_targets(
@@ -735,28 +791,25 @@ def index_rust_repository(repository_path: str | None = None) -> IndexingResult:
 def _index_rust_repository_locked(repository_path: str | None = None) -> IndexingResult:
     target_path = resolve_repository_path(repository_path)
     rust_files = _discover_rust_files(target_path)
+    sql_files = _discover_sql_files(target_path)
 
     all_chunks: list[CodeChunk] = []
+    sql_edges: list[GraphEdge] = []
     name_index: dict[str, list[str]] = {}
 
-    for file_path in rust_files:
+    for file_path in rust_files + sql_files:
         relative_path = file_path.relative_to(target_path).as_posix()
         source = file_path.read_text(encoding="utf-8")
-        chunks = extract_rust_chunks(relative_path, source)
-        file_summary = generate_file_summary_chunk(relative_path, source, chunks)
-        if file_summary:
-            chunks.append(file_summary)
-        module_exports = generate_module_exports_chunk(relative_path, source)
-        if module_exports:
-            chunks.append(module_exports)
+        chunks, extractor_edges = _extract_chunks_for_file(relative_path, source)
         all_chunks.extend(chunks)
+        sql_edges.extend(extractor_edges)
 
     name_index = _build_name_index(all_chunks)
     path_index = _build_path_index(all_chunks)
 
     graph_edges: list[GraphEdge] = []
     for chunk in all_chunks:
-        if _should_skip_for_graph(chunk):
+        if _should_skip_edge_extraction(chunk):
             continue
         calls = _extract_call_targets(chunk, name_index, path_index)
         graph_edges.extend(
@@ -768,6 +821,16 @@ def _index_rust_repository_locked(repository_path: str | None = None) -> Indexin
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=sid, relation="uses", usage_modes=modes)
             for sid, modes in uses_with_modes
         )
+
+    # SQL structure: migration touches table, column belongs to table, and
+    # sea-orm entity fields map to same-named columns.
+    graph_edges.extend(sql_edges)
+    try:
+        from app.rag.ingestion.sql_schema import link_sql_to_entities
+
+        graph_edges.extend(link_sql_to_entities(all_chunks))
+    except Exception:
+        logger.warning("SQL entity linking failed", exc_info=True)
 
     head_commit = ""
     try:
@@ -786,10 +849,11 @@ def _index_rust_repository_locked(repository_path: str | None = None) -> Indexin
 
     snapshot = IndexSnapshot(
         repository_path=str(target_path),
-        files_indexed=len(rust_files),
+        files_indexed=len(rust_files) + len(sql_files),
         chunks=all_chunks,
         graph_edges=graph_edges,
         last_indexed_commit=head_commit,
+        symbol_set_hash=compute_symbol_set_hash(all_chunks),
     )
     index_metadata_store.replace_snapshot(snapshot)
 
@@ -942,35 +1006,54 @@ def _incremental_update_symbols_locked(
     existing_edges = list(snapshot.graph_edges)
     
     modified_symbol_ids: set[str] = set()
+    # (symbol_id, file_path) of symbols deleted from source — the pair is the
+    # unit of removal so a pathless id shared by two files loses only the row
+    # for the file it disappeared from.
+    removed_symbols: set[tuple[str, str]] = set()
+    removed_files: list[str] = []
     new_chunks: list[CodeChunk] = []
+    incremental_sql_edges: list[GraphEdge] = []
 
     for file_path_str in modified_files:
         absolute_path = target_path / file_path_str
+        old_ids = {c.symbol_id for c in existing_chunks if c.file_path == file_path_str}
         if not absolute_path.exists():
+            # File deleted from source — everything it owned goes with it.
+            removed_symbols |= {(sid, file_path_str) for sid in old_ids}
+            removed_files.append(file_path_str)
             existing_chunks = [chunk for chunk in existing_chunks if chunk.file_path != file_path_str]
             continue
 
         source = absolute_path.read_text(encoding="utf-8")
-        file_chunks = extract_rust_chunks(file_path_str, source)
-        file_summary = generate_file_summary_chunk(file_path_str, source, file_chunks)
-        if file_summary:
-            file_chunks.append(file_summary)
-        module_exports = generate_module_exports_chunk(file_path_str, source)
-        if module_exports:
-            file_chunks.append(module_exports)
+        file_chunks, extractor_edges = _extract_chunks_for_file(file_path_str, source)
+        new_ids = {c.symbol_id for c in file_chunks}
+        # Symbols that lived in this file but no longer exist (renamed or
+        # deleted) — the source of the stale-symbol bug this replaces.
+        removed_symbols |= {(sid, file_path_str) for sid in old_ids - new_ids}
         for chunk in file_chunks:
             modified_symbol_ids.add(chunk.symbol_id)
             new_chunks.append(chunk)
+        incremental_sql_edges.extend(extractor_edges)
 
         existing_chunks = [chunk for chunk in existing_chunks if chunk.file_path != file_path_str]
 
+    removed_ids = {sid for sid, _ in removed_symbols}
     all_chunks = existing_chunks + new_chunks
-    existing_edges = [edge for edge in existing_edges if edge.source_symbol_id not in modified_symbol_ids]
+    # Drop every edge touching a removed symbol; recompute outgoing edges of
+    # modified symbols below. Edges INTO modified symbols survive (their
+    # callers didn't change).
+    gone_sources = modified_symbol_ids | removed_ids
+    existing_edges = [
+        edge for edge in existing_edges
+        if edge.source_symbol_id not in gone_sources and edge.target_symbol_id not in removed_ids
+    ]
     name_index = _build_name_index(all_chunks)
     path_index = _build_path_index(all_chunks)
 
     new_edges: list[GraphEdge] = []
     for chunk in new_chunks:
+        if _should_skip_edge_extraction(chunk):
+            continue
         calls = _extract_call_targets(chunk, name_index, path_index)
         new_edges.extend(
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=target_id, relation="calls")
@@ -981,19 +1064,49 @@ def _incremental_update_symbols_locked(
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=sid, relation="uses", usage_modes=modes)
             for sid, modes in uses_with_modes
         )
+    new_edges.extend(incremental_sql_edges)
 
     removed_edge_keys = [
         (e.source_symbol_id, e.target_symbol_id)
         for e in snapshot.graph_edges
-        if e.source_symbol_id in modified_symbol_ids
+        if e.source_symbol_id in gone_sources or e.target_symbol_id in removed_ids
     ]
+
+    head_commit = ""
+    try:
+        head_result = __import__("subprocess").run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=target_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if head_result.returncode == 0:
+            head_commit = head_result.stdout.strip()
+    except Exception:
+        pass
 
     index_metadata_store.update_incremental(
         modified_chunks=new_chunks,
-        removed_symbol_ids=list(modified_symbol_ids),
+        removed_symbols=sorted(removed_symbols),
         modified_edges=new_edges,
         removed_edge_keys=removed_edge_keys,
+        last_indexed_commit=head_commit,
+        symbol_set_hash=compute_symbol_set_hash(all_chunks),
     )
+
+    # Delete symbols that vanished from source — upsert-only updates left
+    # lookup_txn_for_advice-style ghosts in the graph and Weaviate forever.
+    if removed_ids:
+        graph_index.remove_symbols(sorted(removed_ids))
+        semantic_index.delete_chunks(sorted(removed_ids))
+    for gone_file in removed_files:
+        try:
+            from app.rag.ingestion import observation_store as _obs
+            _obs.replace_file_observations(gone_file, [])
+        except Exception:
+            logger.warning("Observation cleanup failed for %s", gone_file, exc_info=True)
 
     # Metal-detector pass for the changed files only.
     try:
@@ -1018,6 +1131,8 @@ def _incremental_update_symbols_locked(
             calls_by_source.setdefault(edge.source_symbol_id, []).append(edge.target_symbol_id)
 
     for chunk in new_chunks:
+        if _should_skip_for_graph(chunk):
+            continue
         graph_index.upsert_symbol(
             chunk.symbol_id,
             calls=calls_by_source.get(chunk.symbol_id, []),
