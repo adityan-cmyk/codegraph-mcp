@@ -1991,3 +1991,143 @@ class BlastRadiusDirectnessTestCase(unittest.TestCase):
         backend.get_neighbors = fake_neighbors
         backend.get_blast_radius("m::fn")
         self.assertEqual(captured["depth"], 1)
+
+
+class GroundTruthDirectCallersTestCase(unittest.TestCase):
+    """Hand-checked ground truth on walton 85c4f3f82 — the numbers both of
+    today's reviews got wrong (23 'callers' inflated by 2-hop + siblings):
+
+      fetch_transaction_id
+        callers: process_transaction, handle_debit_or_credit_adjustments,
+                 handle_debit_chargeback_rejection, handle_dispute_acceptance,
+                 handle_dispute_rejection, handle_adjustment_for_dispute,
+                 test_process_vehicle_registration_settles_unsettled_transactions
+        callees: generate_ref_id, wallet::queries::transactions::find_by_ref_id,
+                 unsettled_transaction_queries::find_by_ref_id
+
+      generate_transaction_metadata_from_params
+        callers: process_transaction, log_unsettled_transaction_from_params
+        (generate_ref_id / send_low_and_negative_balance_notifications are
+        SIBLINGS — called by process_transaction, reachable up-then-down, and
+        must never appear as callers)
+    """
+
+    NETC = (
+        "pub fn fetch_transaction_id() -> i64 {\n"
+        "    let _ = transactions::find_by_ref_id(1);\n"
+        "    let _ = unsettled_transaction_queries::find_by_ref_id(2);\n"
+        "    generate_ref_id()\n"
+        "}\n"
+        "pub fn generate_ref_id() -> i64 { 1 }\n"
+        "pub fn send_low_and_negative_balance_notifications() {}\n"
+        "pub fn generate_transaction_metadata_from_params() {}\n"
+        "pub fn log_unsettled_transaction_from_params() {\n"
+        "    generate_transaction_metadata_from_params();\n"
+        "}\n"
+        "pub async fn process_transaction() {\n"
+        "    match fetch_transaction_id().await { _ => {} }\n"
+        "    generate_ref_id();\n"
+        "    send_low_and_negative_balance_notifications();\n"
+        "    generate_transaction_metadata_from_params();\n"
+        "}\n"
+    )
+    DISPUTES = "".join(
+        f"pub fn {name}() {{\n    fetch_transaction_id();\n}}\n"
+        for name in [
+            "handle_debit_or_credit_adjustments",
+            "handle_debit_chargeback_rejection",
+            "handle_dispute_acceptance",
+            "handle_dispute_rejection",
+            "handle_adjustment_for_dispute",
+        ]
+    )
+    WALLET = "pub fn find_by_ref_id(id: i64) -> i64 { id }\n"
+    UNSETTLED = "pub fn find_by_ref_id(id: i64) -> i64 { id + 1 }\n"
+    TESTS = (
+        "#[test]\n"
+        "fn test_process_vehicle_registration_settles_unsettled_transactions() {\n"
+        "    fetch_transaction_id();\n"
+        "}\n"
+    )
+
+    def setUp(self) -> None:
+        semantic_index.reset()
+        graph_index.reset()
+        index_metadata_store.reset()
+
+    def _write_fixture(self, root: Path) -> None:
+        (root / "src/product/core").mkdir(parents=True)
+        (root / "src/scripts").mkdir(parents=True)
+        (root / "src/wallet/queries").mkdir(parents=True)
+        (root / "src/storage/queries").mkdir(parents=True)
+        (root / "src/product/core/netc_transaction_core.rs").write_text(self.NETC)
+        (root / "src/scripts/fastag_disputes_processor.rs").write_text(self.DISPUTES)
+        (root / "src/wallet/queries/transactions.rs").write_text(self.WALLET)
+        (root / "src/storage/queries/unsettled_transaction_queries.rs").write_text(self.UNSETTLED)
+        (root / "src/product/core/vehicle_registration_tests.rs").write_text(self.TESTS)
+
+    @staticmethod
+    def _resolve(name: str) -> str:
+        from app.mcp.tools.graph_read_tools import search_symbols
+
+        hits = search_symbols(name)["symbols"]
+        return next(h["symbol_id"] for h in hits if h["symbol_id"].endswith("::" + name))
+
+    def test_fetch_transaction_id_ground_truth(self):
+        from app.mcp.tools.graph_read_tools import get_blast_radius
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_fixture(root)
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+                br = get_blast_radius(self._resolve("fetch_transaction_id"))
+
+            callers = {s.split("::")[-1] for s in br["upstream"]}
+            self.assertEqual(callers, {
+                "process_transaction",
+                "handle_debit_or_credit_adjustments",
+                "handle_debit_chargeback_rejection",
+                "handle_dispute_acceptance",
+                "handle_dispute_rejection",
+                "handle_adjustment_for_dispute",
+                "test_process_vehicle_registration_settles_unsettled_transactions",
+            }, br["upstream"])
+
+            callees = br["downstream"]
+            shorts = [s.split("::")[-1] for s in callees]
+            self.assertIn("generate_ref_id", shorts)
+            self.assertEqual(shorts.count("find_by_ref_id"), 2,
+                             f"both name-collision variants required: {callees}")
+            self.assertEqual(len(callees), 3, callees)
+
+    def test_generate_metadata_callers_exact_and_siblings_stay_out(self):
+        from app.mcp.tools.graph_read_tools import get_blast_radius
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_fixture(root)
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+                br = get_blast_radius(self._resolve("generate_transaction_metadata_from_params"))
+
+            callers = {s.split("::")[-1] for s in br["upstream"]}
+            self.assertEqual(callers, {"process_transaction", "log_unsettled_transaction_from_params"},
+                             f"2-hop and sibling pollution: {br['upstream']}")
+
+    def test_siblings_not_in_up_cone_at_any_depth(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self._write_fixture(root)
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+                # backend-level traverse: members of the direction-locked cones
+                hoods = graph_index.traverse(
+                    self._resolve("generate_transaction_metadata_from_params"), depth=3)
+
+            members = {n.symbol_id.split("::")[-1] for n in hoods}
+            self.assertIn("process_transaction", members)
+            self.assertNotIn("generate_ref_id", members,
+                             "up-then-down sibling leaked into the radius as a member")
+            self.assertNotIn("send_low_and_negative_balance_notifications", members,
+                             "up-then-down sibling leaked into the radius as a member")

@@ -266,26 +266,34 @@ class Neo4jGraphIndex:
 
     def traverse(self, symbol_id: str, depth: int = 2, max_neighborhoods: int = 100, exclude: set[str] | None = None) -> list[GraphNeighborhood]:
         neighborhoods: list[GraphNeighborhood] = []
-        visited: set[str] = set()
         blocked = exclude or set()
-        queue: list[tuple[str, int]] = [(symbol_id, 0)]
+        # Direction-LOCKED expansion: the upstream cone walks only reverse
+        # edges, the downstream cone only forward. A shared helper reachable
+        # up-then-down (a sibling) is not a member of either cone — the old
+        # all-directions queue pulled siblings in as 'callers' at hop 2.
+        queue: list[tuple[str, int, str]] = [(symbol_id, 0, "up"), (symbol_id, 0, "down")]
+        visited: set[tuple[str, str]] = {(symbol_id, "up"), (symbol_id, "down")}
+        emitted: set[str] = set()
 
         while queue and len(neighborhoods) < max_neighborhoods:
-            current, current_depth = queue.pop(0)
-            if current in visited or (current in blocked and current != symbol_id):
+            current, current_depth, direction = queue.pop(0)
+            if current in blocked and current != symbol_id:
                 continue
-
-            visited.add(current)
             # Always 1-hop neighborhoods: querying the seed at full `depth`
             # flattened multi-hop neighbors into hop 1, collapsing the level
             # structure (traverse reported depth-1 hops systematically).
-            neighborhood = self.get_neighbors(current, depth=1)
-            neighborhoods.append(neighborhood)
+            if current not in emitted:
+                neighborhood = self.get_neighbors(current, depth=1)
+                neighborhoods.append(neighborhood)
+                emitted.add(current)
 
             if current_depth < depth:
-                for neighbor in neighborhood.upstream + neighborhood.downstream + neighborhood.used_by + neighborhood.uses:
-                    if neighbor not in visited:
-                        queue.append((neighbor, current_depth + 1))
+                neighborhood = neighborhood if current in emitted else self.get_neighbors(current, depth=1)
+                forward = neighborhood.downstream + neighborhood.uses if direction == "down" else neighborhood.upstream + neighborhood.used_by
+                for neighbor in forward:
+                    if (neighbor, direction) not in visited:
+                        visited.add((neighbor, direction))
+                        queue.append((neighbor, current_depth + 1, direction))
 
         return neighborhoods
 

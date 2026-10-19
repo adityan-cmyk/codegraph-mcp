@@ -239,14 +239,16 @@ def resolve_repository_path(repository_path: str | None) -> Path:
 
 
 def _discover_rust_files(repository_path: Path) -> list[Path]:
-    skip_dirs = {".git", "target", "node_modules", "__pycache__", "tests", "test"}
-    skip_suffixes = ("_test.rs", "_tests.rs", "tests.rs", "test.rs")
+    # Test files ARE indexed (is_test chunks) — get_tests_for_symbol and the
+    # hand-checked ground truth need test call edges (e.g.
+    # test_process_vehicle_registration_settles_unsettled_transactions ->
+    # fetch_transaction_id). Excluding them hid coverage edges entirely.
+    skip_dirs = {".git", "target", "node_modules", "__pycache__"}
     return sorted(
         path for path in repository_path.rglob("*")
         if path.suffix in RUST_EXTENSIONS
         and path.is_file()
         and not any(part in skip_dirs for part in path.relative_to(repository_path).parts)
-        and not path.name.endswith(skip_suffixes)
     )
 
 
@@ -566,28 +568,35 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
             )
             covered_files = set()
         else:
-            replaced_sources = 0
+            merged_sources = 0
             for chunk in snapshot.chunks:
                 if chunk.file_path in covered_files:
                     sid = chunk.symbol_id
                     replacement = scip_edges.get(sid) or []
                     if not replacement:
-                        continue  # nothing to swap in — regex edges stay
-                    # PER-RELATION replacement: a uses-only scip entry (type
-                    # refs) must not erase the regex CALLS (fetch_transaction_id
-                    # lost its 3 callees exactly this way). Each side swaps
-                    # only when the index actually provides that side.
+                        continue
+                    # UNION rule: a partial SCIP list must never replace the
+                    # regex list outright (it erased real callers and callees).
+                    # SCIP contributes its targets; where both resolve the same
+                    # call name differently, SCIP's resolution wins — at list
+                    # granularity that means its target is added and regex's
+                    # same-short-name target is superseded only when the short
+                    # names collide with different ids.
                     scip_calls = [t for t, r in replacement if r == "calls"]
                     scip_uses = [t for t, r in replacement if r != "calls"]
-                    swapped = False
                     if scip_calls:
-                        calls_by_source[sid] = scip_calls
-                        swapped = True
+                        existing = calls_by_source.setdefault(sid, [])
+                        scip_by_short: dict[str, str] = {t.split("::")[-1]: t for t in scip_calls}
+                        kept = [t for t in existing if t.split("::")[-1] not in scip_by_short]
+                        calls_by_source[sid] = kept + [t for t in scip_calls if t not in kept]
+                        merged_sources += 1
                     if scip_uses:
-                        uses_with_modes_by_source[sid] = [(t, ["reference"]) for t in scip_uses]
-                        swapped = True
-                    if swapped:
-                        replaced_sources += 1
+                        existing_u = uses_with_modes_by_source.setdefault(sid, [])
+                        have = {t for t, _ in existing_u}
+                        for t in scip_uses:
+                            if t not in have:
+                                existing_u.append((t, ["reference"]))
+            replaced_sources = merged_sources
             logger.info(
                 "SCIP refinement: %d files covered, %d sources switched to type-resolved edges "
                 "(%d calls, %d uses from SCIP)",

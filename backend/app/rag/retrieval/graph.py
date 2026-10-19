@@ -216,25 +216,30 @@ class InMemoryGraphIndex:
         if depth < 1:
             raise ValueError("Depth must be at least 1.")
 
-        visited: set[str] = set()
+        # Direction-LOCKED cones: upstream walks reverse edges only,
+        # downstream forward only — siblings reachable up-then-down are not
+        # members of either cone (they used to surface as 'callers' at hop 2).
+        visited: set[tuple[str, str]] = {(symbol_id, "up"), (symbol_id, "down")}
         blocked = exclude or set()
-        frontier = [symbol_id]
+        queue: list[tuple[str, int, str]] = [(symbol_id, 0, "up"), (symbol_id, 0, "down")]
         neighborhoods: list[GraphNeighborhood] = []
+        emitted: set[str] = set()
 
-        for _ in range(depth):
-            next_frontier: list[str] = []
-            for current in frontier:
-                if current in visited or (current in blocked and current != symbol_id):
-                    continue
-                visited.add(current)
+        while queue:
+            current, current_depth, direction = queue.pop(0)
+            if current in blocked and current != symbol_id:
+                continue
+            if current not in emitted:
                 neighborhood = self.get_blast_radius(current)
                 neighborhoods.append(neighborhood)
-                for adjacent in neighborhood.upstream + neighborhood.downstream + neighborhood.used_by + neighborhood.uses:
-                    if adjacent not in visited:
-                        next_frontier.append(adjacent)
-            frontier = next_frontier
-            if not frontier:
-                break
+                emitted.add(current)
+            if current_depth < depth:
+                neighborhood = neighborhood if current in emitted else self.get_blast_radius(current)
+                forward = neighborhood.upstream + neighborhood.used_by if direction == "up" else neighborhood.downstream + neighborhood.uses
+                for adjacent in forward:
+                    if (adjacent, direction) not in visited:
+                        visited.add((adjacent, direction))
+                        queue.append((adjacent, current_depth + 1, direction))
 
         return neighborhoods
 
