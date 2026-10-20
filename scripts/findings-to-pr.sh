@@ -67,11 +67,20 @@ EVIDENCE_DIR="$REAL_REPO/logs/autofix/$RUN_DATE"
 mkdir -p "$EVIDENCE_DIR"
 
 cleanup() {
+  local rc=$?
   # Sandboxes are disposable — delete after every usage, success or failure.
   # Forensics live in $EVIDENCE_DIR (local, gitignored), never in the sandbox.
   if [ -n "${RUN_DIR:-}" ] && [ -d "$RUN_DIR" ]; then
     rm -rf "$RUN_DIR"
     log "Sandbox deleted: $RUN_DIR"
+  fi
+  # 2026-10-19: the run died at `git push` (DNS flap) AFTER passing every gate
+  # and before any send_mail — set -e exited silently, the sandbox vanished,
+  # and no mail ever said so. Every gated path mails; if we leave without one
+  # (and not a deliberate quiet exit), say what happened.
+  if [ "$NOTIFIED" != "1" ] && [ "$SILENT_OK" != "1" ]; then
+    send_mail "[codegraph autofix] run ended without a result mail — $RUN_DATE (exit $rc)" \
+      "<p>The autofix run for <code>$RUN_DATE</code> exited (status $rc) before reaching a notify point — likely a failed <code>git push</code> or an unexpected error under <code>set -e</code>.</p><p>The sandbox was deleted. The agent's verified work is preserved: <code>$EVIDENCE_DIR/agent-work.patch</code> — push it by hand if present.</p>"
   fi
 }
 trap cleanup EXIT
@@ -171,10 +180,12 @@ FINDING_COUNT="$(printf '%s' "$FINDINGS_JSON" | python3 -c 'import json,sys; d=j
 log "Findings available: $FINDING_COUNT"
 if [ "${1:-}" = "--dry-run" ]; then
   printf '%s\n' "$FINDINGS_JSON" | python3 -m json.tool | head -60
+  SILENT_OK=1
   exit 0
 fi
 if [ "$FINDING_COUNT" -eq 0 ]; then
   log "No findings — nothing to do."
+  SILENT_OK=1
   exit 0
 fi
 
@@ -287,12 +298,18 @@ done
 # ---------------------------------------------------------------------------
 # 5. Escalation path: core broken -> human, no auto-PR
 # ---------------------------------------------------------------------------
+NOTIFIED=0
+SILENT_OK=0
 send_mail() {
   local subject="$1" html="$2"
-  docker exec "$BACKEND_CONTAINER" python -c "
+  if docker exec "$BACKEND_CONTAINER" python -c "
 from app.core.notifications import send_email
 send_email('$subject', '''$html''')
-" >/dev/null 2>&1 || log "email failed (non-fatal)"
+" >/dev/null 2>&1; then
+    NOTIFIED=1
+  else
+    log "email failed (non-fatal)"
+  fi
 }
 
 if [ "${ESCALATION:-0}" = "1" ]; then
@@ -328,6 +345,7 @@ fi
 if [ "$(git -C "$RUN_DIR/repo" log --oneline main..HEAD | wc -l)" -eq 0 ] \
    && git -C "$RUN_DIR/repo" diff --quiet 2>/dev/null; then
   log "Agent produced no changes — exiting quietly."
+  SILENT_OK=1
   exit 0
 fi
 
@@ -508,7 +526,20 @@ log "Pushing $BRANCH"
 # Hooks are not cloned — install the real repo's secret-blocking pre-push
 # guard so the sandbox push obeys the same rules as every other push.
 [ -f "$REAL_REPO/.git/hooks/pre-push" ] && cp "$REAL_REPO/.git/hooks/pre-push" "$RUN_DIR/repo/.git/hooks/pre-push"
-git -C "$RUN_DIR/repo" push --quiet -u origin "$BRANCH"
+PUSH_OK=0
+for attempt in 1 2 3; do
+  if git -C "$RUN_DIR/repo" push --quiet -u origin "$BRANCH"; then
+    PUSH_OK=1
+    break
+  fi
+  log "push failed (attempt $attempt/3) — retrying in 30s"
+  sleep 30
+done
+if [ "$PUSH_OK" != "1" ]; then
+  send_mail "[codegraph autofix] push failed — verified work preserved locally ($RUN_DATE)" \
+    "<p>All gates passed (suite green · core intact · red→green OK · verifier · integrity clean) but <code>git push</code> of <code>$BRANCH</code> failed 3× — DNS/network. No PR can be opened.</p><p>Sandbox deleted. The patch is at <code>$EVIDENCE_DIR/agent-work.patch</code>; push it by hand when github is reachable.</p>"
+  exit 6
+fi
 
 # PR creation: gh if installed, else GITHUB_TOKEN API, else a compare link
 # the human clicks (body is in the email — paste and done).

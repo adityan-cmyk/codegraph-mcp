@@ -1037,7 +1037,10 @@ def _incremental_update_symbols_locked(
     target_path = resolve_repository_path(repository_path)
     snapshot = index_metadata_store.load_snapshot()
     if snapshot is None:
-        return index_rust_repository(repository_path)
+        # The caller holds _REBUILD_MUTEX — index_rust_repository would try to
+        # re-acquire the same non-reentrant lock and raise a bogus
+        # RebuildInProgressError, so the nightly never re-indexed a fresh store.
+        return _index_rust_repository_locked(repository_path)
 
     existing_chunks = list(snapshot.chunks)
     existing_edges = list(snapshot.graph_edges)

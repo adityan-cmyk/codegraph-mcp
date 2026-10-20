@@ -1537,6 +1537,12 @@ class PowerEventTestCase(unittest.TestCase):
             mail.assert_not_called()
 
 
+def _REBUILD_MUTEX_LOCKED() -> bool:
+    from app.rag import indexing_service
+
+    return indexing_service._REBUILD_MUTEX.locked()
+
+
 class IndexingResultContractTestCase(unittest.TestCase):
     """Incremental runs reported the delta (len(new_chunks)) in
     IndexingResult.semantic_documents — the nightly email's "semantic docs"
@@ -1587,6 +1593,24 @@ class IndexingResultContractTestCase(unittest.TestCase):
             self.assertEqual(result.semantic_documents, len(snapshot.chunks))
             self.assertEqual(result.files_indexed, 1)
             self.assertFalse(any("beta" in c.symbol_id for c in snapshot.chunks))
+
+    def test_incremental_with_no_snapshot_does_not_deadlock(self) -> None:
+        """Fresh store: the incremental used to call index_rust_repository
+        while holding _REBUILD_MUTEX — the same non-reentrant lock — and died
+        with a bogus RebuildInProgressError. The nightly could never re-index
+        from nothing ("mutex wasn't given up ... nightly didn't trigger")."""
+        from app.rag.indexing_service import incremental_update_symbols
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "a.rs").write_text("pub fn alpha_fn() {}\n")
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                result = incremental_update_symbols(["src/a.rs"], temp_dir)
+
+            self.assertGreater(result.symbols_indexed, 0)
+            self.assertFalse(_REBUILD_MUTEX_LOCKED(),
+                             "mutex leaked after snapshot-less incremental")
 
 
 class StaleSymbolRemovalTestCase(unittest.TestCase):
