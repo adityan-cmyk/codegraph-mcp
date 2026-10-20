@@ -210,7 +210,7 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
                 "incremental",
                 graph_nodes=result.graph_nodes,
                 graph_edges=result.graph_edges,
-                semantic_documents=result.symbols_indexed,
+                semantic_documents=result.semantic_documents,
                 duration_sec=_time.time() - _start,
                 from_commit=last_commit,
                 to_commit=head_commit,

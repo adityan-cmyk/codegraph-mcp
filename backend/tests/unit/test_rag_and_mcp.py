@@ -1537,6 +1537,58 @@ class PowerEventTestCase(unittest.TestCase):
             mail.assert_not_called()
 
 
+class IndexingResultContractTestCase(unittest.TestCase):
+    """Incremental runs reported the delta (len(new_chunks)) in
+    IndexingResult.semantic_documents — the nightly email's "semantic docs"
+    card rendered 951 (the 42-file delta) with a down-trend vs the previous
+    10,408 while the index was healthy. Contract: post-run totals, matching
+    the full-build paths (len(snapshot.chunks))."""
+
+    def setUp(self) -> None:
+        semantic_index.reset()
+        graph_index.reset()
+        index_metadata_store.reset()
+
+    def test_incremental_result_reports_totals_not_delta(self) -> None:
+        from app.rag.indexing_service import incremental_update_symbols
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "a.rs").write_text("pub fn alpha_fn() {}\n")
+            (root / "src" / "b.rs").write_text("pub fn beta_fn() {}\n")
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+                (root / "src" / "a.rs").write_text(
+                    "pub fn alpha_fn() {}\npub fn alpha_extra() {}\n"
+                )
+                result = incremental_update_symbols(["src/a.rs"], temp_dir)
+
+            snapshot = index_metadata_store.load_snapshot()
+            self.assertEqual(result.semantic_documents, len(snapshot.chunks))
+            self.assertEqual(result.symbols_indexed, len(snapshot.chunks))
+            self.assertEqual(result.files_indexed, 2)
+            self.assertGreater(result.semantic_documents, 1)
+
+    def test_incremental_result_survives_deletions(self) -> None:
+        from app.rag.indexing_service import incremental_update_symbols
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "a.rs").write_text("pub fn alpha_fn() {}\n")
+            (root / "src" / "b.rs").write_text("pub fn beta_fn() {}\n")
+            with patch("app.rag.indexing_service.settings.codebase_root_path", temp_dir):
+                index_rust_repository(temp_dir)
+                (root / "src" / "b.rs").unlink()
+                result = incremental_update_symbols(["src/b.rs"], temp_dir)
+
+            snapshot = index_metadata_store.load_snapshot()
+            self.assertEqual(result.semantic_documents, len(snapshot.chunks))
+            self.assertEqual(result.files_indexed, 1)
+            self.assertFalse(any("beta" in c.symbol_id for c in snapshot.chunks))
+
+
 class StaleSymbolRemovalTestCase(unittest.TestCase):
     """Incremental updates left deleted symbols in the graph, the snapshot
     DB, and Weaviate forever — lookup_txn_for_advice survived every nightly

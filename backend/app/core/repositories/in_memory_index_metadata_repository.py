@@ -33,16 +33,38 @@ class InMemoryIndexMetadataRepository(IndexMetadataRepository):
         with self._lock:
             if self._snapshot is None:
                 return
+            # Mirror the Postgres contract: modified rows replace themselves
+            # by (symbol_id, file_path) / (source, target) delete-before-insert.
+            # Append-only here produced duplicate rows on every re-extraction
+            # (4 chunks + 3 re-extracted = 7) while Postgres stayed at 5.
             removed_set = set(removed_symbols)
+            modified_pairs = {(c.symbol_id, c.file_path) for c in modified_chunks}
+            seen: set[tuple[str, str, int]] = set()
+            unique_chunks: list[CodeChunk] = []
+            for chunk in modified_chunks:
+                key = (chunk.symbol_id, chunk.file_path, chunk.start_line)
+                if key not in seen:
+                    seen.add(key)
+                    unique_chunks.append(chunk)
             self._snapshot.chunks = [
                 c for c in self._snapshot.chunks
                 if (c.symbol_id, c.file_path) not in removed_set
-            ] + modified_chunks
+                and (c.symbol_id, c.file_path) not in modified_pairs
+            ] + unique_chunks
             removed_edge_set = set(removed_edge_keys)
+            modified_edge_pairs = {(e.source_symbol_id, e.target_symbol_id) for e in modified_edges}
+            seen_e: set[tuple[str, str]] = set()
+            unique_edges: list[GraphEdge] = []
+            for edge in modified_edges:
+                key = (edge.source_symbol_id, edge.target_symbol_id)
+                if key not in seen_e:
+                    seen_e.add(key)
+                    unique_edges.append(edge)
             self._snapshot.graph_edges = [
                 e for e in self._snapshot.graph_edges
                 if (e.source_symbol_id, e.target_symbol_id) not in removed_edge_set
-            ] + modified_edges
+                and (e.source_symbol_id, e.target_symbol_id) not in modified_edge_pairs
+            ] + unique_edges
             if last_indexed_commit or symbol_set_hash:
                 from datetime import UTC, datetime
 

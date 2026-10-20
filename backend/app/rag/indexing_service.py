@@ -905,7 +905,7 @@ def _index_rust_repository_locked(repository_path: str | None = None) -> Indexin
 
     return IndexingResult(
         symbols_indexed=len(snapshot.chunks),
-        semantic_documents=0,
+        semantic_documents=len(snapshot.chunks),
         graph_nodes=graph_stats["graph_nodes"],
         graph_edges=graph_stats["graph_edges"],
         files_indexed=snapshot.files_indexed,
@@ -931,7 +931,7 @@ def _replay_indexes_from_storage_locked() -> IndexingResult | None:
     graph_stats = _rebuild_graph_and_semantic_parallel(snapshot)
     return IndexingResult(
         symbols_indexed=len(snapshot.chunks),
-        semantic_documents=0,
+        semantic_documents=len(snapshot.chunks),
         graph_nodes=graph_stats["graph_nodes"],
         graph_edges=graph_stats["graph_edges"],
         files_indexed=snapshot.files_indexed,
@@ -968,7 +968,7 @@ def reindex_semantic_only() -> IndexingResult | None:
 
     return IndexingResult(
         symbols_indexed=len(snapshot.chunks),
-        semantic_documents=0,
+        semantic_documents=len(snapshot.chunks),
         graph_nodes=graph_stats["graph_nodes"],
         graph_edges=graph_stats["graph_edges"],
         files_indexed=snapshot.files_indexed,
@@ -1217,10 +1217,10 @@ def _incremental_update_symbols_locked(
         logger.warning("Failed to register incremental build", exc_info=True)
 
     return IndexingResult(
-        symbols_indexed=len(new_chunks),
-        semantic_documents=len(new_chunks),
+        symbols_indexed=len(all_chunks),
+        semantic_documents=len(all_chunks),
         graph_nodes=graph_stats["graph_nodes"],
         graph_edges=graph_stats["graph_edges"],
-        files_indexed=len(modified_files),
+        files_indexed=len({c.file_path for c in all_chunks}),
         repository_path=str(target_path),
     )
