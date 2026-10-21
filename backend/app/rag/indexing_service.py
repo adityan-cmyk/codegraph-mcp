@@ -68,15 +68,28 @@ def _parent_dir(file_path: str) -> str:
 
 
 def _resolve_candidates(candidate: str, file_path: str, name_index: dict[str, list[tuple[str, str, str]]],
-                        kinds: tuple[str, ...] | None = None) -> list[str]:
+                        kinds: tuple[str, ...] | None = None,
+                        import_map: dict[str, str] | None = None) -> list[str]:
     """Scoped short-name resolution, in priority order:
-    same file > same directory > small ambiguity (<= HUB_LIMIT) > drop.
-    Hub names (new/from/generate with dozens of same-named symbols) used to
-    resolve to EVERY candidate — the phantom-edge problem. `kinds` restricts
-    resolution to those symbol kinds (calls resolve only fns/methods; enum
-    variants and struct tuple constructors are type constructions, not calls)."""
+    imported-name exact match > same file > same directory > small ambiguity
+    (<= HUB_LIMIT) > drop. Hub names (new/from/generate with dozens of
+    same-named symbols) used to resolve to EVERY candidate — the phantom-edge
+    problem. `kinds` restricts resolution to those symbol kinds (calls resolve
+    only fns/methods; enum variants and struct tuple constructors are type
+    constructions, not calls). `import_map` resolves renamed imports
+    (`use foo::find_by_ref_id;`) to the exact symbol even when the short name
+    is shared by several modules."""
     if candidate in _RESOLVE_SKIP_NAMES:
         return []
+    if import_map and candidate in import_map:
+        target = import_map[candidate]
+        entries = name_index.get(target.split("::")[-1]) or []
+        if kinds is not None:
+            entries = [e for e in entries if e[2] in kinds]
+        exact = [sid for sid, _f, _k in entries if sid.endswith(target)]
+        if exact:
+            return exact
+        candidate = target.split("::")[-1]
     entries = name_index.get(candidate) or []
     if not entries:
         return []
@@ -383,33 +396,52 @@ def _extract_call_targets(
     chunk: CodeChunk,
     name_index: dict[str, list[tuple[str, str]]],
     path_index: dict[str, list[str]] | None = None,
+    import_map: dict[str, str] | None = None,
 ) -> list[str]:
     calls: list[str] = []
     # Qualified calls first (Foo::new, Type::method) — precise resolution by
-    # path suffix, immune to hub-name ambiguity.
-    if path_index is not None:
-        for match in QUALIFIED_CALL_PATTERN.finditer(chunk.content):
-            qual = match.group(1)
-            parts = qual.split("::")
-            if len(parts) < 2 or parts[-1] in _RESOLVE_SKIP_NAMES:
-                continue
-            key = f"{parts[-2]}::{parts[-1]}"
-            for symbol_id in path_index.get(key, [])[:HUB_LIMIT]:
-                if symbol_id != chunk.symbol_id and symbol_id not in calls:
-                    calls.append(symbol_id)
+    # path suffix, immune to hub-name ambiguity. Aliased prefixes
+    # (`use wallet::queries::transactions as wallet_transaction_queries` then
+    # `wallet_transaction_queries::find_by_ref_id`) are expanded through the
+    # file's import map — the regex extractor cannot follow aliases on its own
+    # and that exact shape hid fetch_transaction_id's wallet callee.
+    qualified_name_spans: list[tuple[int, int]] = []
+    for match in QUALIFIED_CALL_PATTERN.finditer(chunk.content):
+        qualified_name_spans.append(match.span(1))
+        if path_index is None:
+            continue
+        qual = match.group(1)
+        parts = qual.split("::")
+        if len(parts) < 2 or parts[-1] in _RESOLVE_SKIP_NAMES:
+            continue
+        if import_map and parts[0] in import_map:
+            parts = (import_map[parts[0]] + "::" + "::".join(parts[1:])).split("::")
+        key = f"{parts[-2]}::{parts[-1]}"
+        for symbol_id in path_index.get(key, [])[:HUB_LIMIT]:
+            if symbol_id != chunk.symbol_id and symbol_id not in calls:
+                calls.append(symbol_id)
     for match in CALL_PATTERN.finditer(chunk.content):
+        # The tail of a qualified call (…::find_by_ref_id() already resolved
+        # above — re-resolving the bare name would pull in every same-named
+        # symbol within HUB_LIMIT.
+        name_start, name_end = match.span(1)
+        if any(s <= name_start and name_end <= e for s, e in qualified_name_spans):
+            continue
         candidate = match.group(1)
         if candidate in RUST_KEYWORDS or candidate in RUST_GENERIC_METHODS:
             continue
         if candidate in DERIVE_TRAIT_NAMES:
             continue
-        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index, kinds=_CALLABLE_KINDS):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index, kinds=_CALLABLE_KINDS,
+                                             import_map=import_map):
             if symbol_id != chunk.symbol_id and symbol_id not in calls:
                 calls.append(symbol_id)
     for match in METHOD_CALL_PATTERN.finditer(chunk.content):
         candidate = match.group(1)
         if candidate in RUST_KEYWORDS or candidate in RUST_GENERIC_METHODS:
             continue
+        # Receiver-dispatched (.method()) — import_map is about path names,
+        # not method resolution, so it is deliberately not consulted here.
         for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index, kinds=_CALLABLE_KINDS):
             if symbol_id != chunk.symbol_id and symbol_id not in calls:
                 calls.append(symbol_id)
@@ -463,7 +495,8 @@ def _classify_usage_modes(content: str, target_short_name: str) -> list[str]:
     return modes if modes else ["reference"]
 
 
-def _extract_type_references_with_modes(chunk: CodeChunk, name_index: dict[str, list[str]]) -> list[tuple[str, list[str]]]:
+def _extract_type_references_with_modes(chunk: CodeChunk, name_index: dict[str, list[str]],
+                                        import_map: dict[str, str] | None = None) -> list[tuple[str, list[str]]]:
     """Extract type references with usage mode classification.
 
     Returns list of (symbol_id, usage_modes) tuples.
@@ -478,7 +511,8 @@ def _extract_type_references_with_modes(chunk: CodeChunk, name_index: dict[str, 
             continue
         if candidate in DERIVE_TRAIT_NAMES:
             continue
-        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index, kinds=_TYPE_KINDS):
+        for symbol_id in _resolve_candidates(candidate, chunk.file_path, name_index, kinds=_TYPE_KINDS,
+                                             import_map=import_map):
             if symbol_id != chunk.symbol_id and symbol_id not in seen and symbol_id not in chunk.symbol_id.split("::")[:-1]:
                 seen.add(symbol_id)
                 modes = _classify_usage_modes(chunk.content, candidate)
@@ -831,6 +865,7 @@ def _index_rust_repository_locked(repository_path: str | None = None) -> Indexin
     all_chunks: list[CodeChunk] = []
     sql_edges: list[GraphEdge] = []
     name_index: dict[str, list[str]] = {}
+    import_maps: dict[str, dict[str, str]] = {}
 
     for file_path in rust_files + sql_files:
         relative_path = file_path.relative_to(target_path).as_posix()
@@ -838,6 +873,7 @@ def _index_rust_repository_locked(repository_path: str | None = None) -> Indexin
         chunks, extractor_edges = _extract_chunks_for_file(relative_path, source)
         all_chunks.extend(chunks)
         sql_edges.extend(extractor_edges)
+        import_maps[relative_path] = _build_import_map(_extract_use_statements(source))
 
     name_index = _build_name_index(all_chunks)
     path_index = _build_path_index(all_chunks)
@@ -846,12 +882,12 @@ def _index_rust_repository_locked(repository_path: str | None = None) -> Indexin
     for chunk in all_chunks:
         if _should_skip_edge_extraction(chunk):
             continue
-        calls = _extract_call_targets(chunk, name_index, path_index)
+        calls = _extract_call_targets(chunk, name_index, path_index, import_maps.get(chunk.file_path, {}))
         graph_edges.extend(
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=target_symbol_id, relation="calls")
             for target_symbol_id in calls
         )
-        uses_with_modes = _extract_type_references_with_modes(chunk, name_index)
+        uses_with_modes = _extract_type_references_with_modes(chunk, name_index, import_maps.get(chunk.file_path, {}))
         graph_edges.extend(
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=sid, relation="uses", usage_modes=modes)
             for sid, modes in uses_with_modes
@@ -1053,6 +1089,7 @@ def _incremental_update_symbols_locked(
     removed_files: list[str] = []
     new_chunks: list[CodeChunk] = []
     incremental_sql_edges: list[GraphEdge] = []
+    import_maps: dict[str, dict[str, str]] = {}
 
     for file_path_str in modified_files:
         absolute_path = target_path / file_path_str
@@ -1066,6 +1103,7 @@ def _incremental_update_symbols_locked(
 
         source = absolute_path.read_text(encoding="utf-8")
         file_chunks, extractor_edges = _extract_chunks_for_file(file_path_str, source)
+        import_maps[file_path_str] = _build_import_map(_extract_use_statements(source))
         new_ids = {c.symbol_id for c in file_chunks}
         # Symbols that lived in this file but no longer exist (renamed or
         # deleted) — the source of the stale-symbol bug this replaces.
@@ -1094,12 +1132,12 @@ def _incremental_update_symbols_locked(
     for chunk in new_chunks:
         if _should_skip_edge_extraction(chunk):
             continue
-        calls = _extract_call_targets(chunk, name_index, path_index)
+        calls = _extract_call_targets(chunk, name_index, path_index, import_maps.get(chunk.file_path, {}))
         new_edges.extend(
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=target_id, relation="calls")
             for target_id in calls
         )
-        uses_with_modes = _extract_type_references_with_modes(chunk, name_index)
+        uses_with_modes = _extract_type_references_with_modes(chunk, name_index, import_maps.get(chunk.file_path, {}))
         new_edges.extend(
             GraphEdge(source_symbol_id=chunk.symbol_id, target_symbol_id=sid, relation="uses", usage_modes=modes)
             for sid, modes in uses_with_modes

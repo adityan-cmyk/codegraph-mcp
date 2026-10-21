@@ -81,6 +81,22 @@ def _extract_use_statements(source: str) -> list[str]:
     return [m.group("path").strip() for m in RUST_USE_PATTERN.finditer(source)]
 
 
+def is_test_file_path(file_path: str) -> bool:
+    """True for src/**/tests/** and *_test(s).rs / test(s).rs files.
+
+    Anything under a tests/ directory is test code by construction — helper
+    fns there carry no #[test] attr but must not count as production callers.
+    """
+    if not file_path:
+        return False
+    parts = file_path.replace("\\", "/").split("/")
+    name = parts[-1]
+    return (
+        "tests" in parts
+        or name.endswith(("_test.rs", "_tests.rs", "tests.rs", "test.rs"))
+    )
+
+
 def _count_trivial_lines(source: str) -> int:
     return sum(1 for line in source.splitlines() if TRIVIAL_MOD_PATTERN.match(line))
 
@@ -194,7 +210,13 @@ def generate_module_exports_chunk(file_path: str, source: str) -> CodeChunk | No
     )
 
 
-_TEST_ATTR_PATTERN = re.compile(r"#\[[^\]]*\btest\]")
+# Matches any test attribute form: #[test], #[test(tokio::test)],
+# #[tokio::test], #[actix_web::test]. The old r"\btest\]" required a literal
+# "test]" and missed #[test(tokio::test)] (469 occurrences on master) — those
+# fns were flagged prod and get_tests_for_symbol returned 0.
+_TEST_ATTR_PATTERN = re.compile(
+    r"#\[\s*(?:[A-Za-z_][A-Za-z0-9_]*::)*test\b(?:\s*\(|\s*\])"
+)
 _CFG_TEST_MOD_PATTERN = re.compile(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+")
 
 
@@ -478,20 +500,24 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
                 mc.file_path = file_path
             chunks.extend(method_chunks)
 
-    # Drop function-local consts/statics: the regex has no scope awareness,
-    # so a const inside a fn body gets a module-level symbol_id — three
-    # same-named locals in different fns became three chunks under ONE id,
-    # each duplicating content that already lives in the enclosing fn chunk.
-    body_spans = [
-        (c.start_line, c.end_line)
-        for c in chunks
-        if c.kind in ("fn", "impl")
-    ]
-    if body_spans:
-        def _inside_a_body(c) -> bool:
-            return c.kind in ("const", "static") and any(
-                s < c.start_line and c.end_line <= e for s, e in body_spans
-            )
-        chunks = [c for c in chunks if not _inside_a_body(c)]
+        # Drop function-local consts/statics: the regex has no scope awareness,
+        # so a const inside a fn body gets a module-level symbol_id — three
+        # same-named locals in different fns became three chunks under ONE id,
+        # each duplicating content that already lives in the enclosing fn chunk.
+        body_spans = [
+            (c.start_line, c.end_line)
+            for c in chunks
+            if c.kind in ("fn", "impl")
+        ]
+        if body_spans:
+            def _inside_a_body(c) -> bool:
+                return c.kind in ("const", "static") and any(
+                    s < c.start_line and c.end_line <= e for s, e in body_spans
+                )
+            chunks = [c for c in chunks if not _inside_a_body(c)]
+
+    if is_test_file_path(file_path):
+        for chunk in chunks:
+            chunk.is_test = True
 
     return chunks

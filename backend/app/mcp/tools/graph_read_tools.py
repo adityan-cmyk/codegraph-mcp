@@ -2093,6 +2093,44 @@ _USAGE_MODE_WEIGHTS = {
 }
 
 
+def compute_coverage(repository_path: str, chunks: list) -> dict[str, object]:
+    """Coverage: set difference over one universe of file paths (all .rs
+    files, tests included). The old check excluded tests from `disk` but
+    counted test + .sql paths in `files_indexed` — different universes, so
+    files_indexed (795) > rust_files_on_disk (783) was possible and missing
+    test files stayed invisible (missing_count: 0 while
+    low_balance_core_tests.rs had 0 symbols)."""
+    from pathlib import Path
+
+    from app.rag.ingestion.tree_sitter import is_test_file_path
+
+    repo = Path(repository_path)
+    skip_dirs = {".git", "target", "node_modules", "__pycache__"}
+    disk = {
+        p.relative_to(repo).as_posix()
+        for p in repo.rglob("*.rs")
+        if not any(part in skip_dirs for part in p.relative_to(repo).parts)
+    }
+    indexed_rs = {c.file_path for c in chunks if c.file_path.endswith(".rs")}
+    missing = sorted(disk - indexed_rs)
+    symbol_counts: dict[str, int] = {}
+    for c in chunks:
+        if c.file_path.endswith(".rs") and c.kind not in ("file_summary", "module_exports"):
+            symbol_counts[c.file_path] = symbol_counts.get(c.file_path, 0) + 1
+    test_files_zero_symbols = sorted(
+        f for f in disk
+        if is_test_file_path(f) and symbol_counts.get(f, 0) == 0
+    )
+    return {
+        "rust_files_on_disk": len(disk),
+        "files_indexed": len(indexed_rs),
+        "missing_from_index": missing[:20],
+        "missing_count": len(missing),
+        "test_files_zero_symbols": test_files_zero_symbols[:20],
+        "test_files_zero_symbols_count": len(test_files_zero_symbols),
+    }
+
+
 def get_index_meta() -> dict[str, object]:
     """Get graph build metadata — build timestamp, commit hash, commit drift (commits_behind), coverage stats, gen number, and collection info. Use this to verify the graph is fresh and which classifier version was used. Read-only, safe to call anytime."""
     from app.core.index_store import index_metadata_store
@@ -2119,27 +2157,11 @@ def get_index_meta() -> dict[str, object]:
         except Exception:
             pass
 
-    # Coverage: files on disk vs indexed (tests are excluded by design).
+    # Coverage: files on disk vs indexed — one path universe, tests included.
     coverage = None
     if snapshot and snapshot.repository_path:
         try:
-            from pathlib import Path
-
-            repo = Path(snapshot.repository_path)
-            disk = [
-                p for p in repo.rglob("*.rs")
-                if ".git" not in p.parts and "target" not in p.parts
-                and "tests" not in p.relative_to(repo).parts
-                and not p.relative_to(repo).name.endswith(("_test.rs", "_tests.rs", "tests.rs", "test.rs"))
-            ]
-            indexed_files = {c.file_path for c in snapshot.chunks}
-            missing = [str(p.relative_to(repo)) for p in disk if str(p.relative_to(repo)) not in indexed_files]
-            coverage = {
-                "rust_files_on_disk": len(disk),
-                "files_indexed": len(indexed_files),
-                "missing_from_index": missing[:20],
-                "missing_count": len(missing),
-            }
+            coverage = compute_coverage(snapshot.repository_path, snapshot.chunks)
         except Exception:
             coverage = None
 

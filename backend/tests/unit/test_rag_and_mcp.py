@@ -844,6 +844,137 @@ class ContractDriftTestCase(unittest.TestCase):
         self.assertTrue(chunks["direct_test"].is_test, "standalone #[test] fn must be marked")
         self.assertFalse(chunks["process_payment"].is_test, "preceding fn must not inherit the flag")
 
+    def test_is_test_detection_wrapper_attr_forms(self):
+        from app.rag.ingestion.tree_sitter import extract_rust_chunks
+        src = "\n".join([
+            "#[test(tokio::test)]",
+            "async fn wrapper_form() { assert!(true); }",
+            "#[actix_web::test]",
+            "async fn actix_form() { assert!(true); }",
+            "#[test(flavor = \"multi_thread\")]",
+            "async fn flavored_form() { assert!(true); }",
+            "fn production_sibling() {}",
+        ])
+        chunks = {c.symbol_id.split("::")[-1]: c for c in extract_rust_chunks("crates/netc.rs", src)}
+        self.assertTrue(chunks["wrapper_form"].is_test, "#[test(tokio::test)] must be marked")
+        self.assertTrue(chunks["actix_form"].is_test, "#[actix_web::test] must be marked")
+        self.assertTrue(chunks["flavored_form"].is_test, "#[test(flavor = ...)] must be marked")
+        self.assertFalse(chunks["production_sibling"].is_test, "plain fn must not be marked")
+
+    def test_is_test_file_path_rule(self):
+        from app.rag.ingestion.tree_sitter import extract_rust_chunks, is_test_file_path
+        self.assertTrue(is_test_file_path("src/fastag/tests/low_balance_core_tests.rs"))
+        self.assertTrue(is_test_file_path("crates/wallet_test.rs"))
+        self.assertTrue(is_test_file_path("tests/integration.rs"))
+        self.assertFalse(is_test_file_path("src/fastag/product/core/netc_transaction_core.rs"))
+        src = "fn setup_helper() -> u32 { 1 }\n\nfn calculate_dynamic_low_balance_threshold() {}"
+        chunks = extract_rust_chunks("src/fastag/tests/low_balance_core_tests.rs", src)
+        self.assertTrue(all(c.is_test for c in chunks),
+                        "everything under src/**/tests/ must be flagged test even without #[test] attrs")
+
+    def test_alias_qualified_call_resolves(self):
+        from app.rag.indexing_service import (
+            _build_import_map,
+            _build_name_index,
+            _build_path_index,
+            _extract_call_targets,
+        )
+        from app.rag.ingestion.tree_sitter import _extract_use_statements
+        from app.schemas.codebase import CodeChunk
+        chunks = [
+            CodeChunk(
+                symbol_id="crates::wallet::queries::transactions::find_by_ref_id",
+                file_path="crates/wallet/queries/transactions.rs",
+                kind="fn",
+                content="pub async fn find_by_ref_id() {}",
+                start_line=1,
+                end_line=1,
+            ),
+            CodeChunk(
+                symbol_id="fastag::storage::queries::unsettled_transaction_queries::find_by_ref_id",
+                file_path="src/fastag/storage/queries/unsettled_transaction_queries.rs",
+                kind="fn",
+                content="pub async fn find_by_ref_id() {}",
+                start_line=1,
+                end_line=1,
+            ),
+        ]
+        name_index = _build_name_index(chunks)
+        path_index = _build_path_index(chunks)
+        use_src = "use wallet::queries::transactions as wallet_transaction_queries;\n"
+        import_map = _build_import_map(_extract_use_statements(use_src))
+        caller = CodeChunk(
+            symbol_id="fastag::product::core::netc_transaction_core::fetch_transaction_id",
+            file_path="src/fastag/product/core/netc_transaction_core.rs",
+            kind="fn",
+            content="match wallet_transaction_queries::find_by_ref_id(db, &ref_id).await {",
+            start_line=130,
+            end_line=133,
+        )
+        calls = _extract_call_targets(caller, name_index, path_index, import_map)
+        self.assertIn("crates::wallet::queries::transactions::find_by_ref_id", calls,
+                      "aliased prefix must expand through the import map")
+        self.assertNotIn("fastag::storage::queries::unsettled_transaction_queries::find_by_ref_id", calls,
+                         "alias expansion must not leak into same-named symbols in other modules")
+
+    def test_imported_name_resolves_exact_symbol(self):
+        from app.rag.indexing_service import (
+            _build_import_map,
+            _build_name_index,
+            _extract_call_targets,
+        )
+        from app.rag.ingestion.tree_sitter import _extract_use_statements
+        from app.schemas.codebase import CodeChunk
+        chunks = [
+            CodeChunk(symbol_id="crates::wallet::queries::transactions::find_by_ref_id",
+                      file_path="crates/wallet/queries/transactions.rs", kind="fn",
+                      content="pub async fn find_by_ref_id() {}", start_line=1, end_line=1),
+            CodeChunk(symbol_id="fastag::storage::queries::unsettled_transaction_queries::find_by_ref_id",
+                      file_path="src/fastag/storage/queries/unsettled_transaction_queries.rs", kind="fn",
+                      content="pub async fn find_by_ref_id() {}", start_line=1, end_line=1),
+            CodeChunk(symbol_id="fastag::storage::queries::customer_queries::find_by_ref_id",
+                      file_path="src/fastag/storage/queries/customer_queries.rs", kind="fn",
+                      content="pub async fn find_by_ref_id() {}", start_line=1, end_line=1),
+        ]
+        name_index = _build_name_index(chunks)
+        use_src = "use wallet::queries::transactions::find_by_ref_id;\n"
+        import_map = _build_import_map(_extract_use_statements(use_src))
+        caller = CodeChunk(symbol_id="fastag::handler::run", file_path="src/fastag/handler.rs", kind="fn",
+                           content="find_by_ref_id(db, &ref_id).await", start_line=1, end_line=1)
+        calls = _extract_call_targets(caller, name_index, None, import_map)
+        self.assertEqual(calls, ["crates::wallet::queries::transactions::find_by_ref_id"],
+                         "imported name must resolve to the exact symbol, not all same-named candidates")
+
+    def test_compute_coverage_set_based_and_test_files(self):
+        import tempfile
+        from pathlib import Path
+
+        from app.mcp.tools.graph_read_tools import compute_coverage
+        from app.schemas.codebase import CodeChunk
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / "src" / "fastag" / "tests").mkdir(parents=True)
+            (repo / "src" / "fastag" / "tests" / "low_balance_core_tests.rs").write_text("fn x() {}\n")
+            (repo / "src" / "fastag" / "tests" / "covered_tests.rs").write_text("fn y() {}\n")
+            (repo / "src" / "core.rs").write_text("fn z() {}\n")
+            chunks = [
+                CodeChunk(symbol_id="core::z", file_path="src/core.rs", kind="fn",
+                          content="fn z() {}", start_line=1, end_line=1),
+                CodeChunk(symbol_id="covered_tests::y", file_path="src/fastag/tests/covered_tests.rs", kind="fn",
+                          content="fn y() {}", start_line=1, end_line=1),
+                CodeChunk(symbol_id="covered_tests::file_summary", file_path="src/fastag/tests/covered_tests.rs",
+                          kind="file_summary", content="summary", start_line=1, end_line=1),
+            ]
+            coverage = compute_coverage(temp_dir, chunks)
+            self.assertEqual(coverage["rust_files_on_disk"], 3)
+            self.assertEqual(coverage["files_indexed"], 2)
+            self.assertEqual(coverage["missing_count"], 1)
+            self.assertEqual(coverage["missing_from_index"],
+                             ["src/fastag/tests/low_balance_core_tests.rs"])
+            self.assertEqual(coverage["test_files_zero_symbols_count"], 1)
+            self.assertEqual(coverage["test_files_zero_symbols"],
+                             ["src/fastag/tests/low_balance_core_tests.rs"])
+
     def test_get_tests_for_symbol(self):
         from app.rag.retrieval.graph import graph_index
         graph_index.upsert_symbol("crates::x::pay", metadata={"kind": "fn", "file_path": "crates/x.rs"})
