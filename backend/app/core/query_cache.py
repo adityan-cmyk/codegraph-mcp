@@ -76,7 +76,7 @@ def _bump(stat: str, n: int = 1) -> None:
             QUERY_CACHE_ERRORS.inc()
         QUERY_CACHE_BYTES.set(_STATS["bytes_stored"])
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
 
 def _current_gen() -> int:
@@ -175,7 +175,7 @@ def stats() -> dict:
                 "maxmemory_human": client.info("memory").get("maxmemory_human"),
             }
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
     hits, misses = out.get("hits", 0), out.get("misses", 0)
     out["hit_rate"] = round(hits / (hits + misses), 4) if (hits + misses) else None
     out["max_ttl_seconds"] = MAX_TTL

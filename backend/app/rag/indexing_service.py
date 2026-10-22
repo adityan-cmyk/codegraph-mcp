@@ -546,7 +546,7 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
         from app.core.prom_metrics import INDEX_REBUILD_IN_PROGRESS
         INDEX_REBUILD_IN_PROGRESS.set(1)
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     if hasattr(semantic_index, 'get_active_collection_name'):
         weaviate_col = semantic_index.get_active_collection_name()
@@ -672,7 +672,7 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
         from app.core.prom_metrics import INDEX_REBUILD_IN_PROGRESS
         INDEX_REBUILD_IN_PROGRESS.set(0)
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     # New generation active — gen-keyed entries miss anyway, but tagged
     # graph answers (blast radius etc.) from the PREVIOUS gen still occupy
@@ -682,7 +682,7 @@ def _rebuild_graph_and_semantic_parallel(snapshot: IndexSnapshot, *, force: bool
 
         invalidate_tags("graph")
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
 
     def _cleanup_old_gen():
@@ -759,7 +759,7 @@ def _wait_for_weaviate_ready() -> None:
                 logger.info("Weaviate is ready")
                 return
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
         logger.info("Waiting for weaviate to be ready (attempt %d/30)", wait + 1)
         time.sleep(10)
     logger.warning("Weaviate did not become ready after 5 minutes, proceeding anyway")
@@ -773,7 +773,7 @@ def _rebuild_semantic_index(snapshot: IndexSnapshot, *, force: bool = False) -> 
         from app.core.prom_metrics import INDEX_REBUILD_IN_PROGRESS
         INDEX_REBUILD_IN_PROGRESS.set(1)
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
     try:
         _wait_for_weaviate_ready()
         if not force:
@@ -816,7 +816,7 @@ def _rebuild_semantic_index(snapshot: IndexSnapshot, *, force: bool = False) -> 
             from app.core.prom_metrics import INDEX_REBUILD_IN_PROGRESS
             INDEX_REBUILD_IN_PROGRESS.set(0)
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
 
 def _start_semantic_rebuild_background(snapshot: IndexSnapshot, *, force: bool = False) -> None:
@@ -918,7 +918,7 @@ def _index_rust_repository_locked(repository_path: str | None = None) -> Indexin
         if head_result.returncode == 0:
             head_commit = head_result.stdout.strip()
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     snapshot = IndexSnapshot(
         repository_path=str(target_path),
@@ -1168,7 +1168,7 @@ def _incremental_update_symbols_locked(
         if head_result.returncode == 0:
             head_commit = head_result.stdout.strip()
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     index_metadata_store.update_incremental(
         modified_chunks=new_chunks,

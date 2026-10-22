@@ -13,7 +13,6 @@ import inspect
 import json
 import logging
 import traceback
-import uuid
 from typing import Any
 
 from starlette.applications import Starlette
@@ -22,7 +21,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
-from uvicorn import Config, Server
 
 from app.mcp.tools.graph_read_tools import (
     get_tests_for_symbol,
@@ -1425,7 +1423,7 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
             capacity = int(get_setting("mcp_capacity", self._TOOL_CAPACITY))
             refill = float(get_setting("mcp_refill", self._TOOL_REFILL_PER_SEC))
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
         BearerTokenAuthMiddleware._settings_cache = (now, (capacity, refill))
         return capacity, refill
 

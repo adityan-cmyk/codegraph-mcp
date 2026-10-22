@@ -203,7 +203,7 @@ def send_email(subject: str, body_html: str, retries: int = 3, retry_delay: floa
                 from app.core.prom_metrics import EMAILS
                 EMAILS.labels(status="sent").inc()
             except Exception:
-                pass
+                logger.debug("non-fatal error swallowed", exc_info=True)
             logger.info("Notification sent: %s", subject)
             _log_email(sender, recipient, subject, {
                 "status": "sent",
@@ -225,7 +225,7 @@ def send_email(subject: str, body_html: str, retries: int = 3, retry_delay: floa
                     from app.core.prom_metrics import EMAILS
                     EMAILS.labels(status="failed").inc()
                 except Exception:
-                    pass
+                    logger.debug("non-fatal error swallowed", exc_info=True)
                 logger.warning("Failed to send notification after %d attempts: %s", retries, subject, exc_info=True)
                 _log_email(sender, recipient, subject, {
                     "status": "failed",
@@ -349,7 +349,7 @@ def _save_build_stats(stats: dict) -> None:
         r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
         r.set("build:last_stats", json.dumps(stats), ex=90 * 86400)  # 90 days
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
 
 def notify_build_completed(
@@ -500,7 +500,7 @@ def _usage_section() -> str:
             {"num": f"{total:,}", "label": "tool calls (24h)"},
             {"num": str(clients), "label": "known clients"},
         ]
-        html = f"<div class='section'>MCP usage</div>" + _stat_cards(cards)
+        html = "<div class='section'>MCP usage</div>" + _stat_cards(cards)
         if top_queries:
             rows = "".join(
                 f"<tr><td style='text-align:right'><b>{count}</b></td><td><code>{q[:80]}</code></td></tr>"
@@ -523,7 +523,7 @@ def _index_health_section() -> str:
         stats = graph_index.get_stats()
         nodes, edges = stats.get("graph_nodes", 0), stats.get("graph_edges", 0)
 
-        gen = model = collection = "?"
+        collection = "?"
         snapshot_age = "?"
         try:
             from app.core.index_store import index_metadata_store
@@ -535,12 +535,12 @@ def _index_health_section() -> str:
                 else:
                     snapshot_age = "unknown"
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
         try:
             if hasattr(semantic_index, "get_active_collection_name"):
                 collection = semantic_index.get_active_collection_name()
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
         r = redis_lib.Redis.from_url(settings.redis_url, decode_responses=True)
         history = r.lrange("build:duration_history", 0, 0)
@@ -554,7 +554,7 @@ def _index_health_section() -> str:
                 last_build = f"{_fmt_duration(entry['duration_sec'])} build, {age_s / 3600:.0f}h ago"
 
         return (
-            f"<div class='section'>Index health</div>"
+            "<div class='section'>Index health</div>"
             + _kv_table([
                 ("Graph", f"{nodes:,} nodes, {edges:,} edges"),
                 ("Embedding model", "BAAI/bge-base-en-v1.5 (768-dim)"),
@@ -575,7 +575,7 @@ def _reinforcement_section() -> str:
         unconsumed = stats.get("unconsumed_accepted", 0)
         progress = min(int(unconsumed / 10 * 100), 100)
         return (
-            f"<div class='section'>Reinforcement loop</div>"
+            "<div class='section'>Reinforcement loop</div>"
             + _kv_table([
                 ("Accepted feedback (unconsumed)", f"{unconsumed} / 10 toward autobuild"),
                 ("Autobuild progress", f"{progress}%"),
@@ -657,7 +657,7 @@ def notify_daily_digest() -> None:
         up_to_date = "<span class='ok'>Up to date</span>" if last == head else "<span class='fail'>Behind head</span>"
         head_commit = head[:12]
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     body = (
         _stat_cards([
@@ -740,7 +740,7 @@ def _feedback_summary_section() -> str:
                  f"<td>{r.get('status', '')}</td><td>{gist}</td></tr>")
     for s in search.get("recent", [])[:5]:
         when = s["created_at"].strftime("%H:%M") if s.get("created_at") else ""
-        mark = f"<span class='ok'>+1</span>" if s.get("feedback", 0) > 0 else "<span class='fail'>-1</span>"
+        mark = "<span class='ok'>+1</span>" if s.get("feedback", 0) > 0 else "<span class='fail'>-1</span>"
         gist = (s.get("reason") or s.get("query_text") or "")[:160].replace(chr(10), " ")
         rows += f"<tr><td>{when}</td><td>search</td><td>{mark}</td><td>—</td><td>{gist}</td></tr>"
 

@@ -274,7 +274,7 @@ def extract_symbols_from_diff(diff_text: str) -> dict[str, object]:
                     pairs.append((ratio, d, a))
         used_d: set[str] = set()
         used_a: set[str] = set()
-        for ratio, d, a in sorted(pairs, reverse=True):
+        for _ratio, d, a in sorted(pairs, reverse=True):
             if d in used_d or a in used_a:
                 continue
             used_d.add(d)

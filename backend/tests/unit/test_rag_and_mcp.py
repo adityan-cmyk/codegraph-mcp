@@ -137,13 +137,13 @@ fn login_user() {
             with patch("app.rag.indexing_service.settings.indexing_allowed_roots", [temp_dir]), patch(
                 "app.rag.indexing_service.settings.codebase_root_path", temp_dir
             ):
-                indexed = index_rust_repository(temp_dir)
+                index_rust_repository(temp_dir)
 
         semantic_index.reset_documents()
         graph_index.reset()
 
         replayed = replay_indexes_from_storage()
-        replay_query = semantic_index.query_chunks("login user", limit=5)
+        semantic_index.query_chunks("login user", limit=5)
         replay_radius = get_blast_radius("auth::login_user")
 
         self.assertIsNotNone(replayed)
@@ -161,9 +161,9 @@ fn login_user() {
         )
 
         graph_index.reset()
-        from app.rag.indexing_service import _semantic_rebuild_lock, _semantic_rebuild_in_progress
+        from app.rag.indexing_service import _semantic_rebuild_lock
         with _semantic_rebuild_lock:
-            was_in_progress = _semantic_rebuild_in_progress
+            pass
 
         response = self.client.post("/api/index/replay")
 
@@ -666,7 +666,7 @@ class ContractDriftTestCase(unittest.TestCase):
         tick_source = inspect.getsource(agent)
         # keys the tick reads
         required = {"total_feedback"}
-        m = re.search(r"fb_stats\.get\(\"(\w+)\", 0\)|fb_stats\[\"(\w+)\"\]", tick_source)
+        re.search(r"fb_stats\.get\(\"(\w+)\", 0\)|fb_stats\[\"(\w+)\"\]", tick_source)
         keys_used = set(re.findall(r"fb_stats(?:\.get)?\[?\"(\w+)\"", tick_source)) | required
         # keys the store returns
         returned = set(re.findall(r"\"(\w+)\":", source))
@@ -796,7 +796,7 @@ class ContractDriftTestCase(unittest.TestCase):
         from app.rag.ingestion.observations import extract_observations
         src = "/*\nfn old_fn(x: u32) -> u32 {\n    let y = x + 1;\n    y\n}\n*/\nfn live() {}"
         obs = extract_observations(src, "t.rs", [])
-        blocks = [o for o in obs if o.kind == "commented_code" and "/*" in o.detail or "dead code" in o.detail]
+        [o for o in obs if o.kind == "commented_code" and "/*" in o.detail or "dead code" in o.detail]
         self.assertTrue(any("dead code" in (o.detail or "") for o in obs), f"expected dead-code observation, got {[o.kind for o in obs]}")
 
     def test_in_body_modification_via_hunk_header(self):
@@ -1419,7 +1419,6 @@ class AdminControlPlaneTestCase(unittest.TestCase):
 
     def test_scip_edge_extraction(self):
         from types import SimpleNamespace
-        from unittest.mock import patch
         from app.rag.ingestion import scip_ingestor as si
 
         # synthesize a minimal protobuf index
@@ -1480,7 +1479,6 @@ class ToolsDocContractTestCase(unittest.TestCase):
     def test_generated_table_matches_registry(self):
         from pathlib import Path
 
-        from app.mcp.readonly_server import _TOOLS
         from app.mcp.tools_doc import extract_generated_section, render_tools_table
 
         doc_candidates = [
@@ -2449,7 +2447,6 @@ class ReviewFixesTestCase_2(unittest.TestCase):
 
         from app.core.rate_limit import BodySizeLimitMiddleware, _MAX_BODY_BYTES
 
-        received_status = []
 
         async def inner(scope, receive, send):
             body = b""

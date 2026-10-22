@@ -1,0 +1,18 @@
+# Static checks: pyflakes (F), bugbear (B), bandit (S).
+# Enforced in CI (.github/workflows/ci.yml) — run locally: ruff check backend
+[lint]
+select = ["F", "B", "S"]
+
+[lint.per-file-ignores]
+# Fixed-argv subprocess calls (git/docker), shell=False, no untrusted input.
+"backend/app/rag/ingestion/git_ingestor.py" = ["S603", "S607"]
+"backend/app/rag/reinforcement/agent.py" = ["S603", "S607"]
+"backend/app/core/notifications.py" = ["S603", "S607"]
+"backend/app/main.py" = ["S603", "S607"]
+"backend/app/mcp/tools/graph_read_tools.py" = ["S603", "S607"]
+# Settings defaults, always overridden by env in real deploys: bind-all is the
+# LAN MCP server's design; neo4j "password" is the dev-default constructor arg.
+"backend/app/core/config.py" = ["S104", "S105"]
+"backend/app/rag/retrieval/neo4j_graph.py" = ["S107"]
+# Test fixtures write under /tmp on purpose.
+"backend/tests/*" = ["S108"]

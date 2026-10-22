@@ -17,7 +17,6 @@ from app.api.routers.admin import router as admin_router
 from app.api.routers.admin_console import router as admin_console_router
 from app.core.config import settings
 from app.core.health import check_all_backends, check_readiness
-from app.core.metrics import metrics_collector
 from app.core.tracing_service import tracing_service
 from app.rag.indexing_service import index_rust_repository, replay_indexes_from_storage
 
@@ -48,7 +47,7 @@ async def lifespan(app: FastAPI):
             timeout=5,
         )
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     if settings.index_on_startup and settings.codebase_root_path:
         logger.info("Auto-indexing repository on startup: %s", settings.codebase_root_path)

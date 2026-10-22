@@ -146,7 +146,7 @@ def _collect_recovery_stats() -> list[tuple[str, str]]:
         last = get_last_indexed_commit()
         rows.append(("index up-to-date", "yes" if head == last else f"NO — behind {str(head)[:12]}"))
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     rows.append(("newest backup", _newest_backup_age_hours()))
     return rows

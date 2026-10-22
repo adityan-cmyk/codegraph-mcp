@@ -139,7 +139,7 @@ def decide(state: str, questions: dict) -> dict | None:
         return None
     if not isinstance(questions, dict) or not questions or len(questions) > MAX_QUESTIONS:
         return None
-    for name, q in questions.items():
+    for _name, q in questions.items():
         if not isinstance(q, dict) or q.get("type") not in _ALLOWED_TYPES:
             return None
 

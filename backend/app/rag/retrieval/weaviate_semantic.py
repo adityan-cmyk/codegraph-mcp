@@ -1,9 +1,7 @@
 import logging
 import threading
-import time
 import uuid
 
-import numpy as np
 from sentence_transformers import SentenceTransformer
 
 import weaviate
@@ -104,7 +102,7 @@ class WeaviateSemanticIndex:
                     logger.info("CodeChunkB has %d objects vs CodeChunk has %d — using CodeChunkB", ccb_count, cc_count)
                     return "CodeChunkB"
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
         return "CodeChunk"
 
     def _get_client(self):
@@ -145,7 +143,7 @@ class WeaviateSemanticIndex:
             try:
                 self._get_client().collections.delete(shadow_name)
             except Exception:
-                pass
+                logger.debug("non-fatal error swallowed", exc_info=True)
             self._create_code_chunk_collection(shadow_name)
             self._shadow_collection = shadow_name
             logger.info(
@@ -200,7 +198,7 @@ class WeaviateSemanticIndex:
             enriched = [_enrich_text(c.symbol_id, c.content) for c in batch_chunks]
             embeddings = embed_texts(enriched)
             with collection.batch.fixed_size(batch_size=batch_size) as batch:
-                for chunk, vec in zip(batch_chunks, embeddings):
+                for chunk, vec in zip(batch_chunks, embeddings, strict=False):
                     obj_uuid = str(uuid.uuid5(_UUID_NAMESPACE, f"{branch_name}:{chunk.symbol_id}"))
                     batch.add_object(
                         properties={
@@ -274,9 +272,9 @@ class WeaviateSemanticIndex:
                             )
                         )
                 except Exception:
-                    pass
+                    logger.debug("non-fatal error swallowed", exc_info=True)
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
         results.sort(key=lambda m: m.score, reverse=True)
         return results[:limit]
@@ -287,7 +285,7 @@ class WeaviateSemanticIndex:
             self._get_client().collections.delete(col_name)
             logger.info("Cleared branch collection: %s", col_name)
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
     def reset(self) -> None:
         """Reset all documents (test helper)."""
@@ -322,7 +320,7 @@ class WeaviateSemanticIndex:
             embeddings = embed_texts(enriched)
 
             with collection.batch.fixed_size(batch_size=batch_size) as batch:
-                for chunk, vec in zip(batch_chunks, embeddings):
+                for chunk, vec in zip(batch_chunks, embeddings, strict=False):
                     obj_uuid = str(uuid.uuid5(_UUID_NAMESPACE, chunk.symbol_id))
                     batch.add_object(
                         properties={
@@ -344,7 +342,7 @@ class WeaviateSemanticIndex:
                 from app.core.prom_metrics import BUILD_BATCHES
                 BUILD_BATCHES.inc()
             except Exception:
-                pass
+                logger.debug("non-fatal error swallowed", exc_info=True)
             logger.info("Embedded and inserted %d/%d chunks (collection: %s)", min(i + embed_batch_size, len(chunks)), len(chunks), write_name)
             self._progress_done = min(i + embed_batch_size, len(chunks))
 

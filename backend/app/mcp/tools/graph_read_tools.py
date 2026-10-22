@@ -772,7 +772,7 @@ def _record_click_through(symbol_id: str) -> None:
                     original_score=0.5,
                 )
             except Exception:
-                pass
+                logger.debug("non-fatal error swallowed", exc_info=True)
             _RECENT_SEARCHES.pop(next((k for k, v in _RECENT_SEARCHES.items() if v is entry), None), None)
             return
 
@@ -1080,8 +1080,8 @@ def _dependency_dead_end_hints(from_symbol: str, to_symbol: str, max_depth: int)
             # pattern took 237s on the live graph (unacceptable on a tool path)
             def _call_neighborhood(sid: str) -> set[str]:
                 rows = session.run(
-                    f"""
-                    MATCH (s:Symbol {{id: $sid, gen: $gen}})-[:CALLS*1..2]-(n:Symbol)
+                    """
+                    MATCH (s:Symbol {id: $sid, gen: $gen})-[:CALLS*1..2]-(n:Symbol)
                     WHERE n.gen = $gen AND n.id <> $sid
                       AND NOT n.id ENDS WITH 'GlobalState' AND NOT n.id ENDS WITH 'FastagGlobalState'
                     RETURN DISTINCT n.id AS id LIMIT 400
@@ -1095,7 +1095,7 @@ def _dependency_dead_end_hints(from_symbol: str, to_symbol: str, max_depth: int)
                 hints["nearest_common_neighbors"] = near
                 hints["note"] = "no direct path — these shared neighbors are where the two flows meet (async boundaries like job queues commonly sit between them)"
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
     return hints
 
 
@@ -1233,7 +1233,7 @@ def get_graph_stats() -> dict[str, object]:
             stats["excluded_from_graph"] = len(snapshot.chunks) - stats.get("real_symbols", stats.get("graph_nodes", len(snapshot.chunks)))
             stats["exclusion_note"] = "file summaries, module exports, trivial constants, keyword-named parser artifacts"
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
     return stats
 
 
@@ -1379,7 +1379,7 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
                     module_prefix = info["module_prefix"]
                     break
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
     file_symbols: dict[str, list] = {}
     for c in snapshot.chunks:
@@ -1407,7 +1407,7 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
                 for f in commit.get("files") or []:
                     fix_counts[f] = fix_counts.get(f, 0) + 1
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     # Ownership concentration: churn funneled through one author is a
     # bus-factor signal on top of raw churn.
@@ -1416,7 +1416,7 @@ def find_hotspots(days: int = 30, limit: int = 15, min_churn: int = 3, module_pr
         from app.rag.ingestion.git_ingestor import get_ownership
         ownership = get_ownership(days)
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     hotspots: list[dict[str, object]] = []
     for file_path, commit_count in churn.items():
@@ -1650,7 +1650,7 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
                         for sid in matches
                     ]
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
     if not results and fuzzy:
         try:
@@ -1697,7 +1697,7 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
                                 "match_type": "typo_correction",
                             })
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
     if search_files:
         try:
@@ -1726,7 +1726,7 @@ def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = Tr
                         if len(results) >= limit:
                             break
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
     # a filename-looking query wants the file's symbols first — fuzzy name
     # hits (module names, artifacts) ranked above file matches before
@@ -1761,7 +1761,7 @@ def _rerank_via_sidecar(query: str, documents: list[str], timeout: float = 4.0) 
             data = r.json()
             return data
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
     return None
 
 
@@ -1878,13 +1878,13 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
             for k in stale:
                 _RECENT_SEARCHES.pop(k, None)
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     try:
         from app.rag.reinforcement.feedback_store import record_query_pattern
         record_query_pattern(query, [m.symbol_id for m, _, _ in reranked if boost > 0])
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     SEMANTIC_SEARCH_LATENCY_MS.observe((_t.monotonic() - _search_start) * 1000)
     # Low-relevance signal: the TOP hit sitting at the 0.5 fallback floor
@@ -2160,7 +2160,7 @@ def get_index_meta() -> dict[str, object]:
         try:
             weaviate_collection = semantic_index.get_active_collection_name()
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
     # Coverage: files on disk vs indexed — one path universe, tests included.
     coverage = None
@@ -2183,7 +2183,7 @@ def get_index_meta() -> dict[str, object]:
             if out.returncode == 0 and out.stdout.strip().isdigit():
                 commits_behind = int(out.stdout.strip())
         except Exception:
-            pass
+            logger.debug("non-fatal error swallowed", exc_info=True)
 
     # Symbol-set fingerprint: the commit pointer alone claimed freshness while
     # deleted symbols lingered from another revision. Three-way agreement —

@@ -2,7 +2,6 @@
 
 import logging
 import subprocess
-from pathlib import Path
 
 from app.rag.indexing_service import incremental_update_symbols, resolve_repository_path
 from app.rag.retrieval.graph import graph_index
@@ -205,7 +204,7 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
                 from app.core.prom_metrics import BUILD_DURATION_MS
                 BUILD_DURATION_MS.labels(build_type="incremental").observe((_time.time() - _start) * 1000)
             except Exception:
-                pass
+                logger.debug("non-fatal error swallowed", exc_info=True)
             notify_build_completed(
                 "incremental",
                 graph_nodes=result.graph_nodes,
@@ -234,7 +233,7 @@ def ingest_incremental(repository_path: str | None = None) -> dict[str, object]:
 
         invalidate_tags("git")
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
 
     return {
         "status": "incremental_update",

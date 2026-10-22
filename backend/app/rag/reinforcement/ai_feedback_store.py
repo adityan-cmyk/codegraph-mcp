@@ -112,12 +112,16 @@ def _validate_results_used(results_used: list[dict]) -> list[str]:
         sid = (item or {}).get("symbol_id")
         if not sid:
             continue
+        fabricated_exists = True
         try:
             from app.rag.retrieval.graph import graph_index
-            if not graph_index.has_symbol(sid):
-                fabricated.append(sid)
+            fabricated_exists = graph_index.has_symbol(sid)
         except Exception:
-            continue  # index unavailable — let the gate judge, don't hard-fail
+            # index unavailable — let the gate judge, don't hard-fail
+            logger.debug("symbol existence check failed for %s", sid, exc_info=True)
+            fabricated_exists = True
+        if not fabricated_exists:
+            fabricated.append(sid)
     return fabricated
 
 
@@ -182,7 +186,7 @@ def submit_feedback(
         from app.core.prom_metrics import FEEDBACK_SUBMISSIONS
         FEEDBACK_SUBMISSIONS.inc()
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
     logger.info(
         "AI feedback submitted: id=%s client=%s rating=%s tools=%d",
         feedback_id, client_id, quality_rating, len(tools_called),
@@ -305,7 +309,7 @@ def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
             for row in rows:
                 import time as _t
 
-                from app.core.prom_metrics import FEEDBACK_SUBMISSIONS, GATE_LATENCY_MS, GATE_VERDICTS
+                from app.core.prom_metrics import GATE_LATENCY_MS, GATE_VERDICTS
 
                 # Interactive decisions outrank the gate: if an agent-facing
                 # make_decision is waiting on the model, defer remaining
@@ -354,7 +358,7 @@ def evaluate_pending_feedback(limit: int = 50) -> dict[str, int]:
                         from app.core.prom_metrics import FEEDBACK_CLASSIFICATIONS
                         FEEDBACK_CLASSIFICATIONS.labels(type=fb_type).inc()
                     except Exception:
-                        pass
+                        logger.debug("non-fatal error swallowed", exc_info=True)
                     cur.execute(
                         """
                         UPDATE ai_feedback

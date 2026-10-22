@@ -46,7 +46,7 @@ def _range_start_line(range_array) -> int | None:
         if vals and isinstance(vals[0], int):
             return vals[0]
     except Exception:
-        pass
+        logger.debug("non-fatal error swallowed", exc_info=True)
     return None
 
 

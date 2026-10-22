@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check backend
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Unit suite runs in a --network none container (scripts/run-tests.sh)
+      # so it can never reach real Postgres/Neo4j/Weaviate — same guard as
+      # local. The tools-doc contract test runs inside tests/unit.
+      - run: docker compose build backend
+      - run: ./scripts/run-tests.sh tests/unit -q

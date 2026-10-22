@@ -510,9 +510,9 @@ def extract_rust_chunks(file_path: str, source: str) -> list[CodeChunk]:
             if c.kind in ("fn", "impl")
         ]
         if body_spans:
-            def _inside_a_body(c) -> bool:
+            def _inside_a_body(c, _spans=body_spans) -> bool:
                 return c.kind in ("const", "static") and any(
-                    s < c.start_line and c.end_line <= e for s, e in body_spans
+                    s < c.start_line and c.end_line <= e for s, e in _spans
                 )
             chunks = [c for c in chunks if not _inside_a_body(c)]
 
