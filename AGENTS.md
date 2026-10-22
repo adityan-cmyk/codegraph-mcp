@@ -12,7 +12,7 @@ Always use: `./scripts/run-tests.sh` — runs pytest in a `--network none` conta
 
 | Tool | When to use |
 |---|---|
-| `search_symbols` | FIRST — find exact symbol_ids by partial name (e.g. "InventoryClient") |
+| `search_symbols` | FIRST — find exact symbol_ids by partial name (e.g. "CatalogClient") |
 | `search_symbols_batch` | Resolve many names in ONE call (imports, call targets) — cuts round trips |
 | `search_symbols_enhanced` | When search_symbols returns 0 — searches file paths, short names, fuzzy matching |
 | `get_blast_radius` | Get callers, callees, type-users, used-types for a symbol + risk score + usage modes + optional usage_modes_filter |
@@ -30,8 +30,8 @@ Always use: `./scripts/run-tests.sh` — runs pytest in a `--network none` conta
 | `submit_ai_feedback` | After completing PR review — submit full analysis summary (tools called, results used, expected, rating, suggestions) |
 | `get_reinforcement_stats` | See which symbols are boosted/penalized from past feedback |
 | `find_warnings_in_blast_radius` | Metal detector — TODO/FIXME comments, swallowed errors, stub fns, commented-out code, fail-open defaults within a symbol's blast radius |
-| `find_field_access` | Readers/writers of a struct field — "who reads ChargebackTxn.transaction_ref_id" without grep |
-| `find_string_producers` | Symbols producing a string literal — catches two producers disagreeing (Rust "UT-TXN-" vs SQL 'TXN-') |
+| `find_field_access` | Readers/writers of a struct field — "who reads LedgerEntry.external_ref_id" without grep |
+| `find_string_producers` | Symbols producing a string literal — catches two producers disagreeing (Rust "EXT-REF-" vs SQL 'REF-') |
 | `diff_modules` | Symbol-set drift between counterpart modules (sync vs async generators, handler mirrors) |
 | `find_cycles` | Circular dependencies in the module graph |
 | `get_crate_graph` | Workspace crate dependency graph, dependents, cross-crate risk |
@@ -66,19 +66,19 @@ After calling `semantic_search`, if you can identify specific results:
 
 ```
 submit_search_feedback({
-  "query_text": "PPI load reservation flow",
-  "symbol_id": "crates::wallet::load::ppi_reservation",
+  "query_text": "payment load reservation flow",
+  "symbol_id": "crates::billing::load::payment_reservation",
   "feedback": -1,
   "original_score": 0.72,
-  "reason": "Not the relevant PPI flow — surfaced a rate limiter instead"
+  "reason": "Not the relevant payment flow — surfaced a rate limiter instead"
 })
 ```
 
 Or query-level (no specific symbol):
 ```
 submit_search_feedback({
-  "query_text": "dormancy customer activity report audit trail",
-  "reason": "Expected dormancy report and manual deactivation anchors but they were not surfaced"
+  "query_text": "account activity report audit trail",
+  "reason": "Expected activity report and manual deactivation anchors but they were not surfaced"
 })
 ```
 
@@ -97,7 +97,7 @@ submit_ai_feedback({
   "results_used": [
     {"symbol_id": "crates::common::redis::config::build_client", "file_path": "crates/common/src/redis/config.rs", "helpful": true, "notes": "Best anchor for redis-rs upgrade"}
   ],
-  "results_expected": "Expected to find dormancy report and manual deactivation anchors",
+  "results_expected": "Expected to find activity report and manual deactivation anchors",
   "quality_rating": 3,
   "improvement_suggestions": "Search should match on partial function names, not just semantic meaning"
 })
@@ -116,6 +116,6 @@ Shows how many symbols are boosted/penalized from accumulated feedback.
 ## Notes
 
 - The MCP server is **stateless** — no session required. You can call `tools/list` and `tools/call` directly.
-- The graph indexes a Rust codebase. Symbol IDs use `::` paths (e.g. `crates::inventory::client::InventoryClient`).
+- The graph indexes a Rust codebase. Symbol IDs use `::` paths (e.g. `crates::catalog::client::CatalogClient`).
 - All 29 tools are available at `http://<host-ip>:8002/mcp` via MCP JSON-RPC.
 - The feedback API is at `http://<host-ip>:8000/api/feedback/`.
