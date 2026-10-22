@@ -24,6 +24,7 @@ if not os.environ.get("CODEGRAPH_TESTS_ALLOW_REAL_BACKENDS"):
     os.environ["SEMANTIC_INDEX_BACKEND"] = "memory"
     os.environ["GRAPH_INDEX_BACKEND"] = "memory"
     os.environ["INDEX_METADATA_BACKEND"] = "memory"
+    os.environ["CLIENT_TOKENS_BACKEND"] = "memory"
 
     # Strip any real backend connection vars
     for var in (

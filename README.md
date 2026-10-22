@@ -26,7 +26,7 @@ Since gen-9 the graph is **SCIP-refined**: a rust-analyzer index supplies type-r
 
 The backend embeds queries and chunks locally (`BAAI/bge-base-en-v1.5`, 768-dim); Weaviate collections use `Vectorizer.none()` and receive vectors directly — there is no external embedding sidecar.
 
-Observability (internal-only except Grafana): Prometheus (30d TSDB, bearer-token scrape), Loki (30d logs), cAdvisor, and Grafana dashboards (`codegraph`, `codegraph-admin`) — see [docs/security.md](docs/security.md) for the network posture.
+Observability (internal-only except Grafana): Prometheus (30d TSDB, bearer-token scrape), Loki (30d logs), cAdvisor, and Grafana dashboards (`overview`) — see [docs/security.md](docs/security.md) for the network posture.
 
 An interactive version of this diagram lives in [docs/architecture.html](docs/architecture.html).
 
@@ -34,7 +34,7 @@ An interactive version of this diagram lives in [docs/architecture.html](docs/ar
 
 | Service | Purpose | Port | Profile |
 |---|---|---|---|
-| `backend` | FastAPI REST + stateless MCP server (bearer auth, token-bucket rate limiting, Redis query cache, admin console at `/admin`) | 8000, 8002 | core |
+| `backend` | FastAPI REST + stateless MCP server (bearer auth, token-bucket rate limiting, Redis query cache, per-user key form in Grafana) | 8000, 8002 | core |
 | `postgres` | Snapshots, feedback, build registry | 5433 | core |
 | `redis` | Query cache (tagged, compressed), token buckets | 6380 | core |
 | `neo4j` | Code dependency graph (generation-tagged, zero-downtime rebuild) | 7474/7687 | core |
@@ -84,7 +84,7 @@ docker compose up -d
 - API health: `http://localhost:8000/health`
 - MCP endpoint: `http://<host-ip>:8002/mcp`
 - MCP tool directory: `http://<host-ip>:8002/` (GET)
-- Admin console: `http://<host-ip>:8000/admin` (tailnet/LAN only)
+- Per-user keys: Grafana → **Overview** dashboard → **User keys** form (needs the admin panel token; keys are stored hashed)
 
 ---
 

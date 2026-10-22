@@ -117,7 +117,7 @@ def _filter_noise(results: list) -> list:
 
 
 def search_symbols(query: str, limit: int = 20) -> dict[str, object]:
-    """Search for symbols in the graph by partial name match. Use this FIRST when you don't know the exact symbol_id — it returns matching symbol IDs that you can then pass to get_blast_radius or traverse_graph. Provide a partial name (e.g. 'InventoryClient', 'process_review', 'tag_inventory')."""
+    """Search for symbols in the graph by partial name match. Use this FIRST when you don't know the exact symbol_id — it returns matching symbol IDs that you can then pass to get_blast_radius or traverse_graph. Provide a partial name (e.g. 'CatalogClient', 'process_review', 'sync_catalog')."""
     limit = max(1, min(limit, 50))
     if not query or not query.strip():
         return {"error": "query must be a non-empty symbol-name fragment", "query": query}
@@ -153,7 +153,7 @@ def search_symbols_batch(queries: list[str], limit: int = 5) -> dict[str, object
 
 
 def find_field_access(struct_name: str, field: str) -> dict[str, object]:
-    """Find readers and writers of a struct field — 'who reads ChargebackTxn.transaction_ref_id' without grep. Scans every indexed symbol body for field accesses: readers touch `.field`, writers assign `.field =` or construct `field: value`. Provide struct_name (e.g. 'ChargebackTxn' — '' to scan all structs) and field (e.g. 'transaction_ref_id'). Returns per-site symbol_id/file/line/snippet so you can jump to the exact access. Read-only, safe to call anytime."""
+    """Find readers and writers of a struct field — 'who reads LedgerEntry.external_ref_id' without grep. Scans every indexed symbol body for field accesses: readers touch `.field`, writers assign `.field =` or construct `field: value`. Provide struct_name (e.g. 'LedgerEntry' — '' to scan all structs) and field (e.g. 'external_ref_id'). Returns per-site symbol_id/file/line/snippet so you can jump to the exact access. Read-only, safe to call anytime."""
     field = (field or "").strip()
     if not field:
         return {"error": "field is required"}
@@ -205,7 +205,7 @@ def find_field_access(struct_name: str, field: str) -> dict[str, object]:
 
 
 def find_string_producers(pattern: str, limit: int = 30) -> dict[str, object]:
-    """Find every symbol that produces a string literal containing the given prefix/fragment — catches two producers of the same format disagreeing (a Rust format!("UT-TXN-…") vs a SQL 'TXN-…' literal is exactly the bug class that ships). Searches Rust format!/string literals AND SQL chunks (tables, migrations). Provide pattern (e.g. 'TXN-', 'UT-TXN'). Returns producing symbol_id, the literal, and whether it sits inside format!. Read-only, safe to call anytime."""
+    """Find every symbol that produces a string literal containing the given prefix/fragment — catches two producers of the same format disagreeing (a Rust format!("EXT-REF-…") vs a SQL 'REF-…' literal is exactly the bug class that ships). Searches Rust format!/string literals AND SQL chunks (tables, migrations). Provide pattern (e.g. 'REF-', 'EXT-REF'). Returns producing symbol_id, the literal, and whether it sits inside format!. Read-only, safe to call anytime."""
     pattern = (pattern or "").strip()
     if not pattern:
         return {"error": "pattern is required"}
@@ -213,7 +213,7 @@ def find_string_producers(pattern: str, limit: int = 30) -> dict[str, object]:
 
     # Double-quoted literals FIRST, single-quoted only outside their spans —
     # a Rust &'static lifetime otherwise swallows the string that follows it
-    # (`-> &'static str { "…TXN-…" }` matched as one bogus '…' literal).
+    # (`-> &'static str { "…REF-…" }` matched as one bogus '…' literal).
     dq_re = _re.compile(r"b?\"(?:[^\"\\]|\\.)*\"")
     sq_re = _re.compile(r"'(?:[^'\\]|\\.)*'")
 
@@ -363,7 +363,7 @@ def _test_symbol_ids() -> set[str]:
 
 
 def get_tests_for_symbol(symbol_id: str, depth: int = 1, include_assertions: bool = True) -> dict[str, object]:
-    """Find the tests that cover a symbol — test fns that CALL it or reference its type (USES), from symbols flagged is_test (#[test]/#[tokio::test]/#[cfg(test)] modules). Use this before changing a symbol to see if existing tests will catch regressions. Transitive coverage matters: a symbol may only be exercised through a wrapper (depth=2 finds tests of its callers). Assertion lines from each matched test are returned so you can see WHAT is verified, not just that a test exists. Provide the full symbol_id (e.g. 'crates::wallet::settle::process_payment'). Optional: depth=1..3 (default 1 — direct tests only; 2 includes tests of direct callers, 3 one more hop), include_assertions=false to skip reading test bodies. Read-only, safe to call anytime."""
+    """Find the tests that cover a symbol — test fns that CALL it or reference its type (USES), from symbols flagged is_test (#[test]/#[tokio::test]/#[cfg(test)] modules). Use this before changing a symbol to see if existing tests will catch regressions. Transitive coverage matters: a symbol may only be exercised through a wrapper (depth=2 finds tests of its callers). Assertion lines from each matched test are returned so you can see WHAT is verified, not just that a test exists. Provide the full symbol_id (e.g. 'crates::billing::settle::process_payment'). Optional: depth=1..3 (default 1 — direct tests only; 2 includes tests of direct callers, 3 one more hop), include_assertions=false to skip reading test bodies. Read-only, safe to call anytime."""
     symbol_id = symbol_id.strip()
     if not symbol_id:
         return {"error": "symbol_id is required"}
@@ -514,7 +514,7 @@ def _extract_assertions(test_row: dict) -> list[dict[str, object]]:
 
 
 def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None, summary_only: bool = False, exclude_shared_state_types: bool = True) -> dict[str, object]:
-    """Get the immediate blast radius of a symbol — direct callers (CALLS edges), callees, type-references (USES edges), and used types. Callers are functions that CALL this symbol; type-references are symbols that merely mention the type (fields, params) — they are reported separately and never conflated. Use this during PR review to understand the impact of changing a symbol. Provide the full symbol_id (e.g. 'crates::inventory::client::InventoryClient'). Optional: usage_modes_filter=['pattern_match', 'construction'] to return only callers that pattern-match or construct this type; summary_only=true for counts grouped by module + risk score; exclude_shared_state_types=true (default) filters god-types (GlobalState-like, >50 type-references) from the type expansion — set false to see them."""
+    """Get the immediate blast radius of a symbol — direct callers (CALLS edges), callees, type-references (USES edges), and used types. Callers are functions that CALL this symbol; type-references are symbols that merely mention the type (fields, params) — they are reported separately and never conflated. Use this during PR review to understand the impact of changing a symbol. Provide the full symbol_id (e.g. 'crates::catalog::client::CatalogClient'). Optional: usage_modes_filter=['pattern_match', 'construction'] to return only callers that pattern-match or construct this type; summary_only=true for counts grouped by module + risk score; exclude_shared_state_types=true (default) filters god-types (GlobalState-like, >50 type-references) from the type expansion — set false to see them."""
     if not graph_index.has_symbol(symbol_id):
         return {"error": f"Symbol '{symbol_id}' not found in the graph index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
 
@@ -668,7 +668,7 @@ def get_blast_radius(symbol_id: str, usage_modes_filter: list[str] | None = None
 
 
 def batch_blast_radius(symbol_ids: list[str], summary_only: bool = False, resolve_names: bool = False) -> dict[str, object]:
-    """Get blast radius for multiple symbols in a single call. Use this when a PR changes several symbols and you need the combined impact. Provide a list of symbol_ids (e.g. ['crates::wallet::transfer', 'crates::wallet::validate']). Optional: summary_only=true returns counts + risk per symbol WITHOUT the full neighbor lists (use when you only need sizes — full lists for 15+ symbols are huge); resolve_names=true accepts partial names and resolves each via search first (saves a separate search_symbols call per name)."""
+    """Get blast radius for multiple symbols in a single call. Use this when a PR changes several symbols and you need the combined impact. Provide a list of symbol_ids (e.g. ['crates::billing::transfer', 'crates::billing::validate']). Optional: summary_only=true returns counts + risk per symbol WITHOUT the full neighbor lists (use when you only need sizes — full lists for 15+ symbols are huge); resolve_names=true accepts partial names and resolves each via search first (saves a separate search_symbols call per name)."""
     results: list[dict[str, object]] = []
     all_downstream: set[str] = set()
     all_upstream: set[str] = set()
@@ -1621,7 +1621,7 @@ def find_cycles(min_size: int = 2, limit: int = 10) -> dict[str, object]:
 # ============================================================================
 
 def search_symbols_enhanced(query: str, limit: int = 20, search_files: bool = True, fuzzy: bool = True) -> dict[str, object]:
-    """Enhanced symbol search with file path matching and fuzzy name resolution. Use this when search_symbols returns 0 matches — it searches file paths, short names, and partial matches. Provide a partial name or file path (e.g. 'deactivate_customer', 'dormancy_report.rs', 'customer_controller')."""
+    """Enhanced symbol search with file path matching and fuzzy name resolution. Use this when search_symbols returns 0 matches — it searches file paths, short names, and partial matches. Provide a partial name or file path (e.g. 'deactivate_account', 'activity_report.rs', 'account_controller')."""
     limit = max(1, min(limit, 50))
     results = _filter_noise(graph_index.search_symbols(query, limit=max(limit * 2, 50)))[:limit]
 
@@ -1771,7 +1771,7 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
     from app.core.prom_metrics import SEMANTIC_SEARCH_LATENCY_MS
 
     _search_start = _t.monotonic()
-    """Search the codebase by meaning, not just by name. Use this to find all code related to a concept (e.g. 'payment validation', 'wallet closure logic', 'authentication flow'). Returns matching symbols with relevance scores. Includes hybrid BM25+vector search, timeout protection, and automatic fallback to graph search if Weaviate is slow. After reviewing the results, call submit_search_feedback to indicate which results were helpful."""
+    """Search the codebase by meaning, not just by name. Use this to find all code related to a concept (e.g. 'payment validation', 'account closure logic', 'authentication flow'). Returns matching symbols with relevance scores. Includes hybrid BM25+vector search, timeout protection, and automatic fallback to graph search if Weaviate is slow. After reviewing the results, call submit_search_feedback to indicate which results were helpful."""
     limit = max(1, min(limit, 25))
 
     try:
@@ -1780,7 +1780,7 @@ def semantic_search(query: str, limit: int = 10) -> dict[str, object]:
         expansions = feedback_store.get_query_expansions(query)
         # Query-conditioned boosts: symbols helpful for SIMILAR past queries
         # replace the global weights — a payment-helpful symbol must not be
-        # boosted for a dormancy query. Global weights are the cold-start
+        # boosted for an inactivity query. Global weights are the cold-start
         # fallback for query shapes never seen before.
         similar_boosts = feedback_store.get_similar_query_boosts(query, limit=5)
         if similar_boosts:
@@ -2458,7 +2458,7 @@ def diff_modules(module_a: str, module_b: str) -> dict[str, object]:
 
 
 def find_warnings_in_blast_radius(symbol_id: str, radius: int = 2, kinds: list[str] | None = None) -> dict[str, object]:
-    """Find code warnings (TODO/FIXME/HACK comments, swallowed errors, stub functions, commented-out code, fail-open defaults) in a symbol's blast radius. This is the metal detector: bugs live in comments, dead code, and discarded Results — none visible in the dependency graph. Use during PR review or incident triage on hotspots. Detector kinds include 'dropped_future' (let _ = …await — result discarded), 'error_mask' (map_err(|_e| …) — the error is erased), and 'constant_return' (decision fns that always return the same value, like should_deduct_for_unsettled_transaction -> true). Provide the full symbol_id. Optional: radius (default 2, max 3 — how many dependency hops to include), kinds=['todo','fixme','hack','xxx','commented_code','error_swallow','fail_open','stub_fn','unsafe_block','ffi_boundary','panic_path','unwrap_density','dropped_future','error_mask','constant_return'] to filter."""
+    """Find code warnings (TODO/FIXME/HACK comments, swallowed errors, stub functions, commented-out code, fail-open defaults) in a symbol's blast radius. This is the metal detector: bugs live in comments, dead code, and discarded Results — none visible in the dependency graph. Use during PR review or incident triage on hotspots. Detector kinds include 'dropped_future' (let _ = …await — result discarded), 'error_mask' (map_err(|_e| …) — the error is erased), and 'constant_return' (decision fns that always return the same value, like is_enabled -> true). Provide the full symbol_id. Optional: radius (default 2, max 3 — how many dependency hops to include), kinds=['todo','fixme','hack','xxx','commented_code','error_swallow','fail_open','stub_fn','unsafe_block','ffi_boundary','panic_path','unwrap_density','dropped_future','error_mask','constant_return'] to filter."""
     if not graph_index.has_symbol(symbol_id):
         return {"error": f"Symbol '{symbol_id}' not found in the graph index.", "symbol_id": symbol_id, "hint": "Use search_symbols to find the correct symbol_id."}
     radius = max(1, min(int(radius), 3))
@@ -2511,7 +2511,7 @@ def find_warnings_in_blast_radius(symbol_id: str, radius: int = 2, kinds: list[s
 
 
 def make_decision(state: str, questions: dict) -> dict[str, object]:
-    """Get fast, typed judgments from a local decision model (Jev-style System One). Sends your state text plus named questions and gets back a choice, a score, or a calibrated yes/no probability (noul) for each — NOT chat. Takes 10-35 seconds per call (local CPU model), so use it for decisions worth waiting on: PR risk assessment, triage routing, content gating — not for anything per-message. Provide 'state' (the text/JSON to judge, max 2000 chars). All questions are answered in ONE model pass (~10-60s total, not per question) — set client timeouts to at least 120s and 'questions': an object of up to 8 named questions, each {type: 'noul'|'score'|'choice', instructions: string, criteria: for choice — an object of allowed values; for score — an array of labels low to high}. Example: {"state": "PR changes 446 files in wallet closure", "questions": {"risk": {"type": "score", "instructions": "How risky?", "criteria": ["low", "medium", "high"]}, "needs_review": {"type": "noul", "instructions": "Needs senior review?"}}}"""
+    """Get fast, typed judgments from a local decision model (Jev-style System One). Sends your state text plus named questions and gets back a choice, a score, or a calibrated yes/no probability (noul) for each — NOT chat. Takes 10-35 seconds per call (local CPU model), so use it for decisions worth waiting on: PR risk assessment, triage routing, content gating — not for anything per-message. Provide 'state' (the text/JSON to judge, max 2000 chars). All questions are answered in ONE model pass (~10-60s total, not per question) — set client timeouts to at least 120s and 'questions': an object of up to 8 named questions, each {type: 'noul'|'score'|'choice', instructions: string, criteria: for choice — an object of allowed values; for score — an array of labels low to high}. Example: {"state": "PR changes 446 files in account closure", "questions": {"risk": {"type": "score", "instructions": "How risky?", "criteria": ["low", "medium", "high"]}, "needs_review": {"type": "noul", "instructions": "Needs senior review?"}}}"""
     import json as _json
 
     from app.core import systemone

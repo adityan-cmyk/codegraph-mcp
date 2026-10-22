@@ -14,7 +14,6 @@ from app.api.routers.feedback import router as feedback_router
 from app.api.routers.graph import router as graph_router
 from app.api.routers.indexing import router as indexing_router
 from app.api.routers.admin import router as admin_router
-from app.api.routers.admin_console import router as admin_console_router
 from app.core.config import settings
 from app.core.health import check_all_backends, check_readiness
 from app.core.tracing_service import tracing_service
@@ -116,8 +115,7 @@ app.add_middleware(BodySizeLimitMiddleware)
 
 @app.middleware("http")
 async def security_headers(request, call_next):
-    """Baseline hardening on every response. frame-ancestors 'self' keeps our
-    own Grafana iframe embeds working while blocking third-party framing."""
+    """Baseline hardening on every response — no framing, no inline script."""
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
@@ -125,7 +123,7 @@ async def security_headers(request, call_next):
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; frame-ancestors 'self'; img-src 'self' data:; "
-        "style-src 'self' 'unsafe-inline'",
+        "style-src 'self' 'unsafe-inline'; script-src 'self'",
     )
     return response
 app.add_middleware(TraceIdMiddleware)
@@ -165,7 +163,6 @@ app.include_router(indexing_router)
 app.include_router(graph_router)
 app.include_router(feedback_router)
 app.include_router(admin_router)
-app.include_router(admin_console_router)
 
 
 @app.get("/health")

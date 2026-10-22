@@ -801,12 +801,16 @@ def _feedback_issues_section() -> str:
     )
 
 
-def notify_new_client(client_ip: str, path: str, user_agent: str = "") -> None:
+def notify_new_client(client_ip: str, path: str, user_agent: str = "", user_name: str = "", user_email: str = "") -> None:
+    who = ""
+    if user_name or user_email:
+        who = f"{user_name} &lt;{user_email}&gt;" if user_email else user_name
     send_email(
-        subject=f"[codegraph] New MCP client: {client_ip}",
+        subject=f"[codegraph] New MCP client: {who or client_ip}",
         body_html=(
             _kv_table([
                 ("Client IP", f"<code>{client_ip}</code>"),
+                ("User", who or "(shared token — no attribution)"),
                 ("Path", path),
                 ("User-Agent", f"<code>{user_agent[:200]}</code>"),
             ])

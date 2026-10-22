@@ -117,7 +117,7 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "symbol_id": {
                     "type": "string",
-                    "description": "Full symbol path, e.g. 'crates::inventory::client::InventoryClient'",
+                    "description": "Full symbol path, e.g. 'crates::catalog::client::CatalogClient'",
                 },
                 "usage_modes_filter": {
                     "type": "array",
@@ -182,7 +182,7 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Partial symbol name to search for (e.g. 'InventoryClient', 'process_review')",
+                    "description": "Partial symbol name to search for (e.g. 'CatalogClient', 'process_review')",
                 },
                 "limit": {
                     "type": "integer",
@@ -225,12 +225,12 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "struct_name": {
                     "type": "string",
-                    "description": "Struct name, e.g. 'ChargebackTxn' ('' scans all structs)",
+                    "description": "Struct name, e.g. 'LedgerEntry' ('' scans all structs)",
                     "default": "",
                 },
                 "field": {
                     "type": "string",
-                    "description": "Field name, e.g. 'transaction_ref_id'",
+                    "description": "Field name, e.g. 'external_ref_id'",
                 },
             },
             "required": ["field"],
@@ -244,7 +244,7 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "String fragment, e.g. 'TXN-', 'UT-TXN'",
+                    "description": "String fragment, e.g. 'REF-', 'EXT-REF'",
                 },
                 "limit": {
                     "type": "integer",
@@ -312,7 +312,7 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Natural language query (e.g. 'payment validation', 'wallet closure')",
+                    "description": "Natural language query (e.g. 'payment validation', 'account closure')",
                 },
                 "limit": {
                     "type": "integer",
@@ -536,7 +536,7 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "symbol_id": {
                     "type": "string",
-                    "description": "Full symbol_id, e.g. 'crates::wallet::core::close_wallets_batch'",
+                    "description": "Full symbol_id, e.g. 'crates::billing::core::close_accounts_batch'",
                 },
                 "radius": {
                     "type": "integer",
@@ -577,7 +577,7 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "symbol_id": {
                     "type": "string",
-                    "description": "Full symbol id, e.g. 'crates::wallet::settle::process_payment'",
+                    "description": "Full symbol id, e.g. 'crates::billing::settle::process_payment'",
                 },
                 "days": {
                     "type": "integer",
@@ -657,7 +657,7 @@ _TOOLS: dict[str, Any] = {
             "properties": {
                 "symbol_id": {
                     "type": "string",
-                    "description": "Full symbol id, e.g. 'crates::wallet::settle::process_payment'",
+                    "description": "Full symbol id, e.g. 'crates::billing::settle::process_payment'",
                 },
                 "depth": {
                     "type": "integer",
@@ -724,7 +724,7 @@ _DIRECTORY = {
             "method": "POST (MCP tools/call)",
             "description": "Search for symbols by partial name match. USE THIS FIRST when you don't know the exact symbol_id.",
             "arguments": {
-                "query": "string (required) — partial name, e.g. 'InventoryClient', 'process_review'",
+                "query": "string (required) — partial name, e.g. 'CatalogClient', 'process_review'",
                 "limit": "int (optional, default 20, max 50)",
             },
             "response_shape": {
@@ -753,10 +753,10 @@ _DIRECTORY = {
             "name": "find_field_access",
             "endpoint": "/mcp",
             "method": "POST (MCP tools/call)",
-            "description": "Readers and writers of a struct field without grep — 'who reads ChargebackTxn.transaction_ref_id'.",
+            "description": "Readers and writers of a struct field without grep — 'who reads LedgerEntry.external_ref_id'.",
             "arguments": {
                 "struct_name": "string (optional, '' scans all)",
-                "field": "string (required), e.g. 'transaction_ref_id'",
+                "field": "string (required), e.g. 'external_ref_id'",
             },
             "response_shape": {
                 "readers_count": "int",
@@ -769,9 +769,9 @@ _DIRECTORY = {
             "name": "find_string_producers",
             "endpoint": "/mcp",
             "method": "POST (MCP tools/call)",
-            "description": "Every symbol producing a string literal with the given fragment — catches two producers of one format disagreeing (Rust 'UT-TXN-' vs SQL 'TXN-').",
+            "description": "Every symbol producing a string literal with the given fragment — catches two producers of one format disagreeing (Rust 'EXT-REF-' vs SQL 'REF-').",
             "arguments": {
-                "pattern": "string (required), e.g. 'TXN-'",
+                "pattern": "string (required), e.g. 'REF-'",
                 "limit": "int (optional, default 30, max 100)",
             },
             "response_shape": {
@@ -786,7 +786,7 @@ _DIRECTORY = {
             "method": "POST (MCP tools/call)",
             "description": "Get immediate callers, callees, type-users, and used-types for a symbol. Includes risk_factors (formula, thresholds, reasons), usage_modes per edge (pattern_match, construction, field_declaration, trait_impl, type_param, import), and optional usage_modes_filter to return only specific edge types.",
             "arguments": {
-                "symbol_id": "string (required) — full symbol path, e.g. 'crates::inventory::client::InventoryClient'",
+                "symbol_id": "string (required) — full symbol path, e.g. 'crates::catalog::client::CatalogClient'",
                 "usage_modes_filter": "string[] (optional) — filter edges by usage mode, e.g. ['pattern_match', 'construction']",
             },
             "response_shape": {
@@ -988,7 +988,7 @@ _DIRECTORY = {
             "method": "POST (MCP tools/call)",
             "description": "Find tests covering a symbol — test fns that call it or reference its type. Use before changing a symbol to see regression coverage.",
             "arguments": {
-                "symbol_id": "string (required) — full symbol id, e.g. 'crates::wallet::settle::process_payment'",
+                "symbol_id": "string (required) — full symbol id, e.g. 'crates::billing::settle::process_payment'",
             },
             "response_shape": {
                 "symbol_id": "string",
@@ -1038,7 +1038,7 @@ _DIRECTORY = {
             "method": "POST (MCP tools/call)",
             "description": "Enhanced symbol search with file path matching and fuzzy name resolution. Use when search_symbols returns 0 matches — searches file paths, short names, and partial matches.",
             "arguments": {
-                "query": "string (required) — partial symbol name or file path, e.g. 'deactivate_customer', 'dormancy_report.rs'",
+                "query": "string (required) — partial symbol name or file path, e.g. 'deactivate_account', 'activity_report.rs'",
                 "limit": "int (optional, default 20, max 50)",
                 "search_files": "bool (optional, default true) — also search file paths",
                 "fuzzy": "bool (optional, default true) — enable fuzzy name matching",
@@ -1163,8 +1163,10 @@ def _jsonrpc_response(req_id: Any, result: Any) -> Response:
     )
 
 
-def _track_tool_usage(tool_name: str, arguments: dict) -> None:
-    """Count MCP tool calls and query text in Redis for the daily digest email."""
+def _track_tool_usage(tool_name: str, arguments: dict, user: dict | None = None) -> None:
+    """Count MCP tool calls and query text in Redis for the daily digest email.
+
+    `user` (from a per-user key) adds attribution — who is calling what."""
     try:
         from datetime import date
         import redis as redis_lib
@@ -1177,6 +1179,10 @@ def _track_tool_usage(tool_name: str, arguments: dict) -> None:
         total_key = f"mcp:queries:total:{today}"
         r.incr(total_key)
         r.expire(total_key, 7 * 86400)
+        if user:
+            user_key = f"mcp:queries:user:{today}"
+            r.hincrby(user_key, f"{user.get('user_name', user.get('id', '?'))}: {tool_name}", 1)
+            r.expire(user_key, 7 * 86400)
 
         query = arguments.get("query") or arguments.get("symbol_id") or arguments.get("diff", "")[:100] or ""
         if query:
@@ -1278,7 +1284,7 @@ async def _handle_mcp(request: Request) -> Response:
                 result = await asyncio.to_thread(handler, **arguments)
             MCP_TOOL_LATENCY_MS.labels(tool=tool_name).observe((_t.monotonic() - _start) * 1000)
             MCP_TOOL_CALLS.labels(tool=tool_name, status="ok").inc()
-            _track_tool_usage(tool_name, arguments)
+            _track_tool_usage(tool_name, arguments, getattr(request.state, "user", None))
             return _respond(req_id, {
                 "content": [{"type": "text", "text": json.dumps(result, default=str)}],
                 "isError": False,
@@ -1463,10 +1469,13 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
             r.expire(key, 60 * 60 * 24 * 90)
             if is_new:
                 from app.core.notifications import notify_new_client
+                user = getattr(request.state, "user", None)
                 notify_new_client(
                     client_ip=client_ip,
                     path=str(request.url.path),
                     user_agent=request.headers.get("user-agent", ""),
+                    user_name=user.get("user_name") if user else "",
+                    user_email=user.get("user_email") if user else "",
                 )
         except Exception:
             logger.debug("New-client notification check failed", exc_info=True)
@@ -1503,11 +1512,20 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
         if auth.startswith("Bearer "):
             provided = auth[7:]
 
+        # Per-user keys layer on top of the shared token: same auth gate, but
+        # the identity (and thus the rate-limit bucket) is the person, not the
+        # IP — and usage/feedback can be attributed to a real user.
+        user = None
+        if provided and not hmac.compare_digest(provided, token):
+            from app.core.client_tokens import resolve_user_token
+
+            user = resolve_user_token(provided)
+
         # UAM resolution removed with the user-action model: the MCP bearer
         # token is the single shared credential again; the rate-limit bucket
-        # is keyed per client IP.
-        if hmac.compare_digest(provided, token):
-            identity = f"mcp-ip-{client_ip}"
+        # is keyed per client IP (or per user, when a per-user key is used).
+        if hmac.compare_digest(provided, token) or user is not None:
+            identity = f"mcp-user-{user['id']}" if user else f"mcp-ip-{client_ip}"
             # Authenticated tool-call rate limiting — token bucket per client
             # IP. Protects the process (and in-flight builds) from agent load
             # tests and runaway loops — the GIL means unbounded concurrent
@@ -1531,6 +1549,7 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
                         status_code=429,
                         headers={"Retry-After": str(int(retry_after))},
                     )
+            request.state.user = user
             self._notify_new_client_if_needed(client_ip, request)
             return await call_next(request)
 

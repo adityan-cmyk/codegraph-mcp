@@ -691,6 +691,55 @@
         "x": 0,
         "y": 101
       }
+    },
+    {
+      "id": 57,
+      "type": "row",
+      "title": "User keys",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 109 }
+    },
+    {
+      "id": 58,
+      "type": "volkovlabs-form-panel",
+      "title": "User keys — create / list / revoke (writes to Postgres)",
+      "description": "Enter the admin panel token at runtime only; it is never saved to this dashboard (Save Default is disabled). Created keys are shown once and stored hashed.",
+      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 110 },
+      "options": {
+        "sync": false,
+        "initial": { "method": "-", "url": "", "datasource": "", "header": [], "contentType": "application/json", "code": "return;", "highlight": false, "highlightColor": "red", "confirm": false, "payloadMode": "all", "getPayload": "return {};", "payload": {} },
+        "updateEnabled": "disabled",
+        "update": { "method": "-", "url": "", "datasource": "", "header": [], "contentType": "application/json", "code": "return;", "highlight": false, "highlightColor": "red", "confirm": false, "payloadMode": "all", "getPayload": "return {};", "payload": {} },
+        "resetAction": { "mode": "custom", "code": "return;", "datasource": "", "getPayload": "return {};", "payload": {}, "confirm": false },
+        "buttonGroup": { "orientation": "left", "size": "md" },
+        "submit": { "variant": "hidden", "text": "Submit", "icon": "cloud-upload", "foregroundColor": "", "backgroundColor": "" },
+        "reset": { "variant": "hidden", "text": "Reset", "icon": "process", "foregroundColor": "", "backgroundColor": "" },
+        "saveDefault": { "variant": "hidden", "text": "Save Default", "icon": "save" },
+        "elements": [
+          { "uid": "uk_admin_key", "id": "admin_key", "title": "Admin panel token (runtime only)", "type": "password", "labelWidth": 24, "width": 12, "tooltip": "ADMIN_PANEL_TOKEN — typed at runtime, never saved into the dashboard JSON", "section": "", "unit": "", "hidden": false, "value": "" },
+          { "uid": "uk_user_name", "id": "user_name", "title": "User name", "type": "string", "labelWidth": 24, "width": 12, "tooltip": "Who this key belongs to (used in alerts and usage attribution)", "section": "", "unit": "", "hidden": false, "value": "" },
+          { "uid": "uk_user_email", "id": "user_email", "title": "User email", "type": "string", "labelWidth": 24, "width": 12, "tooltip": "Contact for revocation and digests", "section": "", "unit": "", "hidden": false, "value": "" },
+          { "uid": "uk_key_id", "id": "key_id", "title": "Key id (for revoke)", "type": "number", "labelWidth": 24, "width": 6, "tooltip": "Numeric id shown by List keys", "section": "", "unit": "", "hidden": false, "min": 1, "value": null },
+          { "uid": "uk_result", "id": "result", "title": "Result (new tokens appear here once)", "type": "disabledTextarea", "labelWidth": 24, "width": 24, "tooltip": "", "section": "", "unit": "", "hidden": false, "rows": 6, "value": "" },
+          {
+            "uid": "uk_btn_create", "id": "btn_create", "title": "", "type": "button", "labelWidth": 10, "width": null, "tooltip": "", "section": "", "unit": "", "hidden": false,
+            "customCode": "const api = window.location.protocol + '//' + window.location.hostname + ':8000'; const v = {}; context.panel.elements.forEach(function (e) { v[e.id] = e.value; }); const key = String(v.admin_key || '').trim(); const name = String(v.user_name || '').trim(); const email = String(v.user_email || '').trim(); if (!key || !name || !email) { context.grafana.notifyError(['Create key', 'admin token, user name and user email are all required']); return; } return fetch(api + '/api/admin/users?user_name=' + encodeURIComponent(name) + '&user_email=' + encodeURIComponent(email), { method: 'POST', headers: { Authorization: 'Bearer ' + key } }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (body) { if (!r.ok) { context.grafana.notifyError(['Create key', 'HTTP ' + r.status + ': ' + (body.detail || 'failed')]); return; } context.panel.patchFormValue({ result: 'id ' + body.id + '  prefix ' + body.token_prefix + '  ' + body.user_name + ' <' + body.user_email + '>  TOKEN ' + body.token + '  (store now, not retrievable later)' }); context.grafana.notifySuccess(['Create key', 'key created — copy the token from the Result box now']); }); });",
+            "size": "md", "show": "bottom", "variant": "primary", "foregroundColor": "", "backgroundColor": "", "buttonLabel": "Create key"
+          },
+          {
+            "uid": "uk_btn_list", "id": "btn_list", "title": "", "type": "button", "labelWidth": 10, "width": null, "tooltip": "", "section": "", "unit": "", "hidden": false,
+            "customCode": "const api = window.location.protocol + '//' + window.location.hostname + ':8000'; const v = {}; context.panel.elements.forEach(function (e) { v[e.id] = e.value; }); const key = String(v.admin_key || '').trim(); if (!key) { context.grafana.notifyError(['List keys', 'enter the admin panel token first']); return; } return fetch(api + '/api/admin/users', { headers: { Authorization: 'Bearer ' + key } }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (body) { if (!r.ok) { context.grafana.notifyError(['List keys', 'HTTP ' + r.status + ': ' + (body.detail || 'failed')]); return; } const rows = body.users || []; context.panel.patchFormValue({ result: rows.length ? rows.map(function (u) { return '#' + u.id + ' ' + (u.active ? 'active' : 'REVOKED') + ' ' + u.user_name + ' <' + u.user_email + '> ' + u.token_prefix + ' created ' + u.created_at + (u.last_used_at ? ' last used ' + u.last_used_at : ''); }).join(' ; ') : '(no keys yet)' }); context.grafana.notifySuccess(['List keys', rows.length + ' key(s)']); }); });",
+            "size": "md", "show": "bottom", "variant": "secondary", "foregroundColor": "", "backgroundColor": "", "buttonLabel": "List keys"
+          },
+          {
+            "uid": "uk_btn_revoke", "id": "btn_revoke", "title": "", "type": "button", "labelWidth": 10, "width": null, "tooltip": "", "section": "", "unit": "", "hidden": false,
+            "customCode": "const api = window.location.protocol + '//' + window.location.hostname + ':8000'; const v = {}; context.panel.elements.forEach(function (e) { v[e.id] = e.value; }); const key = String(v.admin_key || '').trim(); const id = parseInt(v.key_id, 10); if (!key || !id) { context.grafana.notifyError(['Revoke', 'admin token and numeric key id are required']); return; } return fetch(api + '/api/admin/users/' + id + '/revoke', { method: 'POST', headers: { Authorization: 'Bearer ' + key } }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (body) { if (!r.ok) { context.grafana.notifyError(['Revoke', 'HTTP ' + r.status + ': ' + (body.detail || 'failed')]); return; } context.panel.patchFormValue({ result: 'revoked key id ' + body.id }); context.grafana.notifySuccess(['Revoke', 'key ' + body.id + ' revoked']); }); });",
+            "size": "md", "show": "bottom", "variant": "destructive", "foregroundColor": "", "backgroundColor": "", "buttonLabel": "Revoke key id"
+          }
+        ],
+        "layout": { "variant": "single", "sections": [], "padding": 8, "orientation": "vertical", "sectionVariant": "default" },
+        "confirmModal": { "title": "Confirm update request", "body": "Please confirm to update changed values", "columns": { "include": ["name", "oldValue", "newValue"], "name": "Label", "oldValue": "Old Value", "newValue": "New Value" }, "confirm": "Confirm", "cancel": "Cancel", "elementDisplayMode": "modified" },
+        "elementValueChanged": ""
+      }
     }
   ]
 }

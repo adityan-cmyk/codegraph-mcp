@@ -51,7 +51,7 @@ This latency is acceptable because gating is **async and rare**: it runs in the 
 ### Decision Pipeline
 
 ```
-Model A says: "InventoryClient was helpful, tag_inventory was not"
+Model A says: "CatalogClient was helpful, sync_catalog was not"
 Model B says: "search for 'payment' returned garbage, expected PaymentValidator"
 Model C says: "blast_radius was great, semantic_search missed the trait impl"
                     │
@@ -76,9 +76,9 @@ Model C says: "blast_radius was great, semantic_search missed the trait impl"
         ┌─── Aggregation ───────────────────┐
         │ Multiple models voting on same    │
         │ symbol → weighted average         │
-        │ 33 models say InventoryClient +   │
+        │ 33 models say CatalogClient +   │
         │ 0 say - → boost_weight = +0.87    │
-        │ 31 say tag_inventory -            │
+        │ 31 say sync_catalog -            │
         │ 0 say + → boost_weight = -0.86    │
         └────────────────────────────────────┘
                     │
@@ -185,9 +185,9 @@ POST /api/feedback/ai
     {"tool": "semantic_search", "args": {"query": "inventory"}, "result_summary": "Found 5 results"}
   ],
   "results_used": [
-    {"symbol_id": "crates::inventory::client::InventoryClient", "file_path": "...", "helpful": true}
+    {"symbol_id": "crates::catalog::client::CatalogClient", "file_path": "...", "helpful": true}
   ],
-  "results_expected": "Expected to find tag_inventory function",
+  "results_expected": "Expected to find sync_catalog function",
   "quality_rating": 3,
   "improvement_suggestions": "Search could match on partial function names"
 }
@@ -400,7 +400,7 @@ ADRs are in `docs/adr/000-architecture-decisions.md`, covering:
 | `SCIP_REFINE_ENABLED` | `false` | Replace regex edges with rust-analyzer SCIP-resolved edges for covered files at graph build |
 | `SCIP_INDEX_PATH` | `/scip-data/index.scip` | Path to the generated SCIP index (see `scripts/generate-scip.sh`) |
 | `SYSTEMONE_URL` | — | Ollama systemone endpoint for the decision model (unset = heuristic gate fallback) |
-| `ADMIN_PANEL_TOKEN` | — | Scoped token for the admin console + `/api/admin/*` |
+| `ADMIN_PANEL_TOKEN` | — | Scoped token for the Grafana user-key form + `/api/admin/*` |
 | `OFFSITE_BACKUP_ENABLED` | `false` | Rsync the nightly dump off-host after the restore test passes |
 | `OFFSITE_BACKUP_TARGET` | — | rsync-compatible destination (`host:/path`) when off-site backups are enabled |
 

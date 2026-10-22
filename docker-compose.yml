@@ -143,6 +143,7 @@ services:
       SCIP_REFINE_ENABLED: "${SCIP_REFINE_ENABLED:-false}"
       SCIP_INDEX_PATH: "/scip-data/index.scip"
       INDEX_METADATA_BACKEND: postgres
+      CLIENT_TOKENS_BACKEND: postgres
       SEMANTIC_INDEX_BACKEND: weaviate
       GRAPH_INDEX_BACKEND: neo4j
       POSTGRES_DSN: postgresql://oncall:REDACTED@postgres:5432/oncall
@@ -303,6 +304,7 @@ services:
       GF_SECURITY_ALLOW_ANONYMOUS: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/overview.json
+      GF_INSTALL_PLUGINS: volkovlabs-form-panel 6.3.5
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro

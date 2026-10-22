@@ -133,3 +133,51 @@ def cache_flush(request: Request, tag: str = ""):
     else:
         removed = flush_all()
     return {"removed": removed, "tag": tag or None}
+
+
+# --- Per-user keys -----------------------------------------------------------
+# One credential per person (user_name + user_email attribution) instead of
+# the shared bearer: per-user rate limits, feedback attribution, revocation
+# without rotating everyone. The plaintext key is returned ONCE at creation.
+
+
+@router.post("/users")
+def create_user_key(request: Request, user_name: str = "", user_email: str = ""):
+    _require_admin_token(request)
+    from app.core.client_tokens import create_user_key as _create
+
+    user_name = user_name.strip()
+    user_email = user_email.strip()
+    if not user_name or len(user_name) > 120:
+        raise HTTPException(status_code=422, detail="user_name required (max 120 chars)")
+    if "@" not in user_email or len(user_email) > 254:
+        raise HTTPException(status_code=422, detail="user_email required (valid address)")
+    row = _create(user_name, user_email)
+    # row["token"] is the only time the plaintext exists outside the client.
+    return {
+        "created": True,
+        "id": row["id"],
+        "user_name": row["user_name"],
+        "user_email": row["user_email"],
+        "token_prefix": row["token_prefix"],
+        "token": row["token"],
+        "note": "store this key now — it is not retrievable later",
+    }
+
+
+@router.get("/users")
+def list_user_keys(request: Request):
+    _require_admin_token(request)
+    from app.core.client_tokens import list_user_keys as _list
+
+    return {"users": _list()}
+
+
+@router.post("/users/{key_id}/revoke")
+def revoke_user_key(request: Request, key_id: int):
+    _require_admin_token(request)
+    from app.core.client_tokens import revoke_user_key as _revoke
+
+    if not _revoke(key_id):
+        raise HTTPException(status_code=404, detail="no such key id")
+    return {"revoked": True, "id": key_id}

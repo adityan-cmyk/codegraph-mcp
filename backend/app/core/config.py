@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     api_auth_token: str | None = None
     mcp_auth_token: str | None = None
     admin_panel_token: str | None = None
+    # Per-user key store: "memory" (tests/local) or "postgres" (real deploys).
+    client_tokens_backend: str = "memory"
     reranker_enabled: bool = False
     reranker_url: str = "http://reranker:8001"
     # SCIP refinement: replace regex edges with rust-analyzer-resolved ones

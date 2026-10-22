@@ -6,7 +6,7 @@ Supply chain, hardening, access control, and admin surfaces for codegraph-mcp.
 - [Security measures](#security) — supply chain, container hardening, API security, rate limiting
 - [Access control](#access-control)
 - [Query cache](#query-cache)
-- [Admin surfaces](#admin-console) — console, Grafana, break-glass token
+- [Admin surfaces](#admin-surfaces) — user-key form, Grafana, break-glass token
 
 ---
 
@@ -72,7 +72,7 @@ Single shared bearer token per surface — a deliberate choice for a small inter
 |---|---|---|
 | MCP (`:8002/mcp`) | `MCP_AUTH_TOKEN` | constant-time compare; per-IP failure lockout (5 fails/min → 5 min) |
 | REST (`:8000/api/*`) | `API_AUTH_TOKEN` | same middleware family |
-| Admin console + `/api/admin/*` | `ADMIN_PANEL_TOKEN` | separate scoped secret; brute-force bucket on the login path |
+| Admin API `/api/admin/*` | `ADMIN_PANEL_TOKEN` | separate scoped secret; brute-force bucket on the login path |
 
 Token hygiene: all tokens live in a 600-mode gitignored `.env`; rotate by changing the value and recreating the backend (`docker compose up -d backend`). Every failed auth attempt is logged with client IP.
 
@@ -80,8 +80,8 @@ Token hygiene: all tokens live in a 600-mode gitignored `.env`; rotate by changi
 
 Redis, tagged (`graph`, `git`, `tests`), zlib-compressed, TTL hard-capped at 4h. Graph rebuilds and git syncs invalidate exactly the affected tags. Metrics: `query_cache_*` in Prometheus.
 
-## Admin console
+## Admin surfaces
 
-Standalone page served by the backend at `http://<host>:8000/admin` (tailnet/LAN only — the public funnel exposes 8002, not 8000). The admin token is entered at runtime and held in browser memory for the tab's lifetime only — never localStorage, never Grafana.
+Per-user keys are created from the **User keys** form panel inside Grafana's `overview` dashboard (tailnet/LAN only — the public funnel exposes 8002, not 8000). The admin panel token is entered at runtime and held in browser memory for the tab's lifetime only — never localStorage, never saved into the dashboard JSON. Every mutation goes through the admin-token-checked `/api/admin/*` endpoints; only SHA-256 hashes of issued keys are stored.
 
-Capabilities: rate-limit tuning, query-cache stats + tagged flush, usage tables from the audit trail. Grafana's `codegraph-admin` dashboard is read-only panels (usage, logs, cache health); Grafana HTML sanitization is fully enabled — no HTML panels anywhere.
+Capabilities: issue/list/revoke per-user keys, rate-limit tuning, query-cache stats + tagged flush, usage tables from the audit trail. The Grafana `overview` dashboard otherwise stays read-only panels (usage, logs, cache health); Grafana HTML sanitization is fully enabled — no HTML panels anywhere.

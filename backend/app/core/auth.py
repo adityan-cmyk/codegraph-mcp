@@ -44,7 +44,17 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path.startswith("/api/"):
             auth_header = request.headers.get("Authorization", "")
             provided = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+            ok = False
             if provided and hmac.compare_digest(provided, token):
+                ok = True
+            elif provided:
+                # Per-user keys are accepted on the REST surface too — one
+                # credential per person, revocable without rotating everyone.
+                from app.core.client_tokens import resolve_user_token
+
+                if resolve_user_token(provided) is not None:
+                    ok = True
+            if ok:
                 return await call_next(request)
             logger.warning("Unauthorized API access attempt: %s %s", request.method, path)
             return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
