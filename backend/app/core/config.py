@@ -53,6 +53,22 @@ class Settings(BaseSettings):
             "http://127.0.0.1:4173",
         ]
     )
+    # Origins the browser-side Grafana form may call from: localhost, any
+    # RFC1918 / Tailscale-CGNAT IP, single-label LAN hosts (e.g. myhost), and
+    # MagicDNS names (*.ts.net). Anything public (evil.com) is rejected —
+    # bearer-token auth means a hostile page could never authenticate anyway,
+    # but we keep the surface scoped rather than '*'.
+    cors_allowed_origin_regex: str = (
+        r"(?i)^https?://("
+        r"localhost|127\.0\.0\.1|"
+        r"[a-z0-9-]+|"
+        r"[a-z0-9-]+(\.[a-z0-9-]+)*\.ts\.net|"
+        r"10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"
+        r"100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}|"
+        r"172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|"
+        r"192\.168\.\d{1,3}\.\d{1,3}"
+        r")(:\d+)?$"
+    )
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1", "testserver"])
     # Only these socket peers may assert X-Forwarded-For (Tailscale Funnel
     # arrives via the Docker bridge gateway). Direct LAN clients are outside
