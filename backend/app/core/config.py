@@ -54,6 +54,15 @@ class Settings(BaseSettings):
         ]
     )
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1", "testserver"])
+    # Only these socket peers may assert X-Forwarded-For (Tailscale Funnel
+    # arrives via the Docker bridge gateway). Direct LAN clients are outside
+    # these CIDRs — their XFF headers are ignored, so a LAN user cannot spoof
+    # past the brute-force lockout or per-IP token buckets.
+    trusted_proxy_cidrs: list[str] = Field(
+        default_factory=lambda: ["127.0.0.0/8", "::1/128", "172.16.0.0/12"]
+    )
+    # Include tracebacks (paths, query text) in MCP tool-error payloads.
+    tool_error_tracebacks: bool = True
 
     # Tracing
     langfuse_enabled: bool = False

@@ -196,6 +196,13 @@ class Neo4jGraphIndex:
                     )
 
     def get_neighbors(self, symbol_id: str, depth: int = 1) -> GraphNeighborhood:
+        # depth is interpolated into Cypher — clamp here, not just at the
+        # call sites, or one new tool forwarding raw depth is an injection.
+        try:
+            depth = int(depth)
+        except (TypeError, ValueError):
+            depth = 1
+        depth = max(1, min(depth, 5))
         gen = self._gen
         with self._get_driver().session() as session:
             upstream_result = session.run(

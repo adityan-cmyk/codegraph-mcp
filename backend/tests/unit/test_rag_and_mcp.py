@@ -2338,3 +2338,152 @@ class GroundTruthDirectCallersTestCase(unittest.TestCase):
                              "up-then-down sibling leaked into the radius as a member")
             self.assertNotIn("send_low_and_negative_balance_notifications", members,
                              "up-then-down sibling leaked into the radius as a member")
+
+
+class ReviewFixesTestCase_2(unittest.TestCase):
+    """Regression pins for the static-review findings: XFF trust, JSON-RPC
+    shape errors, notification handling, Cypher depth, path containment."""
+
+    def test_xff_spoof_ignored_from_untrusted_peer(self):
+        from app.mcp.readonly_server import _client_key
+        from starlette.requests import Request
+
+        def make(xff: str | None, peer: str) -> Request:
+            scope = {
+                "type": "http", "method": "GET", "path": "/mcp",
+                "headers": [],
+                "client": (peer, 12345),
+            }
+            if xff is not None:
+                scope["headers"] = [(b"x-forwarded-for", xff.encode())]
+            return Request(scope)
+
+        # LAN peer (10.x) sending a spoofed XFF must NOT become the key —
+        # that was the brute-force lockout bypass.
+        self.assertEqual(_client_key(make("1.2.3.4", "198.51.100.9")), "198.51.100.9")
+        # Funnel/docker-gateway peer (172.16/12) is a trusted proxy — XFF honored.
+        self.assertEqual(_client_key(make("1.2.3.4", "172.18.0.1")), "1.2.3.4")
+        # No XFF anywhere falls back to socket peer.
+        self.assertEqual(_client_key(make(None, "198.51.100.9")), "198.51.100.9")
+
+    def test_mcp_batch_and_scalar_bodies_are_invalid_request(self):
+        from starlette.requests import Request
+
+        from app.mcp.readonly_server import _handle_mcp
+
+        async def run(body):
+            async def receive():
+                return {"type": "http.request", "body": body, "more_body": False}
+            req = Request({"type": "http", "method": "POST", "path": "/mcp", "headers": []}, receive)
+            return await _handle_mcp(req)
+
+        import asyncio
+        for raw in (b'[{"jsonrpc": "2.0", "method": "ping"}]', b'"just a string"', b'42'):
+            resp = asyncio.run(run(raw))
+            self.assertEqual(resp.status_code, 400, f"body {raw!r} must be -32600")
+            self.assertEqual(json.loads(resp.body)["error"]["code"], -32600)
+
+    def test_mcp_notification_gets_no_response(self):
+        from starlette.requests import Request
+
+        from app.mcp.readonly_server import _handle_mcp
+
+        async def run(body):
+            async def receive():
+                return {"type": "http.request", "body": body, "more_body": False}
+            req = Request({"type": "http", "method": "POST", "path": "/mcp", "headers": []}, receive)
+            return await _handle_mcp(req)
+
+        import asyncio
+        resp = asyncio.run(run(b'{"jsonrpc": "2.0", "method": "notifications/initialized"}'))
+        self.assertEqual(resp.status_code, 202, "notifications must get no JSON-RPC response")
+
+    def test_get_neighbors_clamps_depth(self):
+        from app.rag.retrieval.graph import GraphIndexProxy
+
+        class Recorder:
+            def __init__(self):
+                self.seen = []
+            def get_neighbors(self, symbol_id, depth=1):
+                self.seen.append(depth)
+                return type("N", (), {"upstream": [], "downstream": [], "uses": [], "used_by": []})()
+            def get_blast_radius(self, symbol_id):
+                return self.get_neighbors(symbol_id)
+
+        gi = GraphIndexProxy.__new__(GraphIndexProxy)
+        rec = Recorder()
+        gi._active = lambda: rec
+        gi.get_neighbors("x", depth="5; MATCH (n) DETACH DELETE n")
+        self.assertEqual(rec.seen[-1], 1, "hostile depth must fail safe to 1, never reach Cypher")
+        gi.get_neighbors("x", depth="3")
+        self.assertEqual(rec.seen[-1], 3, "numeric strings must still work")
+        gi.get_neighbors("x", depth=99)
+        self.assertEqual(rec.seen[-1], 5, "depth > 5 must clamp to 5")
+        gi.get_neighbors("x", depth=0)
+        self.assertEqual(rec.seen[-1], 1, "depth < 1 must clamp to 1")
+
+    def test_assertion_read_rejects_root_escape(self):
+        import tempfile
+        from pathlib import Path
+
+        from app.mcp.tools.graph_read_tools import _extract_assertions
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            outside = root.parent / "outside_secret.rs"
+            outside.write_text("assert!(false);\n")
+            try:
+                with patch("app.core.config.settings.codebase_root_path", temp_dir):
+                    out = _extract_assertions({
+                        "symbol_id": "x::f",
+                        "file_path": f"../{outside.name}",
+                        "start_line": 1,
+                        "end_line": 1,
+                    })
+                self.assertEqual(out, [], "root-escaping path must read nothing")
+            finally:
+                outside.unlink(missing_ok=True)
+
+    def test_body_size_limit_covers_chunked(self):
+        import asyncio
+
+        from app.core.rate_limit import BodySizeLimitMiddleware, _MAX_BODY_BYTES
+
+        received_status = []
+
+        async def inner(scope, receive, send):
+            body = b""
+            while True:
+                msg = await receive()
+                body += msg.get("body", b"")
+                if not msg.get("more_body"):
+                    break
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": str(len(body)).encode()})
+
+        async def run(chunks):
+            out = []
+
+            async def send(message):
+                out.append(message)
+
+            async def receive():
+                if chunks:
+                    body, more = chunks.pop(0)
+                    return {"type": "http.request", "body": body, "more_body": more}
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            mw = BodySizeLimitMiddleware(inner)
+            await mw({"type": "http", "method": "POST", "path": "/api/x"}, receive, send)
+            return out
+
+        # chunked stream crossing the cap -> 413 even without Content-Length
+        big = b"x" * (_MAX_BODY_BYTES + 1)
+        out = asyncio.run(run([(big[: _MAX_BODY_BYTES // 2], True), (big[_MAX_BODY_BYTES // 2 :], True)]))
+        start = next(m for m in out if m["type"] == "http.response.start")
+        self.assertEqual(start["status"], 413, "chunked bodies must hit the 10MB cap")
+
+        # small body passes through untouched
+        out = asyncio.run(run([(b"ok", True)]))
+        start = next(m for m in out if m["type"] == "http.response.start")
+        self.assertEqual(start["status"], 200)

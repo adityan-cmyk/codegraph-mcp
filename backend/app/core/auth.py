@@ -1,5 +1,6 @@
 """Simple bearer token auth middleware for API routes."""
 
+import hmac
 import logging
 
 from fastapi import Request
@@ -19,8 +20,14 @@ _SELF_AUTHED_PREFIXES = ("/api/admin/",)
 
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if not settings.api_auth_token:
-            return await call_next(request)
+        token = settings.api_auth_token or ""
+        if not token:
+            # Fail closed outside local: a misconfigured .env must not silently
+            # expose the whole API surface.
+            if settings.environment == "local":
+                return await call_next(request)
+            logger.error("API_AUTH_TOKEN unset in environment=%s — refusing (fail-closed)", settings.environment)
+            return JSONResponse(status_code=503, content={"detail": "API auth not configured"})
 
         path = request.url.path
 
@@ -36,7 +43,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         if path.startswith("/api/"):
             auth_header = request.headers.get("Authorization", "")
-            if auth_header == f"Bearer {settings.api_auth_token}":
+            provided = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+            if provided and hmac.compare_digest(provided, token):
                 return await call_next(request)
             logger.warning("Unauthorized API access attempt: %s %s", request.method, path)
             return JSONResponse(status_code=401, content={"detail": "Unauthorized"})

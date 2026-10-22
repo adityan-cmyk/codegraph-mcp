@@ -490,9 +490,14 @@ def _extract_assertions(test_row: dict) -> list[dict[str, object]]:
 
     from app.core.config import settings
 
-    root = Path(settings.codebase_root_path or "/repos/codebase")
+    root = Path(settings.codebase_root_path or "/repos/codebase").resolve()
     try:
-        lines = (root / file_path).read_text(errors="replace").splitlines()
+        target = (root / file_path).resolve()
+        # file_path comes from the index, not the client — still refuse any
+        # resolved path that escapes the repo root (defense in depth).
+        if not target.is_relative_to(root):
+            return []
+        lines = target.read_text(errors="replace").splitlines()
     except OSError:
         return []
 
@@ -1298,7 +1303,7 @@ def recent_changes_near(symbol_id: str, days: int = 14, include_blast_radius: bo
 
     direct_commits.sort(key=lambda c: c["date"], reverse=True)
     nearby_commits.sort(key=lambda c: c["date"], reverse=True)
-    return {
+    result: dict[str, object] = {
         "symbol_id": symbol_id,
         "file_path": chunk.file_path,
         "line_range": [chunk.start_line, chunk.end_line],
@@ -1334,7 +1339,7 @@ def recent_changes_near(symbol_id: str, days: int = 14, include_blast_radius: bo
                 "these files changed together with this one — review them in the same pass"
             )
     except Exception:
-        pass
+        logger.debug("co-change partner lookup failed for %s", symbol_id, exc_info=True)
 
     return result
 

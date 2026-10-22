@@ -1208,8 +1208,21 @@ async def _handle_mcp(request: Request) -> Response:
     except Exception:
         return JSONResponse({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}, status_code=400)
 
+    # JSON-RPC batch (list) and bare scalars are Invalid Request — they used
+    # to hit body.get() and surface as an unhandled 500.
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}},
+            status_code=400,
+        )
+
     req_id = body.get("id")
     method = body.get("method", "")
+
+    # Notifications (no id — e.g. notifications/initialized) get no response
+    # at all per JSON-RPC; replying with -32601 was noisy and technically wrong.
+    if "id" not in body:
+        return Response(status_code=202)
 
     accept = request.headers.get("accept", "")
     wants_sse = "text/event-stream" in accept
@@ -1276,8 +1289,12 @@ async def _handle_mcp(request: Request) -> Response:
             MCP_TOOL_LATENCY_MS.labels(tool=tool_name).observe((_t.monotonic() - _start) * 1000)
             MCP_TOOL_CALLS.labels(tool=tool_name, status="error").inc()
             logger.exception("Tool %s failed", tool_name)
+            payload: dict[str, Any] = {"error": str(exc)}
+            from app.core.config import settings as _settings
+            if getattr(_settings, "tool_error_tracebacks", True):
+                payload["traceback"] = traceback.format_exc()[:2000]
             return _respond(req_id, {
-                "content": [{"type": "text", "text": json.dumps({"error": str(exc), "traceback": traceback.format_exc()[:2000]})}],
+                "content": [{"type": "text", "text": json.dumps(payload)}],
                 "isError": True,
             })
 
@@ -1332,18 +1349,45 @@ _routes = [
 ]
 
 
+def _is_trusted_proxy(peer: str) -> bool:
+    """True when the socket peer may assert X-Forwarded-For.
+
+    Tailscale Funnel's hop is the Docker bridge gateway — only that peer's
+    XFF header is believed. Direct LAN clients are NOT trusted proxies: any
+    of them could spoof XFF per request and walk around the brute-force
+    lockout and per-IP token buckets entirely.
+    """
+    import ipaddress
+
+    from app.core.config import settings
+
+    try:
+        addr = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    for cidr in settings.trusted_proxy_cidrs:
+        try:
+            if addr in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _client_key(request: Request) -> str:
     """Best-effort real client identity for rate limiting and notifications.
 
     Tailscale Funnel traffic arrives from the Docker bridge gateway socket
     (all funnel users share it), but Funnel sets X-Forwarded-For with the
-    real client IP — prefer that. Direct LAN connections have no XFF and
-    fall back to the socket peer.
+    real client IP — prefer that, but ONLY when the socket peer is a trusted
+    gateway (see _is_trusted_proxy). Direct LAN connections fall back to the
+    socket peer; their XFF headers are ignored.
     """
     xff = request.headers.get("x-forwarded-for", "")
-    if xff:
+    peer = request.client.host if request.client else "unknown"
+    if xff and _is_trusted_proxy(peer):
         return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    return peer
 
 
 class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
@@ -1437,7 +1481,13 @@ class BearerTokenAuthMiddleware(BaseHTTPMiddleware):
 
         token = settings.mcp_auth_token
         if not token:
-            return await call_next(request)
+            if settings.environment == "local":
+                return await call_next(request)
+            logger.error("MCP_AUTH_TOKEN unset in environment=%s — refusing (fail-closed)", settings.environment)
+            return JSONResponse(
+                {"jsonrpc": "2.0", "id": None, "error": {"code": -32003, "message": "Server auth not configured"}},
+                status_code=503,
+            )
 
         client_ip = _client_key(request)
 

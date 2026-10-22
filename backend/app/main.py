@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail closed at boot outside local: both auth layers fall open when their
+    # token is unset, so a half-configured .env must not reach production.
+    if settings.environment != "local":
+        missing = [
+            name for name, val in
+            (("MCP_AUTH_TOKEN", settings.mcp_auth_token), ("API_AUTH_TOKEN", settings.api_auth_token))
+            if not val
+        ]
+        if missing:
+            raise RuntimeError(
+                f"Refusing to start: {', '.join(missing)} unset while ENVIRONMENT={settings.environment}. "
+                "Set the tokens or ENVIRONMENT=local."
+            )
     import subprocess
     try:
         subprocess.run(
@@ -98,6 +111,8 @@ from app.core.structured_logging import TraceIdMiddleware, setup_structured_logg
 setup_structured_logging()
 
 app.add_middleware(RateLimitMiddleware)
+from app.core.rate_limit import BodySizeLimitMiddleware
+app.add_middleware(BodySizeLimitMiddleware)
 
 
 @app.middleware("http")

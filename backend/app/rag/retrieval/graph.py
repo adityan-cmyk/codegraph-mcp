@@ -306,6 +306,11 @@ class GraphIndexProxy:
         return {}
 
     def get_neighbors(self, symbol_id: str, depth: int = 1) -> GraphNeighborhood:
+        try:
+            depth = int(depth)
+        except (TypeError, ValueError):
+            depth = 1
+        depth = max(1, min(depth, 5))
         backend = self._active()
         if hasattr(backend, "get_neighbors"):
             return backend.get_neighbors(symbol_id, depth=depth)
