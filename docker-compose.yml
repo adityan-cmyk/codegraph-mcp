@@ -6,8 +6,8 @@ services:
     ports:
       - "5433:5432"
     environment:
-      POSTGRES_USER: oncall
-      POSTGRES_PASSWORD: REDACTED
+      POSTGRES_USER: ${POSTGRES_USER:-oncall}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: oncall
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -49,7 +49,7 @@ services:
       - "7474:7474"
       - "7687:7687"
     environment:
-      NEO4J_AUTH: neo4j/REDACTED
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
     volumes:
       - neo4j_data:/data
     healthcheck:
@@ -146,12 +146,12 @@ services:
       CLIENT_TOKENS_BACKEND: postgres
       SEMANTIC_INDEX_BACKEND: weaviate
       GRAPH_INDEX_BACKEND: neo4j
-      POSTGRES_DSN: postgresql://oncall:REDACTED@postgres:5432/oncall
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-oncall}:${POSTGRES_PASSWORD}@postgres:5432/oncall
       REDIS_URL: redis://redis:6379/0
       WEAVIATE_URL: http://weaviate:8080
       NEO4J_URI: bolt://neo4j:7687
       NEO4J_USERNAME: neo4j
-      NEO4J_PASSWORD: REDACTED
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
       CODEBASE_ROOT_PATH: /repos/codebase
       INDEXING_ALLOWED_ROOTS: '["/repos/codebase"]'
       INDEX_ON_STARTUP: "false"
